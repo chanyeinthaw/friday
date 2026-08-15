@@ -1,0 +1,26 @@
+{
+  "name": "@orbs-at-home/friday",
+  "private": true,
+  "bin": {
+    "friday": "dist/friday"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./src/main.ts --compile --outfile ./dist/friday",
+    "check": "effect-tsgo patch --typescript && tsc --noEmit",
+    "dev": "bun run ./src/main.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@effect/platform-bun": "4.0.0-rc.109",
+    "@effect/sql-sqlite-bun": "4.0.0-rc.109",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "catalog:",
+    "@effect/vitest": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

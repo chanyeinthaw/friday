@@ -1,0 +1,3 @@
+- never run dev server, assume already running
+- never user try...catch, this project is effect v4 native
+- JSON.parse no, Use effect's schema

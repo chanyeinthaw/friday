@@ -1,0 +1,11 @@
+{
+  "semi": false,
+  "singleQuote": true,
+  "bracketSameLine": true,
+  "ignorePatterns": [
+    "dist/**",
+    "pnpm-lock.yaml",
+    "tools/oxlint/anti-slop/**",
+    "tools/oxlint/effect/**"
+  ]
+}
