@@ -1,20 +1,20 @@
 import {
-  SurfaceChannelId,
-  SurfaceMessageId,
-  SurfaceKind,
-  SurfaceConversationId,
-  type SurfaceBinding,
+  PlatformChannelId,
+  PlatformMessageId,
+  PlatformKind,
+  PlatformConversationId,
+  type ConversationBinding,
   type InputMessage,
 } from '@friday/contracts/conversation'
 import type { Message, Thread } from 'chat'
 import * as Schema from 'effect/Schema'
 
-import type { SurfaceInput } from '../Surface.ts'
+import type { PlatformInput } from '../PlatformAdapter.ts'
 
-const decodePlatform = Schema.decodeUnknownSync(SurfaceKind)
-const decodeChannelId = Schema.decodeUnknownSync(SurfaceChannelId)
-const decodeMessageId = Schema.decodeUnknownSync(SurfaceMessageId)
-const decodeThreadId = Schema.decodeUnknownSync(SurfaceConversationId)
+const decodePlatform = Schema.decodeUnknownSync(PlatformKind)
+const decodeChannelId = Schema.decodeUnknownSync(PlatformChannelId)
+const decodeMessageId = Schema.decodeUnknownSync(PlatformMessageId)
+const decodeThreadId = Schema.decodeUnknownSync(PlatformConversationId)
 
 export interface ChatSdkThreadProjectionSource extends Pick<Thread, 'channelId' | 'id'> {
   readonly adapter: Pick<Thread['adapter'], 'name'>
@@ -24,9 +24,9 @@ export type ChatSdkMessageProjectionSource = Pick<Message, 'id' | 'text'>
 export const projectChatSdkMessage = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
-): SurfaceInput => {
-  const binding: SurfaceBinding = {
-    surface: decodePlatform(thread.adapter.name),
+): PlatformInput => {
+  const binding: ConversationBinding = {
+    platform: decodePlatform(thread.adapter.name),
     channelId: decodeChannelId(thread.channelId),
     sourceMessageId: decodeMessageId(message.id),
     conversationId: decodeThreadId(thread.id),
@@ -37,7 +37,7 @@ export const projectChatSdkMessage = (
       text: message.text,
       images: [],
     },
-    surfaceMessageId: binding.sourceMessageId,
+    platformMessageId: binding.sourceMessageId,
   }
   return { binding, message: inputMessage }
 }

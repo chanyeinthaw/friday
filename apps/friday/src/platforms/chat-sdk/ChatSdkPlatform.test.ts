@@ -2,8 +2,8 @@
 
 import { assert, it } from '@effect/vitest'
 import {
-  SurfaceBinding,
-  type SurfaceBinding as SurfaceBindingType,
+  ConversationBinding,
+  type ConversationBinding as ConversationBindingType,
 } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -12,10 +12,10 @@ import * as Logger from 'effect/Logger'
 import * as Schema from 'effect/Schema'
 import { TestClock } from 'effect/testing'
 
-import { makeChatSdkSurface, type ChatSdkPublicationSource } from './ChatSdkSurface.ts'
+import { makeChatSdkPlatform, type ChatSdkPublicationSource } from './ChatSdkPlatform.ts'
 
-const binding: SurfaceBindingType = Schema.decodeSync(SurfaceBinding)({
-  surface: 'discord',
+const binding: ConversationBindingType = Schema.decodeSync(ConversationBinding)({
+  platform: 'discord',
   channelId: 'discord:channel-1',
   sourceMessageId: 'message-1',
   conversationId: 'discord:channel-1:message-1',
@@ -43,17 +43,17 @@ const elapseRefreshIntervals = (count: number): Effect.Effect<void> =>
 
 const typedThreadId = 'discord:channel-1:message-1'
 
-it.effect('uses the configured Surface kind', () =>
+it.effect('uses the configured Platform kind', () =>
   Effect.gen(function* () {
-    const surface = yield* makeChatSdkSurface('slack', makeTypingSource([]))
-    assert.strictEqual(surface.kind, 'slack')
+    const platform = yield* makeChatSdkPlatform('slack', makeTypingSource([]))
+    assert.strictEqual(platform.kind, 'slack')
   }),
 )
 
 it.effect('publishes final text through the bound Chat SDK thread', () =>
   Effect.gen(function* () {
     const publications: Array<string> = []
-    const platform = yield* makeChatSdkSurface('discord', {
+    const platform = yield* makeChatSdkPlatform('discord', {
       thread: (threadId) => ({
         post: (text) => {
           publications.push(`${threadId}:${text}`)
@@ -73,7 +73,7 @@ it.effect('sends typing immediately, refreshes while running, and stops after su
   Effect.scoped(
     Effect.gen(function* () {
       const calls: Array<string> = []
-      const platform = yield* makeChatSdkSurface('discord', makeTypingSource(calls), {
+      const platform = yield* makeChatSdkPlatform('discord', makeTypingSource(calls), {
         typingRefreshInterval: '1 second',
       })
 
@@ -100,7 +100,7 @@ it.effect('stops refreshing after the wrapped effect fails', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const calls: Array<string> = []
-      const platform = yield* makeChatSdkSurface('discord', makeTypingSource(calls), {
+      const platform = yield* makeChatSdkPlatform('discord', makeTypingSource(calls), {
         typingRefreshInterval: '1 second',
       })
 
@@ -125,7 +125,7 @@ it.effect('stops all typing refreshes when the wrapped effect dies', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const calls: Array<string> = []
-      const platform = yield* makeChatSdkSurface('discord', makeTypingSource(calls), {
+      const platform = yield* makeChatSdkPlatform('discord', makeTypingSource(calls), {
         typingRefreshInterval: '1 second',
       })
 
@@ -151,7 +151,7 @@ it.effect('stops refreshing when the wrapped effect is interrupted', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const calls: Array<string> = []
-      const platform = yield* makeChatSdkSurface('discord', makeTypingSource(calls), {
+      const platform = yield* makeChatSdkPlatform('discord', makeTypingSource(calls), {
         typingRefreshInterval: '1 second',
       })
 
@@ -172,7 +172,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       let wrappedRan = false
-      const platform = yield* makeChatSdkSurface('discord', {
+      const platform = yield* makeChatSdkPlatform('discord', {
         thread: () => ({
           post: () => Promise.resolve({}),
           startTyping: () => Promise.reject(new Error('discord down')),
@@ -199,7 +199,7 @@ it.effect('stops typing refreshes after a refresh failure without failing the wr
   Effect.scoped(
     Effect.gen(function* () {
       let calls = 0
-      const platform = yield* makeChatSdkSurface(
+      const platform = yield* makeChatSdkPlatform(
         'discord',
         {
           thread: () => ({
@@ -243,7 +243,7 @@ it.effect('logs a structured warning when a typing refresh fails', () => {
   return Effect.scoped(
     Effect.gen(function* () {
       let calls = 0
-      const platform = yield* makeChatSdkSurface(
+      const platform = yield* makeChatSdkPlatform(
         'discord',
         {
           thread: () => ({

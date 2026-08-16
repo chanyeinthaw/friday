@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { runChatSdkStateMigrations } from '../surfaces/chat-sdk/SqliteChatStateAdapter.ts'
+import { runChatSdkStateMigrations } from '../platforms/chat-sdk/SqliteChatStateAdapter.ts'
 
 export const runMigrations = Effect.fn('runMigrations')(function* () {
   const sql = yield* SqlClient.SqlClient
@@ -58,65 +58,5 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   yield* sql`
     CREATE UNIQUE INDEX IF NOT EXISTS activities_turn_sequence
     ON activities (turn_id, sequence)
-  `
-
-  // Rename the original messaging-platform vocabulary in durable JSON. SQLite's
-  // json_set/json_remove functions preserve all unrelated aggregate fields.
-  yield* sql`
-    UPDATE threads
-    SET payload_json = json_remove(
-      json_set(
-        payload_json,
-        '$.surfaceBinding',
-        json_object(
-          'surface', json_extract(payload_json, '$.externalBinding.platform'),
-          'channelId', json_extract(payload_json, '$.externalBinding.channelId'),
-          'sourceMessageId', json_extract(payload_json, '$.externalBinding.sourceMessageId'),
-          'conversationId', json_extract(payload_json, '$.externalBinding.externalThreadId')
-        )
-      ),
-      '$.externalBinding'
-    )
-    WHERE json_type(payload_json, '$.externalBinding') = 'object'
-      AND json_type(payload_json, '$.surfaceBinding') IS NULL
-  `
-
-  yield* sql`
-    UPDATE threads
-    SET payload_json = json_remove(
-      json_set(payload_json, '$.surfaceBinding', json('null')),
-      '$.externalBinding'
-    )
-    WHERE json_type(payload_json, '$.externalBinding') = 'null'
-      AND json_type(payload_json, '$.surfaceBinding') IS NULL
-  `
-
-  yield* sql`
-    UPDATE turns
-    SET payload_json = json_remove(
-      json_set(
-        payload_json,
-        '$.input.surfaceMessageId',
-        json_extract(payload_json, '$.input.externalMessageId')
-      ),
-      '$.input.externalMessageId'
-    )
-    WHERE json_type(payload_json, '$.input.externalMessageId') IS NOT NULL
-      AND json_type(payload_json, '$.input.surfaceMessageId') IS NULL
-  `
-
-  yield* sql`
-    UPDATE activities
-    SET payload_json = json_remove(
-      json_set(
-        payload_json,
-        '$.message.surfaceMessageId',
-        json_extract(payload_json, '$.message.externalMessageId')
-      ),
-      '$.message.externalMessageId'
-    )
-    WHERE type = 'steering'
-      AND json_type(payload_json, '$.message.externalMessageId') IS NOT NULL
-      AND json_type(payload_json, '$.message.surfaceMessageId') IS NULL
   `
 })

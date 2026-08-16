@@ -11,8 +11,8 @@ import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntime
 import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { ThreadPersistenceLive } from './persistence/Live.ts'
-import { SurfaceIngestionLive } from './surfaces/SurfaceIngestion.ts'
-import { SurfacesLive } from './surfaces/Surfaces.ts'
+import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
+import { PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
 
 const ThreadRuntimesLive = Layer.effect(
   ThreadRuntimes,
@@ -56,7 +56,7 @@ const CoreLive = Layer.mergeAll(
   PiModelRuntimeLive,
   BunCrypto.layer,
   BunFileSystem.layer,
-  SurfacesLive,
+  PlatformRegistryLive,
 )
 
 const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
@@ -69,7 +69,7 @@ const PoolLive = ThreadRuntimePoolLive((thread) =>
   }),
 ).pipe(Layer.provide(Layer.merge(CoreLive, RuntimeLive)))
 const AgentLive = FridayServiceLive.pipe(Layer.provide(PoolLive))
-const IngestionLive = SurfaceIngestionLive.pipe(
+const IngestionLive = PlatformIngestionLive.pipe(
   Layer.provide(Layer.mergeAll(CoreLive, PoolLive, AgentLive)),
 )
 

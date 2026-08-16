@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { SurfaceMessageId } from './surface.ts'
+import { PlatformMessageId } from './platform.ts'
 import { AttachmentId } from './ids.ts'
 import { NonNegativeInt } from './scalar.ts'
 
@@ -37,6 +37,6 @@ export type MessageContent = typeof MessageContent.Type
 export const InputMessage = Schema.Struct({
   source: InputSource,
   content: MessageContent,
-  surfaceMessageId: Schema.optionalKey(SurfaceMessageId),
+  platformMessageId: Schema.optionalKey(PlatformMessageId),
 })
 export type InputMessage = typeof InputMessage.Type

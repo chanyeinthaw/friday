@@ -5,7 +5,7 @@ import * as Fiber from 'effect/Fiber'
 import { TestClock } from 'effect/testing'
 
 import { makeChatSdkLifecycle, type ChatSdkLifecycleSource } from './ChatSdkLifecycle.ts'
-import { makeChatSdkSurface, type ChatSdkPublicationSource } from './ChatSdkSurface.ts'
+import { makeChatSdkPlatform, type ChatSdkPublicationSource } from './ChatSdkPlatform.ts'
 import type {
   ChatSdkMessageProjectionSource,
   ChatSdkThreadProjectionSource,
@@ -113,7 +113,7 @@ it.effect(
       let callbackPromise: Promise<void> = Promise.resolve()
       const outcomeFiber = yield* Effect.scoped(
         Effect.gen(function* () {
-          const platform = yield* makeChatSdkSurface('discord', chat, {
+          const platform = yield* makeChatSdkPlatform('discord', chat, {
             typingRefreshInterval: '1 second',
           })
           yield* makeChatSdkLifecycle({

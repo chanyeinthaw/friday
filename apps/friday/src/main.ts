@@ -6,7 +6,7 @@ import * as Effect from 'effect/Effect'
 
 import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
-import { startDiscord } from './surfaces/discord/DiscordLive.ts'
+import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive } from './persistence/Live.ts'
 
 const start = Effect.scoped(

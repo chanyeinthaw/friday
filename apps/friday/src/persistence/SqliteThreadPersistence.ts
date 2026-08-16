@@ -1,10 +1,10 @@
 import {
   Activity,
   ActivityId,
-  SurfaceKind,
-  SurfaceConversationId,
-  type SurfaceKind as SurfaceKindType,
-  type SurfaceConversationId as SurfaceConversationIdType,
+  PlatformKind,
+  PlatformConversationId,
+  type PlatformKind as PlatformKindType,
+  type PlatformConversationId as PlatformConversationIdType,
   Thread,
   ThreadId,
   Turn,
@@ -31,9 +31,9 @@ const encodeTurnJson = Schema.encodeEffect(TurnJson)
 const encodeActivityJson = Schema.encodeEffect(ActivityJson)
 
 const GetThreadRequest = Schema.Struct({ threadId: ThreadId })
-const FindSurfaceThreadRequest = Schema.Struct({
-  surface: SurfaceKind,
-  conversationId: SurfaceConversationId,
+const FindPlatformThreadRequest = Schema.Struct({
+  platform: PlatformKind,
+  conversationId: PlatformConversationId,
 })
 const GetTurnRequest = Schema.Struct({ turnId: TurnId })
 const GetLatestTurnRequest = Schema.Struct({ threadId: ThreadId })
@@ -153,16 +153,16 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     `,
   })
 
-  const findSurfaceThread = SqlSchema.findOneOption({
-    Request: FindSurfaceThreadRequest,
+  const findPlatformThread = SqlSchema.findOneOption({
+    Request: FindPlatformThreadRequest,
     Result: PersistedThreadRow,
-    execute: ({ surface, conversationId }) => sql`
+    execute: ({ platform, conversationId }) => sql`
       SELECT payload_json AS payload
       FROM threads
       WHERE audience = 'user'
         AND status = 'active'
-        AND json_extract(payload_json, '$.surfaceBinding.surface') = ${surface}
-        AND json_extract(payload_json, '$.surfaceBinding.conversationId') = ${conversationId}
+        AND json_extract(payload_json, '$.conversationBinding.platform') = ${platform}
+        AND json_extract(payload_json, '$.conversationBinding.conversationId') = ${conversationId}
       LIMIT 1
     `,
   })
@@ -207,13 +207,13 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
       Effect.mapError(toPersistenceError('ThreadPersistence.getThread')),
     )
 
-  const findActiveSurfaceThread = (lookup: {
-    readonly surface: SurfaceKindType
-    readonly conversationId: SurfaceConversationIdType
+  const findActivePlatformThread = (lookup: {
+    readonly platform: PlatformKindType
+    readonly conversationId: PlatformConversationIdType
   }) =>
-    findSurfaceThread(lookup).pipe(
+    findPlatformThread(lookup).pipe(
       Effect.map(Option.map((row) => row.payload)),
-      Effect.mapError(toPersistenceError('ThreadPersistence.findSurfaceThread')),
+      Effect.mapError(toPersistenceError('ThreadPersistence.findPlatformThread')),
     )
 
   const getTurn = (turnId: TurnType['id']) =>
@@ -324,7 +324,7 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
         Effect.mapError(toPersistenceError('ThreadPersistence.createThread')),
       ),
     getThread,
-    findSurfaceThread: findActiveSurfaceThread,
+    findPlatformThread: findActivePlatformThread,
     setThreadHarnessSession: (update) =>
       getThread(update.threadId).pipe(
         Effect.flatMap(

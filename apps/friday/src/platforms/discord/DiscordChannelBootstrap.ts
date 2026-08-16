@@ -15,7 +15,7 @@ import * as Schema from 'effect/Schema'
 import { join } from 'node:path'
 
 import { FRIDAY_HOME } from '../../FridayHome.ts'
-import type { SurfaceInput } from '../Surface.ts'
+import type { PlatformInput } from '../PlatformAdapter.ts'
 
 const ChannelMetadata = Schema.Struct({
   topic: Schema.optional(Schema.NullOr(Schema.String)),
@@ -88,7 +88,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
   const crypto = yield* Crypto.Crypto
   const fileSystem = yield* FileSystem.FileSystem
 
-  return Effect.fn('DiscordThreadBootstrap.create')(function* (inbound: SurfaceInput) {
+  return Effect.fn('DiscordThreadBootstrap.create')(function* (inbound: PlatformInput) {
     const channelContext = yield* Effect.tryPromise({
       try: async () => {
         const [channel, recent] = await Promise.all([
@@ -104,7 +104,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
     })
     const metadata = Option.getOrNull(decodeChannelMetadata(channelContext.channel.metadata.raw))
     const recentMessages = channelContext.recent.messages
-      .filter(({ id }) => id !== inbound.message.surfaceMessageId)
+      .filter(({ id }) => id !== inbound.message.platformMessageId)
       .map((message) => ({
         author: message.author.fullName || message.author.userName,
         text: message.text,
@@ -142,7 +142,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
         modelId: options.modelId ?? 'deepseek-v4-flash',
       },
       thinkingLevel: options.thinkingLevel ?? 'max',
-      surfaceBinding: inbound.binding,
+      conversationBinding: inbound.binding,
       status: 'active',
       createdAt: timestamp,
       updatedAt: timestamp,

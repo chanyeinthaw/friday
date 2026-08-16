@@ -2,7 +2,7 @@ import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import type * as Scope from 'effect/Scope'
 
-import type { SurfaceInput } from '../Surface.ts'
+import type { PlatformInput } from '../PlatformAdapter.ts'
 import { ChatSdkCallbackError, ChatSdkLifecycleError } from './Errors.ts'
 import {
   projectChatSdkMessage,
@@ -33,7 +33,7 @@ export interface ChatSdkLifecycleContract {
 export interface MakeChatSdkLifecycleOptions<InboundError, InboundServices> {
   readonly chat: ChatSdkLifecycleSource
   readonly onInboundMessage: (
-    message: SurfaceInput,
+    message: PlatformInput,
   ) => Effect.Effect<void, InboundError, InboundServices>
 }
 

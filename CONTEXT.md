@@ -13,11 +13,11 @@ A durable Friday conversation with an audience, harness session, working directo
 _Avoid_: Main thread, subthread
 
 **Channel thread**:
-A user-facing thread that represents one continuing conversation on a Surface and has a Surface binding to that conversation.
+A user-facing thread that represents one continuing conversation on a Platform and has a Conversation binding to that conversation.
 _Avoid_: Main thread, user thread
 
 **Agent thread**:
-A non-user-facing thread created by another agent to perform delegated work. It reports to its parent thread and parent turn rather than directly to a Surface.
+A non-user-facing thread created by another agent to perform delegated work. It reports to its parent thread and parent turn rather than directly to a Platform.
 _Avoid_: Subthread, worker thread
 
 **Turn**:
@@ -33,7 +33,7 @@ A user, agent, or system message accepted while a turn is active and passed to t
 _Avoid_: Follow-up turn, queued turn
 
 **Commentary**:
-An intermediate agent message produced during a turn. Commentary is distinct from the final agent message and is not sent to the user-facing Surface.
+An intermediate agent message produced during a turn. Commentary is distinct from the final agent message and is not sent to the user-facing Platform.
 _Avoid_: Final response, delivery
 
 **Channel agent**:
@@ -52,13 +52,13 @@ _Avoid_: Tool call
 The agent execution system used by Friday. Pi is the first harness, while the design permits other harnesses in the future.
 _Avoid_: Model provider
 
-**Surface**:
-A user-facing integration through which a person sends input to Friday and receives activity state and final responses. Discord, Slack, Linear, a web interface, and an in-memory test interface are surfaces.
-_Avoid_: External platform, transport
+**Platform**:
+A user-facing communication system through which a person sends input to Friday and receives activity state and final responses. Discord, Slack, Linear, a web interface, and an in-memory test interface are platforms.
+_Avoid_: Surface, external platform, transport
 
-**Surface binding**:
-The association between a channel thread and its conversation location on a surface. It identifies the surface and the surface-specific channel, initiating message, and conversation identifiers.
-_Avoid_: External binding, Discord thread
+**Conversation binding**:
+The association between a channel thread and its conversation location on a Platform. It identifies the Platform and the Platform-specific channel, initiating message, and conversation identifiers.
+_Avoid_: Surface binding, external binding, Discord thread
 
 **Model selection**:
 The provider and model identifier used by a thread or turn. A thread stores the current selection; a turn stores the effective selection used for that input.

@@ -2,10 +2,10 @@ import { createDiscordAdapter } from '@chat-adapter/discord'
 import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 
-import { SurfaceIngestion } from '../SurfaceIngestion.ts'
-import { Surfaces } from '../Surfaces.ts'
+import { PlatformIngestion } from '../PlatformIngestion.ts'
+import { PlatformRegistry } from '../PlatformRegistry.ts'
 import { makeChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
-import { makeChatSdkSurface } from '../chat-sdk/ChatSdkSurface.ts'
+import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
 import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import {
@@ -14,8 +14,8 @@ import {
 } from './DiscordChannelBootstrap.ts'
 
 export const startDiscord = Effect.fn('startDiscord')(function* () {
-  const surfaces = yield* Surfaces
-  const ingestion = yield* SurfaceIngestion
+  const platforms = yield* PlatformRegistry
+  const ingestion = yield* PlatformIngestion
   const channelId = process.env.FRIDAY_DISCORD_CHANNEL_ID
   if (!channelId) return null
 
@@ -41,12 +41,12 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
     bootstrapOptions.modelId = configuredModel.slice(1).join('/')
   }
   const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
-  const surface = yield* makeChatSdkSurface('discord', chat)
-  yield* surfaces.register(surface)
+  const platform = yield* makeChatSdkPlatform('discord', chat)
+  yield* platforms.register(platform)
   const lifecycle = yield* makeChatSdkLifecycle({
     chat,
     onInboundMessage: (input) => ingestion.ingest(input, bootstrap),
   })
   yield* startDiscordGateway(discord)
-  return { lifecycle, surface }
+  return { lifecycle, platform }
 })

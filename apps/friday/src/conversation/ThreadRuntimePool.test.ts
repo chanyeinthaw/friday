@@ -21,11 +21,11 @@ const thread = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-runtime-pool',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
   thinkingLevel: 'max',
-  surfaceBinding: {
-    surface: 'discord',
+  conversationBinding: {
+    platform: 'discord',
     channelId: 'channel-runtime-pool',
     sourceMessageId: 'message-runtime-pool',
-    conversationId: 'surface-conversation-runtime-pool',
+    conversationId: 'platform-conversation-runtime-pool',
   },
   status: 'active',
   createdAt: '2026-03-21T09:00:00.000Z',

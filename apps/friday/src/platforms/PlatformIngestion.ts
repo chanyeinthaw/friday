@@ -5,7 +5,7 @@ import {
   SteeringActivity,
   Turn,
   TurnId,
-  type SurfaceBinding,
+  type ConversationBinding,
   type SteeringActivity as SteeringActivityType,
   type Thread,
   type Turn as TurnType,
@@ -28,8 +28,12 @@ import {
   ThreadPersistence,
   type ThreadPersistenceError,
 } from '../conversation/ThreadPersistence.ts'
-import type { SurfaceInput } from './Surface.ts'
-import { SurfaceNotFoundError, SurfaceOperationError, Surfaces } from './Surfaces.ts'
+import type { PlatformInput } from './PlatformAdapter.ts'
+import {
+  PlatformNotFoundError,
+  PlatformOperationError,
+  PlatformRegistry,
+} from './PlatformRegistry.ts'
 
 const decodeTurn = Schema.decodeUnknownSync(Turn)
 const decodeSteeringActivity = Schema.decodeUnknownSync(SteeringActivity)
@@ -37,57 +41,58 @@ const decodeTurnId = Schema.decodeUnknownSync(TurnId)
 const decodeActivityId = Schema.decodeUnknownSync(ActivityId)
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso)
 
-export class SurfaceThreadNotFoundError extends Schema.Error<SurfaceThreadNotFoundError>(
-  'SurfaceThreadNotFoundError',
+export class PlatformThreadNotFoundError extends Schema.Error<PlatformThreadNotFoundError>(
+  'PlatformThreadNotFoundError',
 )({
-  _tag: Schema.tag('SurfaceThreadNotFoundError'),
-  surface: Schema.String,
+  _tag: Schema.tag('PlatformThreadNotFoundError'),
+  platform: Schema.String,
   channelId: Schema.String,
 }) {
   override get message(): string {
-    return `No Friday channel Thread exists for ${this.surface}:${this.channelId}`
+    return `No Friday channel Thread exists for ${this.platform}:${this.channelId}`
   }
 }
 
-export type SurfaceIngestionError<CreationError> =
+export type PlatformIngestionError<CreationError> =
   | ThreadRuntimeError
   | ThreadPersistenceError
-  | SurfaceThreadNotFoundError
+  | PlatformThreadNotFoundError
   | PlatformError.PlatformError
-  | SurfaceNotFoundError
-  | SurfaceOperationError
+  | PlatformNotFoundError
+  | PlatformOperationError
   | CreationError
 
-export interface SurfaceIngestionContract {
+export interface PlatformIngestionContract {
   readonly ingest: <CreationError>(
-    input: SurfaceInput,
-    createThread: (input: SurfaceInput) => Effect.Effect<Thread, CreationError>,
-  ) => Effect.Effect<void, SurfaceIngestionError<CreationError>, Scope.Scope>
+    input: PlatformInput,
+    createThread: (input: PlatformInput) => Effect.Effect<Thread, CreationError>,
+  ) => Effect.Effect<void, PlatformIngestionError<CreationError>, Scope.Scope>
 }
 
-export class SurfaceIngestion extends Context.Service<SurfaceIngestion, SurfaceIngestionContract>()(
-  'friday/surfaces/SurfaceIngestion',
-) {}
+export class PlatformIngestion extends Context.Service<
+  PlatformIngestion,
+  PlatformIngestionContract
+>()('friday/platforms/PlatformIngestion') {}
 
 const isActiveTurn = (turn: TurnType): boolean =>
   turn.status === 'pending' || turn.status === 'running'
 
-export const SurfaceIngestionLive = Layer.effect(
-  SurfaceIngestion,
+export const PlatformIngestionLive = Layer.effect(
+  PlatformIngestion,
   Effect.gen(function* () {
     const friday = yield* Friday
     const persistence = yield* ThreadPersistence
-    const surfaces = yield* Surfaces
+    const platforms = yield* PlatformRegistry
     const crypto = yield* Crypto.Crypto
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
-    return SurfaceIngestion.of({
+    return PlatformIngestion.of({
       ingest: (input, createThread) => {
-        const key = `${input.binding.surface}:${input.binding.channelId}`
+        const key = `${input.binding.platform}:${input.binding.channelId}`
         const accepted = semaphore.withPermit(key)(
           Effect.gen(function* () {
-            const foundThread = yield* persistence.findSurfaceThread({
-              surface: input.binding.surface,
+            const foundThread = yield* persistence.findPlatformThread({
+              platform: input.binding.platform,
               conversationId: input.binding.conversationId,
             })
             const found = Option.isSome(foundThread)
@@ -122,7 +127,7 @@ export const SurfaceIngestionLive = Layer.effect(
                   TerminalTurn,
                   ThreadRuntimeError | ThreadPersistenceError
                 >
-                readonly publicationBinding: SurfaceBinding
+                readonly publicationBinding: ConversationBinding
               }>()
             }
 
@@ -158,12 +163,12 @@ export const SurfaceIngestionLive = Layer.effect(
             Option.match({
               onNone: () => Effect.void,
               onSome: ({ awaitTerminal, publicationBinding }) =>
-                surfaces.withTyping(
+                platforms.withTyping(
                   publicationBinding,
                   awaitTerminal.pipe(
                     Effect.flatMap((terminal) =>
                       terminal.status === 'completed'
-                        ? surfaces.publish({
+                        ? platforms.publish({
                             binding: publicationBinding,
                             text: terminal.agentMessage,
                           })

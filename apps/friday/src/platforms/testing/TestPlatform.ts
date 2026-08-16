@@ -1,54 +1,55 @@
-import type { SurfaceBinding, InputMessage } from '@friday/contracts/conversation'
+import type { ConversationBinding, InputMessage } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
 
-import type { SurfaceContract, SurfaceInput, SurfacePublication } from '../Surface.ts'
+import type { PlatformAdapter, PlatformInput, PlatformPublication } from '../PlatformAdapter.ts'
 
-export type TestSurfaceEvent =
+export type TestPlatformEvent =
   | {
       readonly type: 'inbound-message'
-      readonly inbound: SurfaceInput
+      readonly inbound: PlatformInput
     }
   | {
       readonly type: 'typing-started'
-      readonly binding: SurfaceBinding
+      readonly binding: ConversationBinding
     }
   | {
       readonly type: 'typing-stopped'
-      readonly binding: SurfaceBinding
+      readonly binding: ConversationBinding
     }
   | {
       readonly type: 'message-published'
-      readonly publication: SurfacePublication
+      readonly publication: PlatformPublication
     }
 
-export interface TestSurfaceContract extends SurfaceContract<never> {
+export interface TestPlatformContract extends PlatformAdapter<never> {
   readonly connect: (
-    onInbound: (inbound: SurfaceInput) => Effect.Effect<void>,
+    onInbound: (inbound: PlatformInput) => Effect.Effect<void>,
   ) => Effect.Effect<boolean>
-  readonly send: (binding: SurfaceBinding, message: InputMessage) => Effect.Effect<void>
-  readonly events: Effect.Effect<ReadonlyArray<TestSurfaceEvent>>
+  readonly send: (binding: ConversationBinding, message: InputMessage) => Effect.Effect<void>
+  readonly events: Effect.Effect<ReadonlyArray<TestPlatformEvent>>
   readonly clearEvents: Effect.Effect<void>
 }
 
-export class TestSurface extends Context.Service<TestSurface, TestSurfaceContract>()(
-  'friday/surfaces/testing/TestSurface',
+export class TestPlatform extends Context.Service<TestPlatform, TestPlatformContract>()(
+  'friday/platforms/testing/TestPlatform',
 ) {}
 
-export const TestSurfaceLive = Layer.effect(
-  TestSurface,
+export const TestPlatformLive = Layer.effect(
+  TestPlatform,
   Effect.gen(function* () {
-    type InboundHandler = (inbound: SurfaceInput) => Effect.Effect<void>
+    type InboundHandler = (inbound: PlatformInput) => Effect.Effect<void>
 
-    const events = yield* Ref.make<Array<TestSurfaceEvent>>([])
+    const events = yield* Ref.make<Array<TestPlatformEvent>>([])
     const inboundHandler = yield* Deferred.make<InboundHandler>()
-    const record = (event: TestSurfaceEvent) => Ref.update(events, (current) => [...current, event])
+    const record = (event: TestPlatformEvent) =>
+      Ref.update(events, (current) => [...current, event])
 
-    return TestSurface.of({
-      kind: 'discord',
+    return TestPlatform.of({
+      kind: 'test',
       connect: (handler) => Deferred.succeed(inboundHandler, handler),
       send: (binding, message) => {
         const inbound = { binding, message }

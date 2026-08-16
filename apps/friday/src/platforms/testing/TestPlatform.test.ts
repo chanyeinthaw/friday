@@ -1,14 +1,14 @@
 import { assert, it } from '@effect/vitest'
-import { SurfaceBinding, InputMessage } from '@friday/contracts/conversation'
+import { ConversationBinding, InputMessage } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
 
-import { TestSurface, TestSurfaceLive } from './TestSurface.ts'
+import { TestPlatform, TestPlatformLive } from './TestPlatform.ts'
 
-const binding = Schema.decodeSync(SurfaceBinding)({
-  surface: 'discord',
+const binding = Schema.decodeSync(ConversationBinding)({
+  platform: 'test',
   channelId: 'discord:guild:channel',
   sourceMessageId: 'message-1',
   conversationId: 'discord:guild:channel:thread-1',
@@ -16,12 +16,12 @@ const binding = Schema.decodeSync(SurfaceBinding)({
 const message = Schema.decodeSync(InputMessage)({
   source: 'user',
   content: { text: 'Hello Friday', images: [] },
-  surfaceMessageId: 'message-1',
+  platformMessageId: 'message-1',
 })
 
 it.effect('drives normalized inbound messages and records final publication', () =>
   Effect.gen(function* () {
-    const chat = yield* TestSurface
+    const chat = yield* TestPlatform
     yield* chat.connect((inbound) =>
       chat.publish({ binding: inbound.binding, text: `Reply: ${inbound.message.content.text}` }),
     )
@@ -38,13 +38,13 @@ it.effect('drives normalized inbound messages and records final publication', ()
       published?.type === 'message-published' ? published.publication.text : null,
       'Reply: Hello Friday',
     )
-  }).pipe(Effect.provide(TestSurfaceLive)),
+  }).pipe(Effect.provide(TestPlatformLive)),
 )
 
 it.effect('always records typing stopped after success, failure, and interruption', () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const chat = yield* TestSurface
+      const chat = yield* TestPlatform
 
       yield* chat.withTyping(binding, Effect.void)
       const failed = yield* chat.withTyping(binding, Effect.fail('boom')).pipe(Effect.exit)
@@ -66,6 +66,6 @@ it.effect('always records typing stopped after success, failure, and interruptio
           'typing-stopped',
         ],
       )
-    }).pipe(Effect.provide(TestSurfaceLive)),
+    }).pipe(Effect.provide(TestPlatformLive)),
   ),
 )

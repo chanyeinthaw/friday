@@ -1,8 +1,8 @@
-import type { SurfaceBinding } from '@friday/contracts/conversation'
+import type { ConversationBinding } from '@friday/contracts/conversation'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 
-import type { SurfaceContract, SurfacePublication } from '../Surface.ts'
+import type { PlatformAdapter, PlatformPublication } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from './Errors.ts'
 
 export interface ChatSdkPublicationSource {
@@ -12,19 +12,19 @@ export interface ChatSdkPublicationSource {
   }
 }
 
-export interface ChatSdkSurfaceOptions {
+export interface ChatSdkPlatformOptions {
   readonly typingRefreshInterval?: Duration.Input
 }
 
-export const makeChatSdkSurface = Effect.fn('makeChatSdkSurface')(
+export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
   (
-    kind: SurfaceBinding['surface'],
+    kind: ConversationBinding['platform'],
     chat: ChatSdkPublicationSource,
-    options: ChatSdkSurfaceOptions = {},
-  ): Effect.Effect<SurfaceContract<ChatSdkPublicationError>> =>
+    options: ChatSdkPlatformOptions = {},
+  ): Effect.Effect<PlatformAdapter<ChatSdkPublicationError>> =>
     Effect.succeed({
       kind,
-      publish: Effect.fn('ChatSdkSurface.publish')((publication: SurfacePublication) =>
+      publish: Effect.fn('ChatSdkPlatform.publish')((publication: PlatformPublication) =>
         Effect.tryPromise({
           try: () => chat.thread(String(publication.binding.conversationId)).post(publication.text),
           catch: (cause) =>
@@ -34,8 +34,8 @@ export const makeChatSdkSurface = Effect.fn('makeChatSdkSurface')(
             }),
         }).pipe(Effect.asVoid),
       ),
-      withTyping: Effect.fn('ChatSdkSurface.withTyping')(function* <A, E, R>(
-        binding: SurfaceBinding,
+      withTyping: Effect.fn('ChatSdkPlatform.withTyping')(function* <A, E, R>(
+        binding: ConversationBinding,
         effect: Effect.Effect<A, E, R>,
       ) {
         const thread = chat.thread(String(binding.conversationId))

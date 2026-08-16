@@ -1,7 +1,7 @@
 import { assert, it } from '@effect/vitest'
 import {
   ChannelThread,
-  SurfaceBinding,
+  ConversationBinding,
   InputMessage,
   TurnId,
   type Thread as ThreadType,
@@ -20,12 +20,12 @@ import {
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
-import { SurfaceIngestion, SurfaceIngestionLive } from './SurfaceIngestion.ts'
-import type { SurfaceContract } from './Surface.ts'
-import { Surfaces, SurfacesLive } from './Surfaces.ts'
+import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
+import type { PlatformAdapter } from './PlatformAdapter.ts'
+import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
-const binding = Schema.decodeSync(SurfaceBinding)({
-  surface: 'discord',
+const binding = Schema.decodeSync(ConversationBinding)({
+  platform: 'discord',
   channelId: 'discord:channel-1',
   sourceMessageId: 'message-1',
   conversationId: 'discord:channel-1:message-1',
@@ -35,7 +35,7 @@ const input = {
   message: Schema.decodeSync(InputMessage)({
     source: 'user',
     content: { text: 'Hello Friday', images: [] },
-    surfaceMessageId: 'message-1',
+    platformMessageId: 'message-1',
   }),
 }
 const thread: ThreadType = Schema.decodeSync(ChannelThread)({
@@ -47,7 +47,7 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-ingestion',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
   thinkingLevel: 'max',
-  surfaceBinding: binding,
+  conversationBinding: binding,
   status: 'active',
   createdAt: '2026-03-21T09:00:00.000Z',
   updatedAt: '2026-03-21T09:00:00.000Z',
@@ -66,22 +66,22 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
       const events: Array<string> = []
       const persistence = makePersistence(events)
       const friday = makeFriday(events, persistence)
-      const surface = makeSurface(events)
+      const platform = makePlatform(events)
       const dependencies = Layer.mergeAll(
         Layer.succeed(ThreadPersistence, persistence),
         Layer.succeed(Friday, friday),
         Layer.succeed(Crypto.Crypto, testCrypto),
-        SurfacesLive,
+        PlatformRegistryLive,
       )
       const TestLive = Layer.merge(
         dependencies,
-        SurfaceIngestionLive.pipe(Layer.provide(dependencies)),
+        PlatformIngestionLive.pipe(Layer.provide(dependencies)),
       )
 
       yield* Effect.gen(function* () {
-        const ingestion = yield* SurfaceIngestion
-        const surfaces = yield* Surfaces
-        yield* surfaces.register(surface)
+        const ingestion = yield* PlatformIngestion
+        const platforms = yield* PlatformRegistry
+        yield* platforms.register(platform)
         yield* ingestion.ingest(input, () => Effect.succeed(thread))
       }).pipe(Effect.provide(TestLive))
 
@@ -102,22 +102,22 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
       const events: Array<string> = []
       const persistence = makePersistence(events, { latestIsActive: true })
       const friday = makeFriday(events, persistence)
-      const surface = makeSurface(events)
+      const platform = makePlatform(events)
       const dependencies = Layer.mergeAll(
         Layer.succeed(ThreadPersistence, persistence),
         Layer.succeed(Friday, friday),
         Layer.succeed(Crypto.Crypto, testCrypto),
-        SurfacesLive,
+        PlatformRegistryLive,
       )
       const TestLive = Layer.merge(
         dependencies,
-        SurfaceIngestionLive.pipe(Layer.provide(dependencies)),
+        PlatformIngestionLive.pipe(Layer.provide(dependencies)),
       )
 
       yield* Effect.gen(function* () {
-        const ingestion = yield* SurfaceIngestion
-        const surfaces = yield* Surfaces
-        yield* surfaces.register(surface)
+        const ingestion = yield* PlatformIngestion
+        const platforms = yield* PlatformRegistry
+        yield* platforms.register(platform)
         yield* ingestion.ingest(input, () => Effect.succeed(thread))
       }).pipe(Effect.provide(TestLive))
 
@@ -126,7 +126,7 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
   ),
 )
 
-const makeSurface = (events: Array<string>): SurfaceContract<never> => ({
+const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   kind: 'discord',
   publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
   withTyping: (_binding, effect) =>
@@ -193,7 +193,7 @@ const makePersistence = (
   return {
     createThread: () => Effect.void,
     getThread: () => Effect.succeedNone,
-    findSurfaceThread: () => Effect.succeedSome(thread),
+    findPlatformThread: () => Effect.succeedSome(thread),
     setThreadHarnessSession: () => Effect.void,
     createTurn: (turn) => Effect.sync(() => void (storedTurn = turn)),
     getTurn: () =>

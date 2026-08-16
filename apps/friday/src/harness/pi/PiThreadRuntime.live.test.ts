@@ -61,8 +61,8 @@ liveTest(
       workingDirectory: directory,
       model: { provider, modelId },
       thinkingLevel,
-      surfaceBinding: {
-        surface: 'discord',
+      conversationBinding: {
+        platform: 'discord',
         channelId: 'live-channel',
         sourceMessageId: 'live-message',
         conversationId: 'live-thread',
@@ -170,8 +170,8 @@ liveCompactionTest(
       workingDirectory: directory,
       model: { provider, modelId },
       thinkingLevel,
-      surfaceBinding: {
-        surface: 'discord',
+      conversationBinding: {
+        platform: 'discord',
         channelId: 'live-compaction-channel',
         sourceMessageId: 'live-compaction-message',
         conversationId: 'live-compaction-thread',

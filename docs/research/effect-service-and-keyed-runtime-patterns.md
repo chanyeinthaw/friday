@@ -1,8 +1,8 @@
-# Effect patterns for Friday services, thread runtimes, and interface surfaces
+# Effect patterns for Friday services, Thread runtimes, and Platforms
 
 ## Question
 
-How should Friday distinguish singleton Effect services from dynamically constructed per-Thread runtimes, and how should it support several simultaneous user-interface integrations such as Discord, Slack, Linear, and a future web interface?
+How should Friday distinguish singleton Effect services from dynamically constructed per-Thread runtimes, and how should it support several simultaneous Platforms such as Discord, Slack, Linear, and a future web interface?
 
 ## Findings
 
@@ -38,11 +38,11 @@ Effect documents `FiberMap` as a scoped collection of fibers indexed by a key. C
 
 **Application to Friday:** use `FiberMap` for active per-Turn or per-Thread background workers that need supervision or keyed replacement. Do not use it as the Thread runtime registry itself; `LayerMap`/`RcMap` owns resources, while `FiberMap` owns running work.
 
-### 5. A registry service matches simultaneous interface integrations
+### 5. A registry service matches simultaneous Platform adapters
 
 Effect's EventLog `Registry` stores several implementations/handlers in maps behind one context service. Registrations use `Effect.acquireRelease`, so entries are removed when the registration scope closes. See [`node_modules/effect/src/unstable/eventlog/EventLog.ts`](../../node_modules/effect/src/unstable/eventlog/EventLog.ts), around lines 70–180.
 
-**Application to Friday:** Discord, Slack, Linear, and Web can register simultaneously with a singleton `Interfaces` registry/router service. Each integration remains a separately scoped live resource, but application code publishes through the registry based on the binding's interface kind. Scoped registration prevents stale adapters after shutdown.
+**Application to Friday:** Discord, Slack, Linear, and Web can register simultaneously with a singleton `PlatformRegistry` service. Each Platform remains a separately scoped live resource, but application code publishes through the registry based on the binding's Platform kind. Scoped registration prevents stale adapters after shutdown.
 
 For a fixed compile-time set of implementations, a `ReadonlyMap` built in `Layer.effect` is enough. Dynamic registration is useful only if integrations are composed independently or can start and stop during process lifetime.
 
@@ -50,7 +50,7 @@ For a fixed compile-time set of implementations, a `ReadonlyMap` built in `Layer
 
 Effect examples define the same service tag and provide fake implementations with `Layer.succeed` or `Layer.effect`. The AI `Chat` documentation demonstrates a stateful service provided by `Layer.effect(Chat.Chat, Chat.empty)` and a fake language model provided as another layer. See [`node_modules/effect/src/unstable/ai/Chat.ts`](../../node_modules/effect/src/unstable/ai/Chat.ts), around lines 35–85.
 
-**Application to Friday:** tests should provide `Friday`, `ThreadRuntimes`, and interface-router test layers. A mutable event journal can live inside the test layer and be exposed through a separate test probe service. Tests should not require production constructors.
+**Application to Friday:** tests should provide `Friday`, `ThreadRuntimes`, and PlatformRegistry test layers. A mutable event journal can live inside the test layer and be exposed through a separate test probe service. Tests should not require production constructors.
 
 ## Recommended shape
 
@@ -61,12 +61,12 @@ Friday service (singleton)
 │   └── open(Thread) -> scoped ThreadRuntime instance
 ├── ThreadSessions keyed resource service
 │   └── ThreadId -> scoped ThreadCoordinator + ThreadRuntime
-└── Interfaces service/registry
-    ├── Discord interface (scoped live integration)
-    ├── Slack interface (scoped live integration)
-    ├── Linear interface (scoped live integration)
-    ├── Web interface (scoped live integration)
-    └── Test interface (test layer + probe)
+└── PlatformRegistry service
+    ├── Discord Platform (scoped live adapter)
+    ├── Slack Platform (scoped live adapter)
+    ├── Linear Platform (scoped live adapter)
+    ├── Web Platform (scoped live adapter)
+    └── Test Platform (test layer + probe)
 ```
 
 ## Naming conclusion
@@ -76,7 +76,7 @@ Friday service (singleton)
 - remove public `makeFridayApplication` / do not add public `makeFriday`
 - `ThreadRuntimeFactory` → `ThreadRuntimesContract` or `ThreadRuntimeFactoryContract`, exposed as a service
 - keep `makePiThreadRuntime` as an adapter-internal constructor for one runtime instance
-- replace “External Platform” with a domain term describing the role. `Interface` is more precise than `Platform`; `Surface` is also viable but is less explicit in code.
+- use `Platform` for the user-facing communication system and `ConversationBinding` for its exact native location
 
 ## Important distinction
 
