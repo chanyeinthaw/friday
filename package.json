@@ -1,11 +1,11 @@
 {
-  "name": "orbs-at-home",
+  "name": "friday",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @orbs-at-home/friday build",
+    "build": "pnpm --filter @friday/friday build",
     "check": "pnpm --recursive --if-present check",
-    "dev": "pnpm --filter @orbs-at-home/friday dev",
+    "dev": "pnpm --filter @friday/friday dev",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "effect-tsgo patch --no-typescript --oxlint && oxlint .",

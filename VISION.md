@@ -1,15 +1,17 @@
-# Orbs at Home — Vision 2.0
+# Friday — Vision 2.0
 
 ## Vision
 
-Orbs at Home is a simpler personal agent in the same broad category as OpenClaw and Hermes.
+Friday is a simpler personal agent in the same broad category as OpenClaw and Hermes.
 
 It is Discord-first and single-player at first. Its design is harness-neutral for future extensibility, with Pi as the first supported harness.
 
 ## Discord interaction
 
-- When a message arrives in a Discord channel, the agent starts a new agent thread.
-- The conversation continues in that thread.
+- Each Discord channel has one long-lived channel thread in Friday.
+- When the first message arrives for a channel, Friday creates the channel thread and an associated Discord thread rooted at that message.
+- The conversation continues in that Discord thread.
+- Incoming messages become turns, while messages accepted during an active turn may be recorded as steering activities.
 - Only the agent's final output is sent back to Discord.
 
 ## Channel workspace
@@ -29,13 +31,13 @@ Pi's normal context discovery remains active. Agent sessions receive layered ins
 
 A channel agent receives:
 
-1. Special channel-agent instructions supplied by Orbs at Home.
+1. Special channel-agent instructions supplied by Friday.
 2. The global `AGENTS.md` discovered by Pi.
 3. The channel workspace's `AGENTS.md`, discovered from the channel agent's current working directory.
 
 A subagent receives:
 
-1. Special subagent instructions supplied by Orbs at Home.
+1. Special subagent instructions supplied by Friday.
 2. The global `AGENTS.md` discovered by Pi.
 3. The applicable `AGENTS.md` files discovered from the current working directory selected by the channel agent.
 
@@ -43,7 +45,7 @@ The role-specific instructions are separate from `AGENTS.md`. They describe the 
 
 ## Agent and subagents
 
-- The channel agent is the only agent that can delegate work in v1.
+- The channel agent owns the channel thread and is the only agent that can delegate work in v1.
 - The channel agent can answer simple requests directly instead of always spawning a subagent.
 - Subagents are a first-class capability.
 - A subagent is a native agent session.
@@ -57,7 +59,7 @@ The role-specific instructions are separate from `AGENTS.md`. They describe the 
 
 The design should remain harness-neutral so other harnesses can be supported later.
 
-Pi is the first harness. Model discovery, provider authentication, and related model capabilities rely on the harness rather than being reimplemented by Orbs at Home.
+Pi is the first harness. Model discovery, provider authentication, and related model capabilities rely on the harness rather than being reimplemented by Friday.
 
 ## Initial scope
 
