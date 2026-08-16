@@ -5,6 +5,8 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
 import { FridayLive as FridayServiceLive } from './Friday.ts'
+import { makeThreadCoordinator } from './conversation/ThreadCoordinator.ts'
+import { ThreadRuntimePoolLive } from './conversation/ThreadRuntimePool.ts'
 import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
 import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
@@ -58,9 +60,17 @@ const CoreLive = Layer.mergeAll(
 )
 
 const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
-const AgentLive = FridayServiceLive.pipe(Layer.provide(Layer.merge(CoreLive, RuntimeLive)))
+const PoolLive = ThreadRuntimePoolLive((thread) =>
+  Effect.gen(function* () {
+    const runtime = yield* ThreadRuntimes.use((runtimes) => runtimes.open(thread))
+    const coordinator = yield* makeThreadCoordinator(runtime)
+    yield* coordinator.start
+    return coordinator
+  }),
+).pipe(Layer.provide(Layer.merge(CoreLive, RuntimeLive)))
+const AgentLive = FridayServiceLive.pipe(Layer.provide(PoolLive))
 const IngestionLive = SurfaceIngestionLive.pipe(
-  Layer.provide(Layer.mergeAll(CoreLive, RuntimeLive, AgentLive)),
+  Layer.provide(Layer.mergeAll(CoreLive, PoolLive, AgentLive)),
 )
 
-export const FridayLive = Layer.mergeAll(CoreLive, RuntimeLive, AgentLive, IngestionLive)
+export const FridayLive = Layer.mergeAll(CoreLive, RuntimeLive, PoolLive, AgentLive, IngestionLive)

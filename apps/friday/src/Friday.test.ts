@@ -1,16 +1,12 @@
 import { assert, it } from '@effect/vitest'
-import { ChannelThread, HarnessSession, Turn } from '@friday/contracts/conversation'
+import { ChannelThread, Turn } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
 
 import { Friday, FridayLive } from './Friday.ts'
-import {
-  ThreadPersistence,
-  type ThreadPersistenceContract,
-} from './conversation/ThreadPersistence.ts'
-import { ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
+import { ThreadRuntimePool } from './conversation/ThreadRuntimePool.ts'
+import type { ThreadPersistenceContract } from './conversation/ThreadPersistence.ts'
 
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-application',
@@ -54,33 +50,40 @@ const turn = Schema.decodeSync(Turn)({
   usage: null,
 })
 
-const harnessSession = Schema.decodeSync(HarnessSession)({
-  id: 'pi-session-application',
-  resumeCursor: { sessionId: 'pi-session-application' },
-})
-
 it.effect('opens a Thread through the runtime service and returns its started coordinator', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const operations: Array<string> = []
       const persistence = makePersistence(operations)
-      const TestDependencies = Layer.merge(
-        Layer.succeed(ThreadPersistence, persistence),
-        Layer.succeed(ThreadRuntimes, {
-          open: (openedThread) =>
-            Effect.sync(() => {
-              operations.push(`runtime:${openedThread.id}`)
-              return {
-                threadId: openedThread.id,
-                harnessSession,
-                prompt: () => Effect.sync(() => operations.push('prompt')),
-                events: Stream.empty,
-              }
+      const pooledCoordinator = {
+        prompt: (promptedTurn: typeof turn) =>
+          persistence.createTurn(promptedTurn).pipe(
+            Effect.andThen(Effect.sync(() => operations.push('prompt'))),
+            Effect.as({
+              turnId: promptedTurn.id,
+              awaitTerminal: Effect.never,
             }),
-        }),
-      )
+          ),
+        steer: () => Effect.void,
+        start: Effect.void,
+        drain: Effect.void,
+      }
       const friday = yield* Friday.pipe(
-        Effect.provide(FridayLive.pipe(Layer.provide(TestDependencies))),
+        Effect.provide(
+          FridayLive.pipe(
+            Layer.provide(
+              Layer.succeed(ThreadRuntimePool, {
+                acquire: (openedThread) =>
+                  Effect.sync(() => {
+                    operations.push(`runtime:${openedThread.id}`)
+                    operations.push('set-harness-session')
+                    return pooledCoordinator
+                  }),
+                reapIdle: Effect.void,
+              }),
+            ),
+          ),
+        ),
       )
 
       const coordinator = yield* friday.openThread(thread)

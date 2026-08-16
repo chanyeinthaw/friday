@@ -22,7 +22,7 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
 import { Friday } from '../Friday.ts'
-import type { TerminalTurn, ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
+import type { TerminalTurn } from '../conversation/ThreadCoordinator.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
 import {
   ThreadPersistence,
@@ -80,21 +80,6 @@ export const SurfaceIngestionLive = Layer.effect(
     const surfaces = yield* Surfaces
     const crypto = yield* Crypto.Crypto
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
-    // Friday owns active per-Thread coordinators. A keyed scoped resource
-    // service will replace this process-lifetime map when Thread idle-release
-    // semantics are defined.
-    const coordinators = new Map<
-      Thread['id'],
-      ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
-    >()
-
-    const coordinatorFor = Effect.fn('SurfaceIngestion.coordinatorFor')(function* (thread: Thread) {
-      const existing = coordinators.get(thread.id)
-      if (existing) return existing
-      const coordinator = yield* friday.openThread(thread)
-      coordinators.set(thread.id, coordinator)
-      return coordinator
-    })
 
     return SurfaceIngestion.of({
       ingest: (input, createThread) => {
@@ -112,7 +97,7 @@ export const SurfaceIngestionLive = Layer.effect(
                 )
             if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
             const thread = found
-            const coordinator = yield* coordinatorFor(thread)
+            const coordinator = yield* friday.openThread(thread)
             const latestTurn = yield* persistence.getLatestTurn(thread.id)
             const timestamp = yield* nowIso
 
