@@ -4,10 +4,16 @@ import { ActivityId, ToolCallId } from './ids.ts'
 import { InputMessage } from './message.ts'
 import { IsoDateTime, NonNegativeInt } from './scalar.ts'
 
+export const ActivityStatus = Schema.Literals(['active', 'completed'])
+export type ActivityStatus = typeof ActivityStatus.Type
+
 export const ActivityBase = Schema.Struct({
   id: ActivityId,
   sequence: NonNegativeInt,
+  status: ActivityStatus,
   createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  completedAt: Schema.NullOr(IsoDateTime),
 })
 
 export const SteeringActivity = Schema.Struct({
@@ -21,7 +27,6 @@ export const CommentaryActivity = Schema.Struct({
   ...ActivityBase.fields,
   type: Schema.Literal('commentary'),
   text: Schema.String,
-  streaming: Schema.Boolean,
 })
 export type CommentaryActivity = typeof CommentaryActivity.Type
 
@@ -48,5 +53,16 @@ export const Activity = Schema.Union([
   CommentaryActivity,
   ToolCallActivity,
   ToolResultActivity,
-])
+]).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (activity) =>
+        (activity.status === 'active' && activity.completedAt === null) ||
+        (activity.status === 'completed' && activity.completedAt !== null),
+      {
+        message: 'An active Activity cannot have completedAt; a completed Activity must have it',
+      },
+    ),
+  ),
+)
 export type Activity = typeof Activity.Type

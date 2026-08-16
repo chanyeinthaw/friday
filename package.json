@@ -9,7 +9,7 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "effect-tsgo patch --no-typescript --oxlint && oxlint .",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts' --exclude '**/*.live.test.ts' && pnpm --filter @friday/friday test:integration",
     "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test"
   },
   "devDependencies": {

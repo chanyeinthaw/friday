@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 
 import { ExternalBinding } from './external.ts'
-import { HarnessId, HarnessSessionId } from './harness.ts'
+import { HarnessId, HarnessSession } from './harness.ts'
 import { ThreadId, TurnId } from './ids.ts'
 import { ModelSelection, ThinkingLevel } from './model.ts'
 import { IsoDateTime } from './scalar.ts'
@@ -27,7 +27,7 @@ export type ParentReference = typeof ParentReference.Type
 const ThreadFields = {
   id: ThreadId,
   harness: HarnessId,
-  harnessSessionId: Schema.NullOr(HarnessSessionId),
+  harnessSession: Schema.NullOr(HarnessSession),
   workingDirectory: WorkingDirectory,
   model: ModelSelection,
   thinkingLevel: ThinkingLevel,

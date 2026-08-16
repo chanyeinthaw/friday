@@ -8,5 +8,11 @@ export type HarnessId = typeof HarnessId.Type
 export const HarnessSessionId = HarnessIdentifier.pipe(Schema.brand('HarnessSessionId'))
 export type HarnessSessionId = typeof HarnessSessionId.Type
 
+export const HarnessSession = Schema.Struct({
+  id: HarnessSessionId,
+  resumeCursor: Schema.Json,
+})
+export type HarnessSession = typeof HarnessSession.Type
+
 export const HarnessTurnId = HarnessIdentifier.pipe(Schema.brand('HarnessTurnId'))
 export type HarnessTurnId = typeof HarnessTurnId.Type
