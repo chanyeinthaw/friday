@@ -2,22 +2,20 @@ import { createDiscordAdapter } from '@chat-adapter/discord'
 import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 
-import type { FridayApplicationContract } from '../../FridayApplication.ts'
-import { ThreadPersistence } from '../../conversation/ThreadPersistence.ts'
-import { makeExternalIngestion } from '../ExternalIngestion.ts'
-import { makeChatSdkExternalPlatform } from './ChatSdkExternalPlatform.ts'
-import { makeChatSdkLifecycle } from './ChatSdkLifecycle.ts'
+import { SurfaceIngestion } from '../SurfaceIngestion.ts'
+import { Surfaces } from '../Surfaces.ts'
+import { makeChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
+import { makeChatSdkSurface } from '../chat-sdk/ChatSdkSurface.ts'
+import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
 } from './DiscordChannelBootstrap.ts'
-import { makeSqliteChatStateAdapter } from './SqliteChatStateAdapter.ts'
 
-export const makeDiscordLive = Effect.fn('makeDiscordLive')(function* <PromptError, EventError>(
-  application: FridayApplicationContract<PromptError, EventError>,
-) {
-  const persistence = yield* ThreadPersistence
+export const startDiscord = Effect.fn('startDiscord')(function* () {
+  const surfaces = yield* Surfaces
+  const ingestion = yield* SurfaceIngestion
   const channelId = process.env.FRIDAY_DISCORD_CHANNEL_ID
   if (!channelId) return null
 
@@ -43,14 +41,12 @@ export const makeDiscordLive = Effect.fn('makeDiscordLive')(function* <PromptErr
     bootstrapOptions.modelId = configuredModel.slice(1).join('/')
   }
   const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
-  const platform = yield* makeChatSdkExternalPlatform(chat)
-  const ingestion = yield* makeExternalIngestion(application, platform, bootstrap).pipe(
-    Effect.provideService(ThreadPersistence, persistence),
-  )
+  const surface = yield* makeChatSdkSurface('discord', chat)
+  yield* surfaces.register(surface)
   const lifecycle = yield* makeChatSdkLifecycle({
     chat,
-    onInboundMessage: ingestion.ingest,
+    onInboundMessage: (input) => ingestion.ingest(input, bootstrap),
   })
   yield* startDiscordGateway(discord)
-  return { lifecycle, platform }
+  return { lifecycle, surface }
 })

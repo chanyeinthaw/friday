@@ -4,24 +4,63 @@ import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
-import { makeFridayApplication } from './FridayApplication.ts'
+import { FridayLive as FridayServiceLive } from './Friday.ts'
+import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
 import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { ThreadPersistenceLive } from './persistence/Live.ts'
+import { SurfaceIngestionLive } from './surfaces/SurfaceIngestion.ts'
+import { SurfacesLive } from './surfaces/Surfaces.ts'
 
-export const FridayLive = Layer.mergeAll(
+const ThreadRuntimesLive = Layer.effect(
+  ThreadRuntimes,
+  Effect.gen(function* () {
+    const modelRuntime = yield* PiModelRuntime
+    const crypto = yield* Crypto.Crypto
+
+    return ThreadRuntimes.of({
+      open: (thread) =>
+        makePiThreadRuntime({ thread, modelRuntime }).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.mapError(
+            (cause) =>
+              new ThreadRuntimeError({
+                operation: 'open',
+                cause,
+              }),
+          ),
+          Effect.map((runtime) => ({
+            threadId: runtime.threadId,
+            harnessSession: runtime.harnessSession,
+            prompt: (request) =>
+              runtime
+                .prompt(request)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ThreadRuntimeError({ operation: 'prompt', cause }),
+                  ),
+                ),
+            // Pi currently exposes no event-stream error, but the service
+            // boundary permits other harnesses to expose one later.
+            events: runtime.events,
+          })),
+        ),
+    })
+  }),
+)
+
+const CoreLive = Layer.mergeAll(
   ThreadPersistenceLive,
   PiModelRuntimeLive,
   BunCrypto.layer,
   BunFileSystem.layer,
+  SurfacesLive,
 )
 
-export const makeFridayApplicationLive = Effect.fn('makeFridayApplicationLive')(function* () {
-  const modelRuntime = yield* PiModelRuntime
-  const crypto = yield* Crypto.Crypto
-  return yield* makeFridayApplication((thread) =>
-    makePiThreadRuntime({ thread, modelRuntime }).pipe(
-      Effect.provideService(Crypto.Crypto, crypto),
-    ),
-  )
-})
+const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
+const AgentLive = FridayServiceLive.pipe(Layer.provide(Layer.merge(CoreLive, RuntimeLive)))
+const IngestionLive = SurfaceIngestionLive.pipe(
+  Layer.provide(Layer.mergeAll(CoreLive, RuntimeLive, AgentLive)),
+)
+
+export const FridayLive = Layer.mergeAll(CoreLive, RuntimeLive, AgentLive, IngestionLive)

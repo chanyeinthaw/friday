@@ -1,0 +1,225 @@
+import { assert, it } from '@effect/vitest'
+import {
+  ChannelThread,
+  ExternalBinding,
+  InputMessage,
+  TurnId,
+  type Thread as ThreadType,
+  type Turn as TurnType,
+} from '@friday/contracts/conversation'
+import * as Crypto from 'effect/Crypto'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+
+import { Friday, type FridayContract } from '../Friday.ts'
+import {
+  ThreadPersistence,
+  type ThreadPersistenceContract,
+} from '../conversation/ThreadPersistence.ts'
+import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
+import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { SurfaceIngestion, SurfaceIngestionLive } from './SurfaceIngestion.ts'
+import type { SurfaceContract } from './Surface.ts'
+import { Surfaces, SurfacesLive } from './Surfaces.ts'
+
+const binding = Schema.decodeSync(ExternalBinding)({
+  platform: 'discord',
+  channelId: 'discord:channel-1',
+  sourceMessageId: 'message-1',
+  externalThreadId: 'discord:channel-1:message-1',
+})
+const input = {
+  binding,
+  message: Schema.decodeSync(InputMessage)({
+    source: 'user',
+    content: { text: 'Hello Friday', images: [] },
+    externalMessageId: 'message-1',
+  }),
+}
+const thread: ThreadType = Schema.decodeSync(ChannelThread)({
+  id: 'thread-ingestion',
+  audience: 'user',
+  parent: null,
+  harness: 'pi',
+  harnessSession: null,
+  workingDirectory: '/tmp/friday/thread-ingestion',
+  model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
+  thinkingLevel: 'max',
+  externalBinding: binding,
+  status: 'active',
+  createdAt: '2026-03-21T09:00:00.000Z',
+  updatedAt: '2026-03-21T09:00:00.000Z',
+  closedAt: null,
+})
+const decodeTurnId = Schema.decodeSync(TurnId)
+
+const testCrypto = Crypto.make({
+  randomBytes: (size) => new Uint8Array(size),
+  digest: (_algorithm, data) => Effect.succeed(data),
+})
+
+it.effect('routes a new Turn through Friday and publishes its final response', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const persistence = makePersistence(events)
+      const friday = makeFriday(events, persistence)
+      const surface = makeSurface(events)
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(ThreadPersistence, persistence),
+        Layer.succeed(Friday, friday),
+        Layer.succeed(Crypto.Crypto, testCrypto),
+        SurfacesLive,
+      )
+      const TestLive = Layer.merge(
+        dependencies,
+        SurfaceIngestionLive.pipe(Layer.provide(dependencies)),
+      )
+
+      yield* Effect.gen(function* () {
+        const ingestion = yield* SurfaceIngestion
+        const surfaces = yield* Surfaces
+        yield* surfaces.register(surface)
+        yield* ingestion.ingest(input, () => Effect.succeed(thread))
+      }).pipe(Effect.provide(TestLive))
+
+      assert.deepStrictEqual(events, [
+        'open-thread',
+        'prompt',
+        'typing-started',
+        'publish:Friday is done.',
+        'typing-stopped',
+      ])
+    }),
+  ),
+)
+
+it.effect('routes follow-up input to steering without another typing lifecycle', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const persistence = makePersistence(events, { latestIsActive: true })
+      const friday = makeFriday(events, persistence)
+      const surface = makeSurface(events)
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(ThreadPersistence, persistence),
+        Layer.succeed(Friday, friday),
+        Layer.succeed(Crypto.Crypto, testCrypto),
+        SurfacesLive,
+      )
+      const TestLive = Layer.merge(
+        dependencies,
+        SurfaceIngestionLive.pipe(Layer.provide(dependencies)),
+      )
+
+      yield* Effect.gen(function* () {
+        const ingestion = yield* SurfaceIngestion
+        const surfaces = yield* Surfaces
+        yield* surfaces.register(surface)
+        yield* ingestion.ingest(input, () => Effect.succeed(thread))
+      }).pipe(Effect.provide(TestLive))
+
+      assert.deepStrictEqual(events, ['open-thread', 'steer'])
+    }),
+  ),
+)
+
+const makeSurface = (events: Array<string>): SurfaceContract<never> => ({
+  kind: 'discord',
+  publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
+  withTyping: (_binding, effect) =>
+    Effect.sync(() => events.push('typing-started')).pipe(
+      Effect.andThen(effect),
+      Effect.ensuring(Effect.sync(() => events.push('typing-stopped'))),
+    ),
+})
+
+const makeFriday = (
+  events: Array<string>,
+  persistence: ThreadPersistenceContract,
+): FridayContract => ({
+  openThread: () =>
+    Effect.sync(() => {
+      events.push('open-thread')
+      return {
+        prompt: (turn) =>
+          persistence.createTurn(turn).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                events.push('prompt')
+              }),
+            ),
+            Effect.as({
+              turnId: turn.id,
+              awaitTerminal: Effect.succeed({
+                status: 'completed' as const,
+                turnId: turn.id,
+                agentMessage: 'Friday is done.',
+                usage: null,
+              }),
+            }),
+          ),
+        steer: () => Effect.sync(() => events.push('steer')),
+        start: Effect.void,
+        drain: Effect.void,
+      } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
+    }),
+})
+
+const makePersistence = (
+  _events: Array<string>,
+  options: { readonly latestIsActive?: boolean } = {},
+): ThreadPersistenceContract => {
+  let storedTurn: TurnType | null = null
+  const activeTurn: TurnType = {
+    id: decodeTurnId('active-turn'),
+    threadId: thread.id,
+    sequence: 1,
+    input: input.message,
+    agentMessage: null,
+    activities: [],
+    model: thread.model,
+    thinkingLevel: thread.thinkingLevel,
+    harnessTurnId: null,
+    status: 'running',
+    requestedAt: '2026-03-21T10:00:00.000Z',
+    startedAt: '2026-03-21T10:00:00.000Z',
+    completedAt: null,
+    errorMessage: null,
+    usage: null,
+  }
+  return {
+    createThread: () => Effect.void,
+    getThread: () => Effect.succeedNone,
+    findChannelThread: () => Effect.succeedNone,
+    findExternalThread: () => Effect.succeedSome(thread),
+    setThreadHarnessSession: () => Effect.void,
+    createTurn: (turn) => Effect.sync(() => void (storedTurn = turn)),
+    getTurn: () =>
+      Effect.sync(() =>
+        storedTurn === null
+          ? Option.none()
+          : Option.some({
+              ...storedTurn,
+              status: 'completed',
+              agentMessage: 'Friday is done.',
+            }),
+      ),
+    getLatestTurn: () =>
+      Effect.succeed(
+        options.latestIsActive
+          ? Option.some(activeTurn)
+          : storedTurn === null
+            ? Option.none()
+            : Option.some(storedTurn),
+      ),
+    startTurn: () => Effect.void,
+    putActivitySnapshot: () => Effect.void,
+    getActivity: () => Effect.succeedNone,
+    completeTurn: () => Effect.void,
+    interruptTurn: () => Effect.void,
+    failTurn: () => Effect.void,
+  }
+}

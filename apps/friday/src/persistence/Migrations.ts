@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { runChatSdkStateMigrations } from '../external/chat-sdk/SqliteChatStateAdapter.ts'
+import { runChatSdkStateMigrations } from '../surfaces/chat-sdk/SqliteChatStateAdapter.ts'
 
 export const runMigrations = Effect.fn('runMigrations')(function* () {
   const sql = yield* SqlClient.SqlClient

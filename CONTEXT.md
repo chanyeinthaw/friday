@@ -21,7 +21,7 @@ A non-user-facing thread created by another agent to perform delegated work. It 
 _Avoid_: Subthread, worker thread
 
 **Turn**:
-A record of one input message, its source, the final agent message, and the complete ordered activity produced while processing that input. The input source is the user, an agent, or the system.
+A record of one input message, its source, the final agent message, and the complete ordered activity produced while processing that input. The input source is the user, an agent, or the system. An active turn completes in the current Friday process; if Friday stops mid-turn, the user directs continuation with a new message rather than Friday automatically recovering the interrupted work.
 _Avoid_: Run, execution, delegation
 
 **Activity**:
@@ -52,9 +52,13 @@ _Avoid_: Tool call
 The agent execution system used by Friday. Pi is the first harness, while the design permits other harnesses in the future.
 _Avoid_: Model provider
 
-**External binding**:
-The association between a channel thread and its conversation location on a messaging platform. It identifies the platform, channel, source message, and external thread.
-_Avoid_: Discord thread
+**Surface**:
+A user-facing integration through which a person sends input to Friday and receives activity state and final responses. Discord, Slack, Linear, a web interface, and an in-memory test interface are surfaces.
+_Avoid_: External platform, transport
+
+**Surface binding**:
+The association between a channel thread and its conversation location on a surface. It identifies the surface and the surface-specific channel, initiating message, and conversation identifiers.
+_Avoid_: External binding, Discord thread
 
 **Model selection**:
 The provider and model identifier used by a thread or turn. A thread stores the current selection; a turn stores the effective selection used for that input.

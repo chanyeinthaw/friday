@@ -4,14 +4,13 @@ import { BunRuntime } from '@effect/platform-bun'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 
-import { FridayLive, makeFridayApplicationLive } from './Live.ts'
-import { makeDiscordLive } from './external/chat-sdk/DiscordLive.ts'
+import { FridayLive } from './Live.ts'
+import { startDiscord } from './surfaces/discord/DiscordLive.ts'
 import { FridaySqliteLive } from './persistence/Live.ts'
 
 const program = Effect.scoped(
   Effect.gen(function* () {
-    const application = yield* makeFridayApplicationLive()
-    yield* makeDiscordLive(application).pipe(Effect.provide(FridaySqliteLive))
+    yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
     yield* Console.log('Friday is ready.')
     return yield* Effect.never
   }),

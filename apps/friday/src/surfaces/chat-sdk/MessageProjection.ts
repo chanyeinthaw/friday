@@ -9,7 +9,7 @@ import {
 import type { Message, Thread } from 'chat'
 import * as Schema from 'effect/Schema'
 
-import type { ExternalInboundMessage } from '../ExternalPlatform.ts'
+import type { SurfaceInput } from '../Surface.ts'
 
 const decodePlatform = Schema.decodeUnknownSync(ExternalPlatform)
 const decodeChannelId = Schema.decodeUnknownSync(ExternalChannelId)
@@ -24,7 +24,7 @@ export type ChatSdkMessageProjectionSource = Pick<Message, 'id' | 'text'>
 export const projectChatSdkMessage = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
-): ExternalInboundMessage => {
+): SurfaceInput => {
   const binding: ExternalBinding = {
     platform: decodePlatform(thread.adapter.name),
     channelId: decodeChannelId(thread.channelId),

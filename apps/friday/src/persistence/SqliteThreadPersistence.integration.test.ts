@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
 
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
+const decodeToolResultActivity = Schema.decodeSync(ToolResultActivity)
 
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-1',
@@ -250,6 +251,30 @@ test('creates and retrieves a pending Turn', async () => {
   await rm(directory, { recursive: true, force: true })
 
   expect(persisted).toEqual(turn)
+})
+
+test('allocates one durable Activity sequence across runtime events and steering', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(thread)
+    yield* persistence.createTurn(turn)
+    yield* persistence.putActivitySnapshot(turn.id, activeActivity)
+    yield* persistence.putActivitySnapshot(
+      turn.id,
+      decodeToolResultActivity({
+        ...activeActivity,
+        id: 'activity-2',
+        sequence: 0,
+        callId: 'call-2',
+      }),
+    )
+    const stored = yield* persistence.getTurn(turn.id)
+    expect(Option.getOrNull(stored)?.activities.map(({ sequence }) => sequence)).toEqual([0, 1])
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
 })
 
 test('persists Turn lifecycle and the latest Activity snapshot', async () => {

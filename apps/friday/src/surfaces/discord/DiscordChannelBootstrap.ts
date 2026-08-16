@@ -15,7 +15,7 @@ import * as Schema from 'effect/Schema'
 import { join } from 'node:path'
 
 import { FRIDAY_HOME } from '../../FridayHome.ts'
-import type { ExternalInboundMessage } from '../ExternalPlatform.ts'
+import type { SurfaceInput } from '../Surface.ts'
 
 const ChannelMetadata = Schema.Struct({
   topic: Schema.optional(Schema.NullOr(Schema.String)),
@@ -88,7 +88,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
   const crypto = yield* Crypto.Crypto
   const fileSystem = yield* FileSystem.FileSystem
 
-  return Effect.fn('DiscordThreadBootstrap.create')(function* (inbound: ExternalInboundMessage) {
+  return Effect.fn('DiscordThreadBootstrap.create')(function* (inbound: SurfaceInput) {
     const channelContext = yield* Effect.tryPromise({
       try: async () => {
         const [channel, recent] = await Promise.all([

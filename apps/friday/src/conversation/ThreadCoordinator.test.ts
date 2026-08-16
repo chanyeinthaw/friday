@@ -6,7 +6,9 @@ import {
   Turn,
   type Turn as TurnType,
 } from '@friday/contracts/conversation'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
@@ -140,6 +142,32 @@ it.effect('persists a Turn before prompting its runtime', () =>
   }),
 )
 
+it.effect('completes the Turn handle after a prompt delivery failure is persisted', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const operations: Array<RecordedOperation> = []
+      const runtime = {
+        threadId: turn.threadId,
+        harnessSession,
+        prompt: () => Effect.fail('prompt-boom'),
+        events: Stream.never,
+      }
+      const coordinator = yield* makeThreadCoordinator(runtime).pipe(
+        Effect.provideService(ThreadPersistence, makePersistence(operations)),
+      )
+
+      const handle = yield* coordinator.prompt(turn)
+      const terminal = yield* handle.awaitTerminal
+
+      assert.strictEqual(terminal.status, 'failed')
+      assert.deepStrictEqual(
+        operations.map(({ type }) => type),
+        ['create-turn', 'fail-turn'],
+      )
+    }),
+  ),
+)
+
 it.effect('persists steering before delivering it to the runtime', () =>
   Effect.gen(function* () {
     const operations: Array<RecordedOperation> = []
@@ -162,6 +190,48 @@ it.effect('persists steering before delivering it to the runtime', () =>
       ['put-activity', 'prompt'],
     )
   }),
+)
+
+it.effect('signals completion only after the terminal event is persisted', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const operations: Array<RecordedOperation> = []
+      const events = yield* Deferred.make<ReadonlyArray<ThreadRuntimeEvent>>()
+      const runtime = {
+        threadId: turn.threadId,
+        harnessSession,
+        prompt: () => Effect.void,
+        events: Stream.unwrap(
+          Deferred.await(events).pipe(Effect.map((items) => Stream.fromIterable(items))),
+        ),
+      }
+      const coordinator = yield* makeThreadCoordinator(runtime).pipe(
+        Effect.provideService(ThreadPersistence, makePersistence(operations)),
+      )
+      yield* coordinator.start
+      const handle = yield* coordinator.prompt(turn)
+      const waiter = yield* handle.awaitTerminal.pipe(Effect.forkChild)
+
+      yield* Effect.yieldNow
+      assert.strictEqual(waiter.pollUnsafe(), undefined)
+
+      yield* Deferred.succeed(events, runtimeEvents)
+      const terminal = yield* Fiber.join(waiter)
+
+      assert.strictEqual(terminal.status, 'completed')
+      assert.deepStrictEqual(
+        operations.map(({ type }) => type),
+        [
+          'create-turn',
+          'start-turn',
+          'put-activity',
+          'put-activity',
+          'put-activity',
+          'complete-turn',
+        ],
+      )
+    }),
+  ),
 )
 
 it.effect('persists active snapshots and the completed Activity in event order', () =>

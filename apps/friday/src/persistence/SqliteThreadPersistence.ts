@@ -282,7 +282,21 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     turnId: TurnType['id'],
     activity: ActivityType,
   ) {
-    const payload = yield* encodeActivityJson(activity)
+    const existing = yield* getActivity(activity.id)
+    const nextSequence = Option.isSome(existing)
+      ? existing.value.sequence
+      : Number(
+          (yield* sql<{ readonly next_sequence: number }>`
+            SELECT COALESCE(MAX(sequence) + 1, 0) AS next_sequence
+            FROM activities
+            WHERE turn_id = ${turnId}
+          `)[0]?.next_sequence ?? 0,
+        )
+    const normalizedActivity: ActivityType = {
+      ...activity,
+      sequence: nextSequence,
+    }
+    const payload = yield* encodeActivityJson(normalizedActivity)
 
     yield* sql`
       INSERT INTO activities (
@@ -296,15 +310,15 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
         updated_at,
         completed_at
       ) VALUES (
-        ${activity.id},
+        ${normalizedActivity.id},
         ${turnId},
-        ${activity.sequence},
-        ${activity.type},
-        ${activity.status},
+        ${normalizedActivity.sequence},
+        ${normalizedActivity.type},
+        ${normalizedActivity.status},
         ${payload},
-        ${activity.createdAt},
-        ${activity.updatedAt},
-        ${activity.completedAt}
+        ${normalizedActivity.createdAt},
+        ${normalizedActivity.updatedAt},
+        ${normalizedActivity.completedAt}
       )
       ON CONFLICT (activity_id) DO UPDATE SET
         status = excluded.status,

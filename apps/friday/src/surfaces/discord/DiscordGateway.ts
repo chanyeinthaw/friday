@@ -2,7 +2,7 @@ import type { DiscordAdapter } from '@chat-adapter/discord'
 import * as Effect from 'effect/Effect'
 import type * as Scope from 'effect/Scope'
 
-import { ChatSdkLifecycleError } from './Errors.ts'
+import { ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
 
 const GATEWAY_RESIDENT_DURATION_MS = 2_147_000_000
 
