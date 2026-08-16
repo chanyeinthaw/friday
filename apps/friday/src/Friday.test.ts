@@ -17,11 +17,11 @@ const thread = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-application',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
   thinkingLevel: 'max',
-  externalBinding: {
-    platform: 'discord',
+  surfaceBinding: {
+    surface: 'discord',
     channelId: 'channel-application',
     sourceMessageId: 'message-application',
-    externalThreadId: 'external-thread-application',
+    conversationId: 'surface-conversation-application',
   },
   status: 'active',
   createdAt: '2026-03-21T09:00:00.000Z',
@@ -102,8 +102,7 @@ it.effect('opens a Thread through the runtime service and returns its started co
 const makePersistence = (operations: Array<string>): ThreadPersistenceContract => ({
   createThread: () => Effect.void,
   getThread: () => Effect.succeedNone,
-  findChannelThread: () => Effect.succeedNone,
-  findExternalThread: () => Effect.succeedNone,
+  findSurfaceThread: () => Effect.succeedNone,
   setThreadHarnessSession: () =>
     Effect.sync(() => {
       operations.push('set-harness-session')

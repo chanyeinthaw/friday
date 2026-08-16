@@ -13,11 +13,11 @@ A durable Friday conversation with an audience, harness session, working directo
 _Avoid_: Main thread, subthread
 
 **Channel thread**:
-A user-facing thread that represents the continuing conversation for one external channel and has an external binding to that conversation.
+A user-facing thread that represents one continuing conversation on a Surface and has a Surface binding to that conversation.
 _Avoid_: Main thread, user thread
 
 **Agent thread**:
-A non-user-facing thread created by another agent to perform delegated work. It reports to its parent thread and parent turn rather than directly to an external channel.
+A non-user-facing thread created by another agent to perform delegated work. It reports to its parent thread and parent turn rather than directly to a Surface.
 _Avoid_: Subthread, worker thread
 
 **Turn**:
@@ -33,7 +33,7 @@ A user, agent, or system message accepted while a turn is active and passed to t
 _Avoid_: Follow-up turn, queued turn
 
 **Commentary**:
-An intermediate agent message produced during a turn. Commentary is distinct from the final agent message and is not sent to the external channel.
+An intermediate agent message produced during a turn. Commentary is distinct from the final agent message and is not sent to the user-facing Surface.
 _Avoid_: Final response, delivery
 
 **Channel agent**:

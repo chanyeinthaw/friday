@@ -1,4 +1,4 @@
-import type { ExternalBinding } from '@friday/contracts/conversation'
+import type { SurfaceBinding } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -26,10 +26,10 @@ const isSurfaceNotFoundError = Schema.is(SurfaceNotFoundError)
 const isSurfaceOperationError = Schema.is(SurfaceOperationError)
 
 export interface RegisteredSurface {
-  readonly kind: ExternalBinding['platform']
+  readonly kind: SurfaceBinding['surface']
   readonly publish: (publication: SurfacePublication) => Effect.Effect<void, SurfaceOperationError>
   readonly withTyping: <A, E, R>(
-    binding: ExternalBinding,
+    binding: SurfaceBinding,
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | SurfaceOperationError, R>
 }
@@ -40,7 +40,7 @@ export interface SurfacesContract {
     publication: SurfacePublication,
   ) => Effect.Effect<void, SurfaceNotFoundError | SurfaceOperationError>
   readonly withTyping: <A, E, R>(
-    binding: ExternalBinding,
+    binding: SurfaceBinding,
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | SurfaceNotFoundError | SurfaceOperationError, R>
 }
@@ -52,10 +52,10 @@ export class Surfaces extends Context.Service<Surfaces, SurfacesContract>()(
 export const SurfacesLive = Layer.effect(
   Surfaces,
   Effect.sync(() => {
-    const surfaces = new Map<ExternalBinding['platform'], RegisteredSurface>()
+    const surfaces = new Map<SurfaceBinding['surface'], RegisteredSurface>()
 
     const find = (
-      kind: ExternalBinding['platform'],
+      kind: SurfaceBinding['surface'],
     ): Effect.Effect<RegisteredSurface, SurfaceNotFoundError> => {
       const surface = surfaces.get(kind)
       return surface ? Effect.succeed(surface) : Effect.fail(new SurfaceNotFoundError({ kind }))
@@ -95,24 +95,24 @@ export const SurfacesLive = Layer.effect(
         )
       },
       publish: (publication) =>
-        find(publication.binding.platform).pipe(
+        find(publication.binding.surface).pipe(
           Effect.flatMap((surface) => surface.publish(publication)),
           Effect.mapError((cause) =>
             isSurfaceNotFoundError(cause)
               ? cause
               : new SurfaceOperationError({
-                  kind: publication.binding.platform,
+                  kind: publication.binding.surface,
                   cause,
                 }),
           ),
         ),
       withTyping: (binding, effect) =>
-        find(binding.platform).pipe(
+        find(binding.surface).pipe(
           Effect.flatMap((surface) => surface.withTyping(binding, effect)),
           Effect.mapError((cause) =>
             isSurfaceNotFoundError(cause)
               ? cause
-              : new SurfaceOperationError({ kind: binding.platform, cause }),
+              : new SurfaceOperationError({ kind: binding.surface, cause }),
           ),
         ),
     })

@@ -2,8 +2,8 @@
 
 import { assert, it } from '@effect/vitest'
 import {
-  ExternalBinding,
-  type ExternalBinding as ExternalBindingType,
+  SurfaceBinding,
+  type SurfaceBinding as SurfaceBindingType,
 } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -14,11 +14,11 @@ import { TestClock } from 'effect/testing'
 
 import { makeChatSdkSurface, type ChatSdkPublicationSource } from './ChatSdkSurface.ts'
 
-const binding: ExternalBindingType = Schema.decodeSync(ExternalBinding)({
-  platform: 'discord',
+const binding: SurfaceBindingType = Schema.decodeSync(SurfaceBinding)({
+  surface: 'discord',
   channelId: 'discord:channel-1',
   sourceMessageId: 'message-1',
-  externalThreadId: 'discord:channel-1:message-1',
+  conversationId: 'discord:channel-1:message-1',
 })
 
 const makeTypingSource = (calls: Array<string>): ChatSdkPublicationSource => ({

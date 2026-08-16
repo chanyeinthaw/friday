@@ -1,4 +1,4 @@
-/* oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, eslint/no-underscore-dangle, typescript/no-unsafe-type-assertion -- Chat SDK's StateAdapter defines arbitrary JSON values and caller-selected get<T>; implemented methods validate values through Effect Schema before crossing that external interface. */
+/* oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, eslint/no-underscore-dangle, typescript/no-unsafe-type-assertion -- Chat SDK's StateAdapter defines arbitrary JSON values and caller-selected get<T>; implemented methods validate values through Effect Schema before crossing that SDK interface. */
 
 import { Message, type SerializedMessage, type StateAdapter } from 'chat'
 import * as Clock from 'effect/Clock'

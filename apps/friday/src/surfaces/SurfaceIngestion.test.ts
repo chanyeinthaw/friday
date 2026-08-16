@@ -1,7 +1,7 @@
 import { assert, it } from '@effect/vitest'
 import {
   ChannelThread,
-  ExternalBinding,
+  SurfaceBinding,
   InputMessage,
   TurnId,
   type Thread as ThreadType,
@@ -24,18 +24,18 @@ import { SurfaceIngestion, SurfaceIngestionLive } from './SurfaceIngestion.ts'
 import type { SurfaceContract } from './Surface.ts'
 import { Surfaces, SurfacesLive } from './Surfaces.ts'
 
-const binding = Schema.decodeSync(ExternalBinding)({
-  platform: 'discord',
+const binding = Schema.decodeSync(SurfaceBinding)({
+  surface: 'discord',
   channelId: 'discord:channel-1',
   sourceMessageId: 'message-1',
-  externalThreadId: 'discord:channel-1:message-1',
+  conversationId: 'discord:channel-1:message-1',
 })
 const input = {
   binding,
   message: Schema.decodeSync(InputMessage)({
     source: 'user',
     content: { text: 'Hello Friday', images: [] },
-    externalMessageId: 'message-1',
+    surfaceMessageId: 'message-1',
   }),
 }
 const thread: ThreadType = Schema.decodeSync(ChannelThread)({
@@ -47,7 +47,7 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-ingestion',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
   thinkingLevel: 'max',
-  externalBinding: binding,
+  surfaceBinding: binding,
   status: 'active',
   createdAt: '2026-03-21T09:00:00.000Z',
   updatedAt: '2026-03-21T09:00:00.000Z',
@@ -193,8 +193,7 @@ const makePersistence = (
   return {
     createThread: () => Effect.void,
     getThread: () => Effect.succeedNone,
-    findChannelThread: () => Effect.succeedNone,
-    findExternalThread: () => Effect.succeedSome(thread),
+    findSurfaceThread: () => Effect.succeedSome(thread),
     setThreadHarnessSession: () => Effect.void,
     createTurn: (turn) => Effect.sync(() => void (storedTurn = turn)),
     getTurn: () =>

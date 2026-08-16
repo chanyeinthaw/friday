@@ -1,22 +1,22 @@
 import { assert, it } from '@effect/vitest'
-import { ExternalBinding } from '@friday/contracts/conversation'
+import { SurfaceBinding } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import type { SurfaceContract } from './Surface.ts'
 import { Surfaces, SurfacesLive } from './Surfaces.ts'
 
-const discordBinding = Schema.decodeSync(ExternalBinding)({
-  platform: 'discord',
+const discordBinding = Schema.decodeSync(SurfaceBinding)({
+  surface: 'discord',
   channelId: 'channel-1',
   sourceMessageId: 'message-1',
-  externalThreadId: 'thread-1',
+  conversationId: 'thread-1',
 })
-const slackBinding = Schema.decodeSync(ExternalBinding)({
-  platform: 'slack',
+const slackBinding = Schema.decodeSync(SurfaceBinding)({
+  surface: 'slack',
   channelId: 'channel-2',
   sourceMessageId: 'message-2',
-  externalThreadId: 'thread-2',
+  conversationId: 'thread-2',
 })
 
 it.effect('routes simultaneous surface registrations by binding platform', () =>

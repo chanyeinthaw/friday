@@ -12,6 +12,7 @@ import {
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
+import { Database } from 'bun:sqlite'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,11 +31,11 @@ const thread = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-1',
   model: { provider: 'anthropic', modelId: 'claude-sonnet' },
   thinkingLevel: 'medium',
-  externalBinding: {
-    platform: 'discord',
+  surfaceBinding: {
+    surface: 'discord',
     channelId: 'channel-1',
     sourceMessageId: 'message-1',
-    externalThreadId: 'external-thread-1',
+    conversationId: 'surface-conversation-1',
   },
   status: 'active',
   createdAt: '2026-03-21T09:00:00.000Z',
@@ -54,7 +55,7 @@ const agentThread = Schema.decodeSync(AgentThread)({
   workingDirectory: '/tmp/friday/agent-thread-1',
   model: { provider: 'anthropic', modelId: 'claude-sonnet' },
   thinkingLevel: 'high',
-  externalBinding: null,
+  surfaceBinding: null,
   status: 'active',
   createdAt: '2026-03-21T10:00:00.000Z',
   updatedAt: '2026-03-21T10:00:00.000Z',
@@ -113,31 +114,72 @@ const completedActivity = Schema.decodeSync(ToolResultActivity)({
   completedAt: '2026-03-21T10:00:03.000Z',
 })
 
-test('finds an active channel Thread by external platform and channel', async () => {
+test('migrates legacy external JSON fields to Surface terminology', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
   const filename = join(directory, 'friday.sqlite')
+  const database = new Database(filename)
+  database.exec(`
+    CREATE TABLE threads (
+      thread_id TEXT PRIMARY KEY,
+      audience TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT
+    );
+  `)
+  const legacy = {
+    ...thread,
+    surfaceBinding: undefined,
+    externalBinding: {
+      platform: 'discord',
+      channelId: 'channel-legacy',
+      sourceMessageId: 'message-legacy',
+      externalThreadId: 'conversation-legacy',
+    },
+  }
+  database
+    .prepare(
+      `INSERT INTO threads
+       (thread_id, audience, status, payload_json, created_at, updated_at, closed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      thread.id,
+      thread.audience,
+      thread.status,
+      JSON.stringify(legacy),
+      thread.createdAt,
+      thread.updatedAt,
+      thread.closedAt,
+    )
+  database.close()
+
   const program = Effect.gen(function* () {
     const persistence = yield* makeSqliteThreadPersistence()
-    yield* persistence.createThread(thread)
-    const stored = yield* persistence.findChannelThread({
-      platform: thread.externalBinding.platform,
-      channelId: thread.externalBinding.channelId,
-    })
-    expect(Option.getOrNull(stored)?.id).toBe(thread.id)
+    const stored = Option.getOrThrow(yield* persistence.getThread(thread.id))
+    expect(stored.audience).toBe('user')
+    if (stored.audience === 'user') {
+      expect(stored.surfaceBinding.surface).toBe('discord')
+      expect(String(stored.surfaceBinding.channelId)).toBe('channel-legacy')
+      expect(String(stored.surfaceBinding.sourceMessageId)).toBe('message-legacy')
+      expect(String(stored.surfaceBinding.conversationId)).toBe('conversation-legacy')
+    }
   }).pipe(Effect.provide(SqliteClient.layer({ filename })))
   await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
 })
 
-test('finds a Friday Thread by its external Discord thread ID', async () => {
+test('finds a Friday Thread by its Surface conversation', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
   const filename = join(directory, 'friday.sqlite')
   const program = Effect.gen(function* () {
     const persistence = yield* makeSqliteThreadPersistence()
     yield* persistence.createThread(thread)
-    const stored = yield* persistence.findExternalThread({
-      platform: thread.externalBinding.platform,
-      externalThreadId: thread.externalBinding.externalThreadId,
+    const stored = yield* persistence.findSurfaceThread({
+      surface: thread.surfaceBinding.surface,
+      conversationId: thread.surfaceBinding.conversationId,
     })
     expect(Option.getOrNull(stored)?.id).toBe(thread.id)
   }).pipe(Effect.provide(SqliteClient.layer({ filename })))

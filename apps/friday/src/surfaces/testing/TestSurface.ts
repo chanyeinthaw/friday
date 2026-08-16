@@ -1,4 +1,4 @@
-import type { ExternalBinding, InputMessage } from '@friday/contracts/conversation'
+import type { SurfaceBinding, InputMessage } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -14,11 +14,11 @@ export type TestSurfaceEvent =
     }
   | {
       readonly type: 'typing-started'
-      readonly binding: ExternalBinding
+      readonly binding: SurfaceBinding
     }
   | {
       readonly type: 'typing-stopped'
-      readonly binding: ExternalBinding
+      readonly binding: SurfaceBinding
     }
   | {
       readonly type: 'message-published'
@@ -29,7 +29,7 @@ export interface TestSurfaceContract extends SurfaceContract<never> {
   readonly connect: (
     onInbound: (inbound: SurfaceInput) => Effect.Effect<void>,
   ) => Effect.Effect<boolean>
-  readonly send: (binding: ExternalBinding, message: InputMessage) => Effect.Effect<void>
+  readonly send: (binding: SurfaceBinding, message: InputMessage) => Effect.Effect<void>
   readonly events: Effect.Effect<ReadonlyArray<TestSurfaceEvent>>
   readonly clearEvents: Effect.Effect<void>
 }

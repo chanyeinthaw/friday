@@ -1,5 +1,5 @@
 import { assert, it } from '@effect/vitest'
-import { ExternalBinding, InputMessage } from '@friday/contracts/conversation'
+import { SurfaceBinding, InputMessage } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -7,16 +7,16 @@ import * as Schema from 'effect/Schema'
 
 import { TestSurface, TestSurfaceLive } from './TestSurface.ts'
 
-const binding = Schema.decodeSync(ExternalBinding)({
-  platform: 'discord',
+const binding = Schema.decodeSync(SurfaceBinding)({
+  surface: 'discord',
   channelId: 'discord:guild:channel',
   sourceMessageId: 'message-1',
-  externalThreadId: 'discord:guild:channel:thread-1',
+  conversationId: 'discord:guild:channel:thread-1',
 })
 const message = Schema.decodeSync(InputMessage)({
   source: 'user',
   content: { text: 'Hello Friday', images: [] },
-  externalMessageId: 'message-1',
+  surfaceMessageId: 'message-1',
 })
 
 it.effect('drives normalized inbound messages and records final publication', () =>

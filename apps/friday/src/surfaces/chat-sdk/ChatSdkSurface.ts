@@ -1,4 +1,4 @@
-import type { ExternalBinding } from '@friday/contracts/conversation'
+import type { SurfaceBinding } from '@friday/contracts/conversation'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 
@@ -18,7 +18,7 @@ export interface ChatSdkSurfaceOptions {
 
 export const makeChatSdkSurface = Effect.fn('makeChatSdkSurface')(
   (
-    kind: ExternalBinding['platform'],
+    kind: SurfaceBinding['surface'],
     chat: ChatSdkPublicationSource,
     options: ChatSdkSurfaceOptions = {},
   ): Effect.Effect<SurfaceContract<ChatSdkPublicationError>> =>
@@ -26,8 +26,7 @@ export const makeChatSdkSurface = Effect.fn('makeChatSdkSurface')(
       kind,
       publish: Effect.fn('ChatSdkSurface.publish')((publication: SurfacePublication) =>
         Effect.tryPromise({
-          try: () =>
-            chat.thread(String(publication.binding.externalThreadId)).post(publication.text),
+          try: () => chat.thread(String(publication.binding.conversationId)).post(publication.text),
           catch: (cause) =>
             new ChatSdkPublicationError({
               operation: 'publish',
@@ -36,10 +35,10 @@ export const makeChatSdkSurface = Effect.fn('makeChatSdkSurface')(
         }).pipe(Effect.asVoid),
       ),
       withTyping: Effect.fn('ChatSdkSurface.withTyping')(function* <A, E, R>(
-        binding: ExternalBinding,
+        binding: SurfaceBinding,
         effect: Effect.Effect<A, E, R>,
       ) {
-        const thread = chat.thread(String(binding.externalThreadId))
+        const thread = chat.thread(String(binding.conversationId))
         const sendTyping = Effect.tryPromise({
           try: () => thread.startTyping(),
           catch: (cause) =>
@@ -62,7 +61,7 @@ export const makeChatSdkSurface = Effect.fn('makeChatSdkSurface')(
               error,
             ).pipe(
               Effect.annotateLogs({
-                threadId: String(binding.externalThreadId),
+                threadId: String(binding.conversationId),
               }),
             ),
           ),

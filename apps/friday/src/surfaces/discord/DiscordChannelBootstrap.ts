@@ -104,12 +104,12 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
     })
     const metadata = Option.getOrNull(decodeChannelMetadata(channelContext.channel.metadata.raw))
     const recentMessages = channelContext.recent.messages
-      .filter(({ id }) => id !== inbound.message.externalMessageId)
+      .filter(({ id }) => id !== inbound.message.surfaceMessageId)
       .map((message) => ({
         author: message.author.fullName || message.author.userName,
         text: message.text,
       }))
-    const workspaceName = String(inbound.binding.externalThreadId).replaceAll(':', '-')
+    const workspaceName = String(inbound.binding.conversationId).replaceAll(':', '-')
     const workingDirectory = join(FRIDAY_HOME, 'workspaces', workspaceName)
     yield* fileSystem.makeDirectory(workingDirectory, { recursive: true }).pipe(
       Effect.andThen(
@@ -119,7 +119,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
             channelName: channelContext.channel.name ?? String(inbound.binding.channelId),
             channelDescription: metadata?.topic ?? '',
             channelId: String(inbound.binding.channelId),
-            discordThreadId: String(inbound.binding.externalThreadId),
+            discordThreadId: String(inbound.binding.conversationId),
             initiatingMessage: inbound.message.content.text,
             recentMessages,
           }),
@@ -142,7 +142,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
         modelId: options.modelId ?? 'deepseek-v4-flash',
       },
       thinkingLevel: options.thinkingLevel ?? 'max',
-      externalBinding: inbound.binding,
+      surfaceBinding: inbound.binding,
       status: 'active',
       createdAt: timestamp,
       updatedAt: timestamp,

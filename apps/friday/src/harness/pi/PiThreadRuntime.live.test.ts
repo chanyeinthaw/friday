@@ -61,11 +61,11 @@ liveTest(
       workingDirectory: directory,
       model: { provider, modelId },
       thinkingLevel,
-      externalBinding: {
-        platform: 'discord',
+      surfaceBinding: {
+        surface: 'discord',
         channelId: 'live-channel',
         sourceMessageId: 'live-message',
-        externalThreadId: 'live-thread',
+        conversationId: 'live-thread',
       },
       status: 'active',
       createdAt: '2026-03-21T09:00:00.000Z',
@@ -170,11 +170,11 @@ liveCompactionTest(
       workingDirectory: directory,
       model: { provider, modelId },
       thinkingLevel,
-      externalBinding: {
-        platform: 'discord',
+      surfaceBinding: {
+        surface: 'discord',
         channelId: 'live-compaction-channel',
         sourceMessageId: 'live-compaction-message',
-        externalThreadId: 'live-compaction-thread',
+        conversationId: 'live-compaction-thread',
       },
       status: 'active',
       createdAt: '2026-03-21T09:00:00.000Z',

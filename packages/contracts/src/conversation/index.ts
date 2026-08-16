@@ -1,5 +1,5 @@
 export * from './activity.ts'
-export * from './external.ts'
+export * from './surface.ts'
 export * from './harness.ts'
 export * from './ids.ts'
 export * from './message.ts'

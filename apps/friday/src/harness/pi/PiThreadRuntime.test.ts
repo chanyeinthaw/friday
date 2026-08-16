@@ -101,11 +101,11 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
         workingDirectory: '/tmp/friday/thread-lifecycle',
         model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
         thinkingLevel: 'max',
-        externalBinding: {
-          platform: 'discord',
+        surfaceBinding: {
+          surface: 'discord',
           channelId: 'channel-lifecycle',
           sourceMessageId: 'message-lifecycle',
-          externalThreadId: 'external-thread-lifecycle',
+          conversationId: 'surface-conversation-lifecycle',
         },
         status: 'active',
         createdAt: '2026-03-21T09:00:00.000Z',
@@ -208,11 +208,11 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
         workingDirectory: '/tmp/friday/thread-compaction',
         model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
         thinkingLevel: 'max',
-        externalBinding: {
-          platform: 'discord',
+        surfaceBinding: {
+          surface: 'discord',
           channelId: 'channel-compaction',
           sourceMessageId: 'message-compaction',
-          externalThreadId: 'external-thread-compaction',
+          conversationId: 'surface-conversation-compaction',
         },
         status: 'active',
         createdAt: '2026-03-21T09:00:00.000Z',
@@ -309,11 +309,11 @@ it.effect('fails the active Turn without overtaking failed deferred steering', (
           workingDirectory: '/tmp/friday/thread-drain-failure',
           model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
           thinkingLevel: 'max',
-          externalBinding: {
-            platform: 'discord',
+          surfaceBinding: {
+            surface: 'discord',
             channelId: 'channel-drain-failure',
             sourceMessageId: 'message-drain-failure',
-            externalThreadId: 'external-thread-drain-failure',
+            conversationId: 'surface-conversation-drain-failure',
           },
           status: 'active',
           createdAt: '2026-03-21T09:00:00.000Z',

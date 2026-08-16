@@ -5,7 +5,7 @@ import {
   SteeringActivity,
   Turn,
   TurnId,
-  type ExternalBinding,
+  type SurfaceBinding,
   type SteeringActivity as SteeringActivityType,
   type Thread,
   type Turn as TurnType,
@@ -83,12 +83,12 @@ export const SurfaceIngestionLive = Layer.effect(
 
     return SurfaceIngestion.of({
       ingest: (input, createThread) => {
-        const key = `${input.binding.platform}:${input.binding.channelId}`
+        const key = `${input.binding.surface}:${input.binding.channelId}`
         const accepted = semaphore.withPermit(key)(
           Effect.gen(function* () {
-            const foundThread = yield* persistence.findExternalThread({
-              platform: input.binding.platform,
-              externalThreadId: input.binding.externalThreadId,
+            const foundThread = yield* persistence.findSurfaceThread({
+              surface: input.binding.surface,
+              conversationId: input.binding.conversationId,
             })
             const found = Option.isSome(foundThread)
               ? foundThread.value
@@ -122,7 +122,7 @@ export const SurfaceIngestionLive = Layer.effect(
                   TerminalTurn,
                   ThreadRuntimeError | ThreadPersistenceError
                 >
-                readonly publicationBinding: ExternalBinding
+                readonly publicationBinding: SurfaceBinding
               }>()
             }
 

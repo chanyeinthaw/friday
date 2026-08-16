@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { ExternalBinding } from './external.ts'
+import { SurfaceBinding } from './surface.ts'
 import { HarnessId, HarnessSession } from './harness.ts'
 import { ThreadId, TurnId } from './ids.ts'
 import { ModelSelection, ThinkingLevel } from './model.ts'
@@ -41,7 +41,7 @@ export const ChannelThread = Schema.Struct({
   ...ThreadFields,
   audience: Schema.Literal('user'),
   parent: Schema.Null,
-  externalBinding: ExternalBinding,
+  surfaceBinding: SurfaceBinding,
 })
 export type ChannelThread = typeof ChannelThread.Type
 
@@ -49,7 +49,7 @@ export const AgentThread = Schema.Struct({
   ...ThreadFields,
   audience: Schema.Literal('agent'),
   parent: ParentReference,
-  externalBinding: Schema.Null,
+  surfaceBinding: Schema.Null,
 })
 export type AgentThread = typeof AgentThread.Type
 
