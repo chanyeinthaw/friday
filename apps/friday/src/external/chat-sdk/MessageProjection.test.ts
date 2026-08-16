@@ -1,0 +1,26 @@
+import { assert, it } from '@effect/vitest'
+
+import { projectChatSdkMessage } from './MessageProjection.ts'
+
+it('projects Chat SDK identifiers and text into Friday contracts', () => {
+  const inbound = projectChatSdkMessage(
+    {
+      adapter: { name: 'discord' },
+      channelId: 'discord-channel-1',
+      id: 'discord-thread-1',
+    },
+    {
+      id: 'discord-message-1',
+      text: 'Hello Friday',
+    },
+  )
+
+  assert.strictEqual(inbound.binding.platform, 'discord')
+  assert.strictEqual(String(inbound.binding.channelId), 'discord-channel-1')
+  assert.strictEqual(String(inbound.binding.sourceMessageId), 'discord-message-1')
+  assert.strictEqual(String(inbound.binding.externalThreadId), 'discord-thread-1')
+  assert.strictEqual(inbound.message.source, 'user')
+  assert.strictEqual(inbound.message.content.text, 'Hello Friday')
+  assert.deepStrictEqual(inbound.message.content.images, [])
+  assert.strictEqual(String(inbound.message.externalMessageId), 'discord-message-1')
+})

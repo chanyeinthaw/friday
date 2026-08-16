@@ -1,10 +1,13 @@
 import * as Effect from 'effect/Effect'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
+import { runChatSdkStateMigrations } from '../external/chat-sdk/SqliteChatStateAdapter.ts'
+
 export const runMigrations = Effect.fn('runMigrations')(function* () {
   const sql = yield* SqlClient.SqlClient
 
   yield* sql`PRAGMA foreign_keys = ON`
+  yield* runChatSdkStateMigrations()
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS threads (

@@ -14,10 +14,12 @@
     "test:live:pi": "bun test ./src/harness/pi/PiThreadRuntime.live.test.ts"
   },
   "dependencies": {
+    "@chat-adapter/discord": "4.38.0",
     "@earendil-works/pi-coding-agent": "0.84.2",
     "@effect/platform-bun": "4.0.0-rc.109",
     "@effect/sql-sqlite-bun": "4.0.0-rc.109",
     "@friday/contracts": "workspace:*",
+    "chat": "4.38.0",
     "effect": "catalog:"
   },
   "devDependencies": {
