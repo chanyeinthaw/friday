@@ -192,6 +192,7 @@ const makePersistence = (operations: Array<RecordedOperation>): ThreadPersistenc
   createThread: () => Effect.void,
   getThread: () => Effect.succeedNone,
   findChannelThread: () => Effect.succeedNone,
+  findExternalThread: () => Effect.succeedNone,
   setThreadHarnessSession: () => Effect.void,
   createTurn: (value) => Effect.sync(() => operations.push({ type: 'create-turn', value })),
   getTurn: () => Effect.succeedNone,

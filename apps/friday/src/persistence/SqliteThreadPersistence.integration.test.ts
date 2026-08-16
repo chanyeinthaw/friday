@@ -128,6 +128,22 @@ test('finds an active channel Thread by external platform and channel', async ()
   await rm(directory, { recursive: true, force: true })
 })
 
+test('finds a Friday Thread by its external Discord thread ID', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(thread)
+    const stored = yield* persistence.findExternalThread({
+      platform: thread.externalBinding.platform,
+      externalThreadId: thread.externalBinding.externalThreadId,
+    })
+    expect(Option.getOrNull(stored)?.id).toBe(thread.id)
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+})
+
 test('retrieves the latest Turn for a Thread', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
   const filename = join(directory, 'friday.sqlite')

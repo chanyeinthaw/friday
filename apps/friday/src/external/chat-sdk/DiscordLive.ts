@@ -9,8 +9,8 @@ import { makeChatSdkExternalPlatform } from './ChatSdkExternalPlatform.ts'
 import { makeChatSdkLifecycle } from './ChatSdkLifecycle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import {
-  ensureDiscordChannelThread,
-  type DiscordChannelBootstrapOptions,
+  makeDiscordThreadBootstrap,
+  type DiscordThreadBootstrapOptions,
 } from './DiscordChannelBootstrap.ts'
 import { makeSqliteChatStateAdapter } from './SqliteChatStateAdapter.ts'
 
@@ -18,17 +18,9 @@ export const makeDiscordLive = Effect.fn('makeDiscordLive')(function* <PromptErr
   application: FridayApplicationContract<PromptError, EventError>,
 ) {
   const persistence = yield* ThreadPersistence
-  const guildId = process.env.FRIDAY_DISCORD_GUILD_ID
   const channelId = process.env.FRIDAY_DISCORD_CHANNEL_ID
-  if (!guildId || !channelId) return null
+  if (!channelId) return null
 
-  const configuredModel = process.env.FRIDAY_PI_MODEL?.split('/')
-  const bootstrapOptions: DiscordChannelBootstrapOptions = { guildId, channelId }
-  if (configuredModel?.[0]) bootstrapOptions.modelProvider = configuredModel[0]
-  if (configuredModel && configuredModel.length > 1) {
-    bootstrapOptions.modelId = configuredModel.slice(1).join('/')
-  }
-  yield* ensureDiscordChannelThread(bootstrapOptions)
   const state = yield* makeSqliteChatStateAdapter()
   const discord = createDiscordAdapter({
     respondToChannelIds: [channelId],
@@ -41,8 +33,18 @@ export const makeDiscordLive = Effect.fn('makeDiscordLive')(function* <PromptErr
     state,
     concurrency: 'concurrent',
   })
+  const configuredModel = process.env.FRIDAY_PI_MODEL?.split('/')
+  const bootstrapOptions: DiscordThreadBootstrapOptions = {
+    discord,
+    recentMessageCount: 20,
+  }
+  if (configuredModel?.[0]) bootstrapOptions.modelProvider = configuredModel[0]
+  if (configuredModel && configuredModel.length > 1) {
+    bootstrapOptions.modelId = configuredModel.slice(1).join('/')
+  }
+  const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
   const platform = yield* makeChatSdkExternalPlatform(chat)
-  const ingestion = yield* makeExternalIngestion(application, platform).pipe(
+  const ingestion = yield* makeExternalIngestion(application, platform, bootstrap).pipe(
     Effect.provideService(ThreadPersistence, persistence),
   )
   const lifecycle = yield* makeChatSdkLifecycle({

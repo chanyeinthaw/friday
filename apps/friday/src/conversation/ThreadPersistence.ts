@@ -2,6 +2,7 @@ import type {
   Activity,
   ExternalChannelId,
   ExternalPlatform,
+  ExternalThreadId,
   HarnessSession,
   HarnessTurnId,
   IsoDateTime,
@@ -22,6 +23,11 @@ export type ThreadPersistenceError = PersistenceError
 export interface ChannelThreadLookup {
   readonly platform: ExternalPlatform
   readonly channelId: ExternalChannelId
+}
+
+export interface ExternalThreadLookup {
+  readonly platform: ExternalPlatform
+  readonly externalThreadId: ExternalThreadId
 }
 
 export interface ThreadHarnessSessionUpdate {
@@ -62,6 +68,9 @@ export interface ThreadPersistenceContract {
   ) => Effect.Effect<Option.Option<Thread>, ThreadPersistenceError>
   readonly findChannelThread: (
     lookup: ChannelThreadLookup,
+  ) => Effect.Effect<Option.Option<Thread>, ThreadPersistenceError>
+  readonly findExternalThread: (
+    lookup: ExternalThreadLookup,
   ) => Effect.Effect<Option.Option<Thread>, ThreadPersistenceError>
   readonly setThreadHarnessSession: (
     update: ThreadHarnessSessionUpdate,

@@ -91,6 +91,7 @@ const makePersistence = (operations: Array<string>): ThreadPersistenceContract =
   createThread: () => Effect.void,
   getThread: () => Effect.succeedNone,
   findChannelThread: () => Effect.succeedNone,
+  findExternalThread: () => Effect.succeedNone,
   setThreadHarnessSession: () =>
     Effect.sync(() => {
       operations.push('set-harness-session')

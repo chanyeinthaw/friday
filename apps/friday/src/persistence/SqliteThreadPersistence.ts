@@ -3,8 +3,10 @@ import {
   ActivityId,
   ExternalChannelId,
   ExternalPlatform,
+  ExternalThreadId,
   type ExternalChannelId as ExternalChannelIdType,
   type ExternalPlatform as ExternalPlatformType,
+  type ExternalThreadId as ExternalThreadIdType,
   Thread,
   ThreadId,
   Turn,
@@ -34,6 +36,10 @@ const GetThreadRequest = Schema.Struct({ threadId: ThreadId })
 const FindChannelThreadRequest = Schema.Struct({
   platform: ExternalPlatform,
   channelId: ExternalChannelId,
+})
+const FindExternalThreadRequest = Schema.Struct({
+  platform: ExternalPlatform,
+  externalThreadId: ExternalThreadId,
 })
 const GetTurnRequest = Schema.Struct({ turnId: TurnId })
 const GetLatestTurnRequest = Schema.Struct({ threadId: ThreadId })
@@ -167,6 +173,20 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     `,
   })
 
+  const findExternalThread = SqlSchema.findOneOption({
+    Request: FindExternalThreadRequest,
+    Result: PersistedThreadRow,
+    execute: ({ platform, externalThreadId }) => sql`
+      SELECT payload_json AS payload
+      FROM threads
+      WHERE audience = 'user'
+        AND status = 'active'
+        AND json_extract(payload_json, '$.externalBinding.platform') = ${platform}
+        AND json_extract(payload_json, '$.externalBinding.externalThreadId') = ${externalThreadId}
+      LIMIT 1
+    `,
+  })
+
   const selectTurn = SqlSchema.findOneOption({
     Request: GetTurnRequest,
     Result: PersistedTurnRow,
@@ -214,6 +234,15 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     findChannelThread(lookup).pipe(
       Effect.map(Option.map((row) => row.payload)),
       Effect.mapError(toPersistenceError('ThreadPersistence.findChannelThread')),
+    )
+
+  const findActiveExternalThread = (lookup: {
+    readonly platform: ExternalPlatformType
+    readonly externalThreadId: ExternalThreadIdType
+  }) =>
+    findExternalThread(lookup).pipe(
+      Effect.map(Option.map((row) => row.payload)),
+      Effect.mapError(toPersistenceError('ThreadPersistence.findExternalThread')),
     )
 
   const getTurn = (turnId: TurnType['id']) =>
@@ -311,6 +340,7 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
       ),
     getThread,
     findChannelThread: findActiveChannelThread,
+    findExternalThread: findActiveExternalThread,
     setThreadHarnessSession: (update) =>
       getThread(update.threadId).pipe(
         Effect.flatMap(

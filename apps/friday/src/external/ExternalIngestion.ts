@@ -5,7 +5,7 @@ import {
   SteeringActivity,
   Turn,
   TurnId,
-  type ChannelThread,
+  type ExternalBinding,
   type SteeringActivity as SteeringActivityType,
   type Thread,
   type Turn as TurnType,
@@ -45,7 +45,7 @@ export class ExternalThreadNotFoundError extends Schema.Error<ExternalThreadNotF
   }
 }
 
-export interface ExternalIngestionContract<PromptError, PublicationError> {
+export interface ExternalIngestionContract<PromptError, PublicationError, CreationError> {
   readonly ingest: (
     inbound: ExternalInboundMessage,
   ) => Effect.Effect<
@@ -54,7 +54,8 @@ export interface ExternalIngestionContract<PromptError, PublicationError> {
     | ThreadPersistenceError
     | ExternalThreadNotFoundError
     | PlatformError.PlatformError
-    | PublicationError,
+    | PublicationError
+    | CreationError,
     Scope.Scope
   >
 }
@@ -66,9 +67,11 @@ export const makeExternalIngestion = Effect.fn('makeExternalIngestion')(function
   PromptError,
   EventError,
   PublicationError,
+  CreationError,
 >(
   application: FridayApplicationContract<PromptError, EventError>,
   externalPlatform: ExternalPlatformContract<PublicationError>,
+  createThread: (inbound: ExternalInboundMessage) => Effect.Effect<Thread, CreationError>,
 ) {
   const persistence = yield* ThreadPersistence
   const crypto = yield* Crypto.Crypto
@@ -98,18 +101,15 @@ export const makeExternalIngestion = Effect.fn('makeExternalIngestion')(function
       const key = `${inbound.binding.platform}:${inbound.binding.channelId}`
       const accepted = semaphore.withPermit(key)(
         Effect.gen(function* () {
-          const foundThread = yield* persistence.findChannelThread({
+          const foundThread = yield* persistence.findExternalThread({
             platform: inbound.binding.platform,
-            channelId: inbound.binding.channelId,
+            externalThreadId: inbound.binding.externalThreadId,
           })
-          if (Option.isNone(foundThread)) {
-            return yield* new ExternalThreadNotFoundError({
-              platform: inbound.binding.platform,
-              channelId: inbound.binding.channelId,
-            })
-          }
-
-          const found = foundThread.value
+          const found = Option.isSome(foundThread)
+            ? foundThread.value
+            : yield* createThread(inbound).pipe(
+                Effect.tap((thread) => persistence.createThread(thread)),
+              )
           if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
           const thread = found
           const coordinator = yield* coordinatorFor(thread)
@@ -134,7 +134,7 @@ export const makeExternalIngestion = Effect.fn('makeExternalIngestion')(function
             yield* coordinator.steer(latestTurn.value.id, steering)
             return Option.none<{
               readonly turnId: TurnType['id']
-              readonly thread: ChannelThread
+              readonly publicationBinding: ExternalBinding
             }>()
           }
 
@@ -159,19 +159,22 @@ export const makeExternalIngestion = Effect.fn('makeExternalIngestion')(function
             usage: null,
           })
           yield* coordinator.prompt(turn)
-          return Option.some({ turnId: turn.id, thread })
+          return Option.some({
+            turnId: turn.id,
+            publicationBinding: inbound.binding,
+          })
         }),
       )
       return accepted.pipe(
         Effect.flatMap(
           Option.match({
             onNone: () => Effect.void,
-            onSome: ({ turnId, thread }) =>
+            onSome: ({ turnId, publicationBinding }) =>
               awaitTerminalTurn(turnId).pipe(
                 Effect.flatMap((completed) =>
                   completed.status === 'completed' && completed.agentMessage !== null
                     ? externalPlatform.publish({
-                        binding: thread.externalBinding,
+                        binding: publicationBinding,
                         text: completed.agentMessage,
                       })
                     : Effect.void,
@@ -181,5 +184,5 @@ export const makeExternalIngestion = Effect.fn('makeExternalIngestion')(function
         ),
       )
     },
-  } satisfies ExternalIngestionContract<PromptError, PublicationError>
+  } satisfies ExternalIngestionContract<PromptError, PublicationError, CreationError>
 })

@@ -51,6 +51,7 @@ export const makeChatSdkLifecycle = Effect.fn('makeChatSdkLifecycle')(function* 
   const handleMessage: ChatSdkMessageHandler = (thread, message) =>
     runPromise(
       options.onInboundMessage(projectChatSdkMessage(thread, message)).pipe(
+        Effect.tapError((cause) => Effect.logError('Friday inbound message failed', cause)),
         Effect.mapError(
           (cause) =>
             new ChatSdkCallbackError({
