@@ -191,9 +191,11 @@ it.effect('persists active snapshots and the completed Activity in event order',
 const makePersistence = (operations: Array<RecordedOperation>): ThreadPersistenceContract => ({
   createThread: () => Effect.void,
   getThread: () => Effect.succeedNone,
+  findChannelThread: () => Effect.succeedNone,
   setThreadHarnessSession: () => Effect.void,
   createTurn: (value) => Effect.sync(() => operations.push({ type: 'create-turn', value })),
   getTurn: () => Effect.succeedNone,
+  getLatestTurn: () => Effect.succeedNone,
   startTurn: ({ turnId }) =>
     Effect.sync(() => operations.push({ type: 'start-turn', value: turnId })),
   putActivitySnapshot: (_turnId, value) =>

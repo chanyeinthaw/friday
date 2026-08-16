@@ -1,4 +1,5 @@
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
+import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -8,7 +9,12 @@ import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { ThreadPersistenceLive } from './persistence/Live.ts'
 
-export const FridayLive = Layer.mergeAll(ThreadPersistenceLive, PiModelRuntimeLive, BunCrypto.layer)
+export const FridayLive = Layer.mergeAll(
+  ThreadPersistenceLive,
+  PiModelRuntimeLive,
+  BunCrypto.layer,
+  BunFileSystem.layer,
+)
 
 export const makeFridayApplicationLive = Effect.fn('makeFridayApplicationLive')(function* () {
   const modelRuntime = yield* PiModelRuntime

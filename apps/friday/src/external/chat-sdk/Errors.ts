@@ -6,7 +6,7 @@ export class ChatSdkLifecycleError extends Schema.Error<ChatSdkLifecycleError>(
   'ChatSdkLifecycleError',
 )({
   _tag: Schema.tag('ChatSdkLifecycleError'),
-  operation: Schema.Literals(['initialize', 'shutdown']),
+  operation: Schema.Literals(['initialize', 'shutdown', 'gateway']),
   cause: Schema.Defect(),
 }) {
   override get message(): string {

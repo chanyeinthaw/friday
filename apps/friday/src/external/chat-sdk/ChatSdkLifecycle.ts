@@ -17,6 +17,9 @@ type ChatSdkMessageHandler = (
 export interface ChatSdkLifecycleSource {
   readonly initialize: () => Promise<void>
   readonly shutdown: () => Promise<void>
+  readonly thread: (threadId: string) => {
+    readonly post: (text: string) => Promise<object>
+  }
   readonly onNewMention: (handler: ChatSdkMessageHandler) => void
   readonly onDirectMessage: (handler: ChatSdkMessageHandler) => void
   readonly onSubscribedMessage: (handler: ChatSdkMessageHandler) => void
@@ -26,15 +29,24 @@ export interface ChatSdkLifecycleContract {
   readonly chat: ChatSdkLifecycleSource
 }
 
-export interface MakeChatSdkLifecycleOptions<InboundError> {
+export interface MakeChatSdkLifecycleOptions<InboundError, InboundServices> {
   readonly chat: ChatSdkLifecycleSource
-  readonly onInboundMessage: (message: ExternalInboundMessage) => Effect.Effect<void, InboundError>
+  readonly onInboundMessage: (
+    message: ExternalInboundMessage,
+  ) => Effect.Effect<void, InboundError, InboundServices>
 }
 
-export const makeChatSdkLifecycle = Effect.fn('makeChatSdkLifecycle')(function* <InboundError>(
-  options: MakeChatSdkLifecycleOptions<InboundError>,
-): Effect.fn.Return<ChatSdkLifecycleContract, ChatSdkLifecycleError, Scope.Scope> {
-  const effectContext = yield* Effect.context()
+export const makeChatSdkLifecycle = Effect.fn('makeChatSdkLifecycle')(function* <
+  InboundError,
+  InboundServices,
+>(
+  options: MakeChatSdkLifecycleOptions<InboundError, InboundServices>,
+): Effect.fn.Return<
+  ChatSdkLifecycleContract,
+  ChatSdkLifecycleError,
+  Scope.Scope | InboundServices
+> {
+  const effectContext = yield* Effect.context<InboundServices>()
   const runPromise = Effect.runPromiseWith(effectContext)
   const handleMessage: ChatSdkMessageHandler = (thread, message) =>
     runPromise(

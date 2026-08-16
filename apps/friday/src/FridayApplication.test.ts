@@ -90,6 +90,7 @@ it.effect('opens a Thread and returns its started persistence-first coordinator'
 const makePersistence = (operations: Array<string>): ThreadPersistenceContract => ({
   createThread: () => Effect.void,
   getThread: () => Effect.succeedNone,
+  findChannelThread: () => Effect.succeedNone,
   setThreadHarnessSession: () =>
     Effect.sync(() => {
       operations.push('set-harness-session')
@@ -99,6 +100,7 @@ const makePersistence = (operations: Array<string>): ThreadPersistenceContract =
       operations.push('create-turn')
     }),
   getTurn: () => Effect.succeedNone,
+  getLatestTurn: () => Effect.succeedNone,
   startTurn: () => Effect.void,
   putActivitySnapshot: () => Effect.void,
   getActivity: () => Effect.succeedNone,

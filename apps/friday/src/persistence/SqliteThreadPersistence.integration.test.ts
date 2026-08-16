@@ -94,12 +94,53 @@ const activeActivity = Schema.decodeSync(ToolResultActivity)({
   completedAt: null,
 })
 
+const secondTurn = Schema.decodeSync(Turn)({
+  ...turn,
+  id: 'turn-2',
+  sequence: 2,
+  input: {
+    source: 'user',
+    content: { text: 'Continue', images: [] },
+  },
+})
+
 const completedActivity = Schema.decodeSync(ToolResultActivity)({
   ...activeActivity,
   status: 'completed',
   output: 'complete',
   updatedAt: '2026-03-21T10:00:03.000Z',
   completedAt: '2026-03-21T10:00:03.000Z',
+})
+
+test('finds an active channel Thread by external platform and channel', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(thread)
+    const stored = yield* persistence.findChannelThread({
+      platform: thread.externalBinding.platform,
+      channelId: thread.externalBinding.channelId,
+    })
+    expect(Option.getOrNull(stored)?.id).toBe(thread.id)
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+})
+
+test('retrieves the latest Turn for a Thread', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(thread)
+    yield* persistence.createTurn(turn)
+    yield* persistence.createTurn(secondTurn)
+    const latest = yield* persistence.getLatestTurn(thread.id)
+    expect(String(Option.getOrNull(latest)?.id)).toBe('turn-2')
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
 })
 
 test('creates and retrieves a channel Thread', async () => {

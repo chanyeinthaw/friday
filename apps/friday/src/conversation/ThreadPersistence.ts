@@ -1,5 +1,7 @@
 import type {
   Activity,
+  ExternalChannelId,
+  ExternalPlatform,
   HarnessSession,
   HarnessTurnId,
   IsoDateTime,
@@ -16,6 +18,11 @@ import type * as Option from 'effect/Option'
 import type { PersistenceError } from '../persistence/Errors.ts'
 
 export type ThreadPersistenceError = PersistenceError
+
+export interface ChannelThreadLookup {
+  readonly platform: ExternalPlatform
+  readonly channelId: ExternalChannelId
+}
 
 export interface ThreadHarnessSessionUpdate {
   readonly threadId: ThreadId
@@ -53,11 +60,17 @@ export interface ThreadPersistenceContract {
   readonly getThread: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<Thread>, ThreadPersistenceError>
+  readonly findChannelThread: (
+    lookup: ChannelThreadLookup,
+  ) => Effect.Effect<Option.Option<Thread>, ThreadPersistenceError>
   readonly setThreadHarnessSession: (
     update: ThreadHarnessSessionUpdate,
   ) => Effect.Effect<void, ThreadPersistenceError>
   readonly createTurn: (turn: Turn) => Effect.Effect<void, ThreadPersistenceError>
   readonly getTurn: (turnId: TurnId) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>
+  readonly getLatestTurn: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>
   readonly startTurn: (update: TurnStartedUpdate) => Effect.Effect<void, ThreadPersistenceError>
   readonly putActivitySnapshot: (
     turnId: TurnId,

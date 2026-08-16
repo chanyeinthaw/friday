@@ -23,6 +23,7 @@ it.effect('owns Chat SDK initialization, callbacks, and shutdown in scope', () =
       shutdown: async () => {
         events.push('shutdown')
       },
+      thread: () => ({ post: () => Promise.resolve({}) }),
       onNewMention: (handler) => handlers.push(handler),
       onDirectMessage: (handler) => handlers.push(handler),
       onSubscribedMessage: (handler) => handlers.push(handler),

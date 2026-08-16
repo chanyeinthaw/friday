@@ -20,11 +20,11 @@ const FridayHomeLive = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(BunFileSystem.layer))
 
-const SqliteLive = SqliteClient.layer({ filename: FRIDAY_DATABASE_PATH }).pipe(
+export const FridaySqliteLive = SqliteClient.layer({ filename: FRIDAY_DATABASE_PATH }).pipe(
   Layer.provide(FridayHomeLive),
 )
 
 export const ThreadPersistenceLive = Layer.effect(
   ThreadPersistence,
   makeSqliteThreadPersistence(),
-).pipe(Layer.provide(SqliteLive))
+).pipe(Layer.provide(FridaySqliteLive))
