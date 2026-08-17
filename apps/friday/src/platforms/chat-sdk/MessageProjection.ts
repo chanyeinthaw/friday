@@ -19,7 +19,8 @@ const decodeThreadId = Schema.decodeUnknownSync(PlatformConversationId)
 export interface ChatSdkThreadProjectionSource extends Pick<Thread, 'channelId' | 'id'> {
   readonly adapter: Pick<Thread['adapter'], 'name'>
 }
-export type ChatSdkMessageProjectionSource = Pick<Message, 'id' | 'text'>
+
+export type ChatSdkMessageProjectionSource = Pick<Message, 'author' | 'id' | 'text'>
 
 export const projectChatSdkMessage = (
   thread: ChatSdkThreadProjectionSource,

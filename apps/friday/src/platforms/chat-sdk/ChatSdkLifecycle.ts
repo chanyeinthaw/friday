@@ -1,3 +1,4 @@
+import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import type * as Scope from 'effect/Scope'
@@ -10,7 +11,7 @@ import {
   type ChatSdkThreadProjectionSource,
 } from './MessageProjection.ts'
 
-type ChatSdkMessageHandler = (
+export type ChatSdkMessageHandler = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
 ) => Promise<void>
@@ -26,60 +27,89 @@ export interface ChatSdkLifecycleSource {
   readonly onSubscribedMessage: (handler: ChatSdkMessageHandler) => void
 }
 
-export interface ChatSdkLifecycleContract {
+export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
   readonly chat: ChatSdkLifecycleSource
-}
-
-export interface MakeChatSdkLifecycleOptions<InboundError, InboundServices> {
-  readonly chat: ChatSdkLifecycleSource
+  readonly shouldHandleMessage?: (
+    thread: ChatSdkThreadProjectionSource,
+    message: ChatSdkMessageProjectionSource,
+  ) => Effect.Effect<boolean, ChatSdkCallbackError>
   readonly onInboundMessage: (
     message: PlatformInput,
   ) => Effect.Effect<void, InboundError, InboundServices>
 }
 
-export const makeChatSdkLifecycle = Effect.fn('makeChatSdkLifecycle')(function* <
-  InboundError,
-  InboundServices,
->(
-  options: MakeChatSdkLifecycleOptions<InboundError, InboundServices>,
-): Effect.fn.Return<
-  ChatSdkLifecycleContract,
-  ChatSdkLifecycleError,
-  Scope.Scope | InboundServices
-> {
-  const effectContext = yield* Effect.context<InboundServices>()
-  const lifecycleScope = yield* Effect.scope
-  const runPromise = Effect.runPromiseWith(effectContext)
-  // Each inbound callback forks its ingestion worker into the lifecycle scope
-  // and joins it: the Promise returned to the Chat SDK still reflects
-  // completion/failure, but the worker fiber is owned by the scope, so closing
-  // the lifecycle interrupts any ingestion still in flight instead of letting
-  // it keep running (and refreshing typing) past shutdown.
-  const handleMessage: ChatSdkMessageHandler = (thread, message) =>
-    runPromise(
-      Effect.gen(function* () {
-        const worker = yield* options.onInboundMessage(projectChatSdkMessage(thread, message)).pipe(
-          Effect.tapError((cause) => Effect.logError('Friday inbound message failed', cause)),
-          Effect.mapError(
-            (cause) =>
-              new ChatSdkCallbackError({
-                operation: 'inbound-message',
-                cause,
-              }),
-          ),
-          Effect.forkIn(lifecycleScope),
-        )
-        return yield* Fiber.join(worker)
+interface ChatSdkMessageHandlerOptions<InboundError, InboundServices> {
+  readonly context: Context.Context<InboundServices>
+  readonly scope: Scope.Scope
+  readonly shouldHandleMessage?: ChatSdkLifecycleOptions<
+    InboundError,
+    InboundServices
+  >['shouldHandleMessage']
+  readonly onInboundMessage: ChatSdkLifecycleOptions<
+    InboundError,
+    InboundServices
+  >['onInboundMessage']
+}
+
+const callbackError = (cause: unknown): ChatSdkCallbackError =>
+  new ChatSdkCallbackError({
+    operation: 'inbound-message',
+    cause,
+  })
+
+const makeChatSdkMessageHandler = <InboundError, InboundServices>(
+  options: ChatSdkMessageHandlerOptions<InboundError, InboundServices>,
+): ChatSdkMessageHandler => {
+  const runPromise = Effect.runPromiseWith(options.context)
+
+  const handleInboundMessage = (
+    thread: ChatSdkThreadProjectionSource,
+    message: ChatSdkMessageProjectionSource,
+  ): Effect.Effect<void, ChatSdkCallbackError, InboundServices> =>
+    Effect.gen(function* () {
+      const shouldHandle = options.shouldHandleMessage
+        ? yield* options.shouldHandleMessage(thread, message)
+        : true
+      if (!shouldHandle) return yield* Effect.void
+
+      const input = yield* Effect.try({
+        try: () => projectChatSdkMessage(thread, message),
+        catch: callbackError,
+      })
+      const worker = yield* options.onInboundMessage(input).pipe(
+        Effect.tapError((cause) => Effect.logError('Friday inbound message failed', cause)),
+        Effect.mapError(callbackError),
+        Effect.forkIn(options.scope),
+      )
+      return yield* Fiber.join(worker)
+    }).pipe(Effect.tapError((cause) => Effect.logError('Friday Chat SDK callback failed', cause)))
+
+  return (thread, message) => runPromise(handleInboundMessage(thread, message))
+}
+
+const registerChatSdkHandlers = (
+  chat: ChatSdkLifecycleSource,
+  handler: ChatSdkMessageHandler,
+): Effect.Effect<void, ChatSdkLifecycleError> =>
+  Effect.try({
+    try: () => {
+      chat.onNewMention(handler)
+      chat.onDirectMessage(handler)
+      chat.onSubscribedMessage(handler)
+    },
+    catch: (cause) =>
+      new ChatSdkLifecycleError({
+        operation: 'register-handlers',
+        cause,
       }),
-    )
+  })
 
-  options.chat.onNewMention(handleMessage)
-  options.chat.onDirectMessage(handleMessage)
-  options.chat.onSubscribedMessage(handleMessage)
-
-  yield* Effect.acquireRelease(
+const initializeChatSdk = (
+  chat: ChatSdkLifecycleSource,
+): Effect.Effect<void, ChatSdkLifecycleError, Scope.Scope> =>
+  Effect.acquireRelease(
     Effect.tryPromise({
-      try: () => options.chat.initialize(),
+      try: () => chat.initialize(),
       catch: (cause) =>
         new ChatSdkLifecycleError({
           operation: 'initialize',
@@ -88,7 +118,7 @@ export const makeChatSdkLifecycle = Effect.fn('makeChatSdkLifecycle')(function* 
     }),
     () =>
       Effect.tryPromise({
-        try: () => options.chat.shutdown(),
+        try: () => chat.shutdown(),
         catch: (cause) =>
           new ChatSdkLifecycleError({
             operation: 'shutdown',
@@ -97,5 +127,25 @@ export const makeChatSdkLifecycle = Effect.fn('makeChatSdkLifecycle')(function* 
       }).pipe(Effect.orDie),
   )
 
-  return { chat: options.chat }
+export type ChatSdkLifecycleStart<InboundServices> = Effect.fn.Return<
+  void,
+  ChatSdkLifecycleError,
+  Scope.Scope | InboundServices
+>
+
+export const startChatSdkLifecycle = Effect.fn('startChatSdkLifecycle')(function* <
+  InboundError,
+  InboundServices,
+>(
+  options: ChatSdkLifecycleOptions<InboundError, InboundServices>,
+): ChatSdkLifecycleStart<InboundServices> {
+  const handler = makeChatSdkMessageHandler({
+    context: yield* Effect.context<InboundServices>(),
+    scope: yield* Effect.scope,
+    shouldHandleMessage: options.shouldHandleMessage,
+    onInboundMessage: options.onInboundMessage,
+  })
+
+  yield* registerChatSdkHandlers(options.chat, handler)
+  yield* initializeChatSdk(options.chat)
 })

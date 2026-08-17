@@ -111,6 +111,26 @@ const messageText = (event: AgentSessionEvent): string | undefined => {
     .join('')
 }
 
+const ToolResultRecord = Schema.Struct({
+  content: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ text: Schema.optionalKey(Schema.String) })),
+  ),
+  details: Schema.optionalKey(Schema.Unknown),
+})
+const decodeToolResultRecord = Schema.decodeUnknownOption(ToolResultRecord)
+
+const toolResultOutput = (value: unknown): Schema.Json => {
+  const decoded = Option.getOrUndefined(decodeJson(value))
+  if (decoded !== undefined) return decoded
+  const result = Option.getOrUndefined(decodeToolResultRecord(value))
+  if (result === undefined) return 'Unserializable tool result.'
+  const content = result.content?.flatMap(({ text }) => (text === undefined ? [] : [text])).join('')
+  if (content !== undefined && content.length > 0) return content
+  const detailsJson = Option.getOrUndefined(decodeJson(result.details))
+  if (detailsJson !== undefined) return detailsJson
+  return 'Unserializable tool result.'
+}
+
 const jsonOutput = (value: unknown): Schema.Json =>
   Option.getOrElse(decodeJson(value), () => String(value))
 
@@ -180,7 +200,7 @@ const emitToolSnapshot = Effect.fn('emitPiToolSnapshot')(function* (input: {
   const active = input.state.activeTools.get(input.toolCallId)
   if (!active) return
   const updatedAt = yield* nowIso
-  active.output = jsonOutput(input.output)
+  active.output = toolResultOutput(input.output)
   const activity: Activity = {
     id: active.activityId,
     sequence: active.sequence,

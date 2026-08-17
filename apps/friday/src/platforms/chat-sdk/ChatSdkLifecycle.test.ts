@@ -1,15 +1,82 @@
 import { assert, it } from '@effect/vitest'
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as Schema from 'effect/Schema'
 import { TestClock } from 'effect/testing'
 
-import { makeChatSdkLifecycle, type ChatSdkLifecycleSource } from './ChatSdkLifecycle.ts'
+import { ChatSdkCallbackError } from './Errors.ts'
+import { startChatSdkLifecycle, type ChatSdkLifecycleSource } from './ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform, type ChatSdkPublicationSource } from './ChatSdkPlatform.ts'
 import type {
   ChatSdkMessageProjectionSource,
   ChatSdkThreadProjectionSource,
 } from './MessageProjection.ts'
+
+const isChatSdkCallbackError = Schema.is(ChatSdkCallbackError)
+
+it.effect('keeps effectful authorization failures inside the callback error channel', () =>
+  Effect.gen(function* () {
+    const handlers: Array<
+      (
+        thread: ChatSdkThreadProjectionSource,
+        message: ChatSdkMessageProjectionSource,
+      ) => Promise<void>
+    > = []
+    const chat: ChatSdkLifecycleSource = {
+      initialize: async () => undefined,
+      shutdown: async () => undefined,
+      thread: () => ({ post: () => Promise.resolve({}) }),
+      onNewMention: (handler) => handlers.push(handler),
+      onDirectMessage: (handler) => handlers.push(handler),
+      onSubscribedMessage: (handler) => handlers.push(handler),
+    }
+
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* startChatSdkLifecycle({
+          chat,
+          shouldHandleMessage: () =>
+            Effect.fail(
+              new ChatSdkCallbackError({
+                operation: 'inbound-message',
+                cause: 'authorization failed',
+              }),
+            ),
+          onInboundMessage: () => Effect.die('inbound should not run'),
+        })
+        const handler = handlers[0]
+        assert(handler !== undefined)
+        const exit = yield* Effect.promise(() =>
+          handler(
+            {
+              adapter: { name: 'discord' },
+              channelId: 'channel-1',
+              id: 'thread-1',
+            },
+            {
+              id: 'message-1',
+              text: 'hello',
+              author: {
+                userId: 'user-1',
+                userName: 'user',
+                fullName: 'User',
+                isBot: false,
+                isMe: false,
+              },
+            },
+          ).then(
+            () => Exit.succeed(undefined),
+            (cause) => Exit.fail(cause),
+          ),
+        )
+        assert(Exit.isFailure(exit))
+        assert(isChatSdkCallbackError(Cause.squash(exit.cause)))
+      }),
+    )
+  }),
+)
 
 it.effect('owns Chat SDK initialization, callbacks, and shutdown in scope', () =>
   Effect.gen(function* () {
@@ -35,7 +102,7 @@ it.effect('owns Chat SDK initialization, callbacks, and shutdown in scope', () =
 
     yield* Effect.scoped(
       Effect.gen(function* () {
-        yield* makeChatSdkLifecycle({
+        yield* startChatSdkLifecycle({
           chat,
           onInboundMessage: (inbound) =>
             Effect.sync(() => {
@@ -51,7 +118,17 @@ it.effect('owns Chat SDK initialization, callbacks, and shutdown in scope', () =
                 channelId: 'channel-1',
                 id: 'thread-1',
               },
-              { id: 'message-1', text: 'hello' },
+              {
+                id: 'message-1',
+                text: 'hello',
+                author: {
+                  userId: 'user-1',
+                  userName: 'user',
+                  fullName: 'User',
+                  isBot: false,
+                  isMe: false,
+                },
+              },
             ) ?? Promise.resolve(),
         )
         assert.deepStrictEqual(events, ['initialize', 'inbound:hello'])
@@ -116,7 +193,7 @@ it.effect(
           const platform = yield* makeChatSdkPlatform('discord', chat, {
             typingRefreshInterval: '1 second',
           })
-          yield* makeChatSdkLifecycle({
+          yield* startChatSdkLifecycle({
             chat,
             // The inbound worker never completes: it keeps a finalizer marker
             // installed while a typing refresh loop runs underneath it.
@@ -140,7 +217,17 @@ it.effect(
                 channelId: 'channel-1',
                 id: 'thread-1',
               },
-              { id: 'message-1', text: 'hello' },
+              {
+                id: 'message-1',
+                text: 'hello',
+                author: {
+                  userId: 'user-1',
+                  userName: 'user',
+                  fullName: 'User',
+                  isBot: false,
+                  isMe: false,
+                },
+              },
             ) ?? Promise.resolve()
           return yield* Effect.tryPromise(() => callbackPromise).pipe(Effect.exit, Effect.forkChild)
         }).pipe(

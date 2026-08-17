@@ -409,7 +409,10 @@ it.effect('projects streamed tool snapshots into active and completed Activities
         toolCallId: 'call-1',
         toolName: 'bash',
         args: { command: 'pwd' },
-        partialResult: '/home',
+        partialResult: {
+          content: [{ type: 'text', text: '/home' }],
+          details: { cwd: '/home' },
+        },
       }),
     })
     yield* projectPiSessionEvent({
@@ -420,7 +423,10 @@ it.effect('projects streamed tool snapshots into active and completed Activities
         type: 'tool_execution_end',
         toolCallId: 'call-1',
         toolName: 'bash',
-        result: '/home/chan',
+        result: {
+          content: [{ type: 'text', text: '/home/chan' }],
+          details: { cwd: '/home/chan' },
+        },
         isError: false,
       }),
     })
@@ -435,7 +441,10 @@ it.effect('projects streamed tool snapshots into active and completed Activities
     assert.strictEqual(finalEvent.activity.type, 'tool-result')
     if (finalEvent.activity.type !== 'tool-result') return
     assert.strictEqual(finalEvent.activity.status, 'completed')
-    assert.strictEqual(finalEvent.activity.output, '/home/chan')
+    assert.deepStrictEqual(finalEvent.activity.output, {
+      content: [{ type: 'text', text: '/home/chan' }],
+      details: { cwd: '/home/chan' },
+    })
     assert.strictEqual(state.activeTools.size, 0)
   }),
 )

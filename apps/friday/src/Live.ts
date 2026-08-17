@@ -8,6 +8,7 @@ import { FridayLive as FridayServiceLive } from './Friday.ts'
 import { makeThreadCoordinator } from './conversation/ThreadCoordinator.ts'
 import { ThreadRuntimePoolLive } from './conversation/ThreadRuntimePool.ts'
 import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
+import { AppConfigLive } from './config/AppConfigLive.ts'
 import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { ThreadPersistenceLive } from './persistence/Live.ts'
@@ -73,4 +74,11 @@ const IngestionLive = PlatformIngestionLive.pipe(
   Layer.provide(Layer.mergeAll(CoreLive, PoolLive, AgentLive)),
 )
 
-export const FridayLive = Layer.mergeAll(CoreLive, RuntimeLive, PoolLive, AgentLive, IngestionLive)
+export const FridayLive = Layer.mergeAll(
+  CoreLive,
+  AppConfigLive,
+  RuntimeLive,
+  PoolLive,
+  AgentLive,
+  IngestionLive,
+)

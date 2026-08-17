@@ -15,6 +15,7 @@ import * as Schema from 'effect/Schema'
 import { join } from 'node:path'
 
 import { FRIDAY_HOME } from '../../FridayHome.ts'
+import type { AppConfig } from '../../config/AppConfig.ts'
 import type { PlatformInput } from '../PlatformAdapter.ts'
 
 const ChannelMetadata = Schema.Struct({
@@ -34,9 +35,9 @@ export class DiscordThreadBootstrapError extends Schema.Error<DiscordThreadBoots
 
 export interface DiscordThreadBootstrapOptions {
   discord: DiscordAdapter
+  workingDirectoryRoot?: string
   recentMessageCount?: number
-  modelProvider?: string
-  modelId?: string
+  model?: AppConfig['models']['primary']
   thinkingLevel?: ChannelThreadType['thinkingLevel']
 }
 
@@ -110,7 +111,10 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
         text: message.text,
       }))
     const workspaceName = String(inbound.binding.conversationId).replaceAll(':', '-')
-    const workingDirectory = join(FRIDAY_HOME, 'workspaces', workspaceName)
+    const workingDirectory = join(
+      options.workingDirectoryRoot ?? join(FRIDAY_HOME, 'workspaces'),
+      workspaceName,
+    )
     yield* fileSystem.makeDirectory(workingDirectory, { recursive: true }).pipe(
       Effect.andThen(
         fileSystem.writeFileString(
@@ -137,9 +141,9 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
       harness: 'pi',
       harnessSession: null,
       workingDirectory,
-      model: {
-        provider: options.modelProvider ?? 'opencode-go',
-        modelId: options.modelId ?? 'deepseek-v4-flash',
+      model: options.model ?? {
+        provider: 'opencode-go',
+        modelId: 'deepseek-v4-flash',
       },
       thinkingLevel: options.thinkingLevel ?? 'max',
       conversationBinding: inbound.binding,

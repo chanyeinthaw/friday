@@ -1,7 +1,7 @@
 /* oxlint-disable effecttsgo/node-builtin-import, effecttsgo/process-env -- Temporary pre-configuration global path intentionally reads the process environment synchronously. */
 
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 const defaultFridayHome =
   process.env.NODE_ENV === 'development'
@@ -9,3 +9,4 @@ const defaultFridayHome =
     : resolve(homedir(), '.friday')
 
 export const FRIDAY_HOME = resolve(process.env.FRIDAY_HOME ?? defaultFridayHome)
+export const FRIDAY_CONFIG_PATH = join(FRIDAY_HOME, 'friday.json')

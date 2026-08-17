@@ -12,6 +12,13 @@ it('projects Chat SDK identifiers and text into Friday contracts', () => {
     {
       id: 'discord-message-1',
       text: 'Hello Friday',
+      author: {
+        userId: 'user-1',
+        userName: 'user',
+        fullName: 'User',
+        isBot: false,
+        isMe: false,
+      },
     },
   )
 
