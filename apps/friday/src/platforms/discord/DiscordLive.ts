@@ -21,7 +21,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   const ingestion = yield* PlatformIngestion
   const configuration = yield* AppConfig
   const discordConfig = configuration.platforms.discord
-  if (!discordConfig) return null
+  if (!discordConfig) {
+    yield* Effect.logDebug('discord.disabled').pipe(Effect.annotateLogs({ component: 'discord' }))
+    return null
+  }
 
   const state = yield* makeSqliteChatStateAdapter()
   const discord = yield* Effect.try({
@@ -66,19 +69,43 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           const guildAllowed =
             discordConfig.allowlist.guildIds.length === 0 ||
             discordConfig.allowlist.guildIds.includes(location.guildId)
-          return (
-            guildAllowed &&
-            isAllowedByIds({
-              userId: message.author.userId,
-              channelId: location.channelId,
-              allowlist: discordConfig.allowlist,
-            })
-          )
+          return {
+            allowed:
+              guildAllowed &&
+              isAllowedByIds({
+                userId: message.author.userId,
+                channelId: location.channelId,
+                allowlist: discordConfig.allowlist,
+              }),
+            location,
+          }
         },
         catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
-      }),
+      }).pipe(
+        Effect.tap(({ allowed, location }) =>
+          allowed
+            ? Effect.logDebug('discord.message.allowed')
+            : Effect.logDebug('discord.message.ignored').pipe(
+                Effect.annotateLogs({
+                  component: 'discord',
+                  guildId: location.guildId,
+                  channelId: location.channelId,
+                  userId: message.author.userId,
+                }),
+              ),
+        ),
+        Effect.map(({ allowed }) => allowed),
+      ),
     onInboundMessage: (input) => ingestion.ingest(input, bootstrap),
   })
   yield* startDiscordGateway(discord)
+  yield* Effect.logInfo('discord.started').pipe(
+    Effect.annotateLogs({
+      component: 'discord',
+      allowedGuildCount: discordConfig.allowlist.guildIds.length,
+      allowedChannelCount: discordConfig.allowlist.channelIds.length,
+      allowedUserCount: discordConfig.allowlist.userIds.length,
+    }),
+  )
   return { platform }
 })

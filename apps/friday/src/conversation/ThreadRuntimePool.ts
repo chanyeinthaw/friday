@@ -65,12 +65,23 @@ export const ThreadRuntimePoolLive = <R>(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis
           const reaped: Array<ThreadRuntimeEntry> = []
+          const reapedThreadIds: Array<ThreadId> = []
           for (const [threadId, entry] of entries) {
             if (entry.activeTurns > 0 || now - entry.lastActivityAt < idleTimeout) continue
             entries.delete(threadId)
             reaped.push(entry)
+            reapedThreadIds.push(threadId)
           }
           yield* Effect.forEach(reaped, closeEntry, { discard: true })
+          if (reaped.length > 0) {
+            yield* Effect.logInfo('thread.runtime.reaped').pipe(
+              Effect.annotateLogs({
+                component: 'runtime-pool',
+                count: reaped.length,
+                threadIds: reapedThreadIds,
+              }),
+            )
+          }
         }),
       )
 
@@ -96,6 +107,13 @@ export const ThreadRuntimePoolLive = <R>(
               const existing = entries.get(thread.id)
               if (existing) {
                 existing.lastActivityAt = now
+                yield* Effect.logDebug('thread.runtime.reused').pipe(
+                  Effect.annotateLogs({
+                    component: 'runtime-pool',
+                    threadId: thread.id,
+                    activeTurns: existing.activeTurns,
+                  }),
+                )
                 return existing.coordinator
               }
 
@@ -152,6 +170,14 @@ export const ThreadRuntimePoolLive = <R>(
               }
               entry.coordinator = tracked
               entries.set(thread.id, entry)
+              yield* Effect.logInfo('thread.runtime.opened').pipe(
+                Effect.annotateLogs({
+                  component: 'runtime-pool',
+                  threadId: thread.id,
+                  audience: thread.audience,
+                  harness: thread.harness,
+                }),
+              )
               return tracked
             }),
           ),

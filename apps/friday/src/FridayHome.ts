@@ -10,3 +10,5 @@ const defaultFridayHome =
 
 export const FRIDAY_HOME = resolve(process.env.FRIDAY_HOME ?? defaultFridayHome)
 export const FRIDAY_CONFIG_PATH = join(FRIDAY_HOME, 'friday.json')
+export const FRIDAY_LOG_DIRECTORY = join(FRIDAY_HOME, 'logs')
+export const FRIDAY_LOG_PATH = join(FRIDAY_LOG_DIRECTORY, 'friday.jsonl')

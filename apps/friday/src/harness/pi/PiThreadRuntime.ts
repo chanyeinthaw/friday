@@ -435,8 +435,29 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   )
   const unsubscribe = session.subscribe((event) => {
     let shouldDrain = false
-    if (event.type === 'compaction_start') sessionState.compacting = true
+    let lifecycleLog: Effect.Effect<void> = Effect.void
+    if (event.type === 'compaction_start') {
+      sessionState.compacting = true
+      lifecycleLog = Effect.logDebug('pi.compaction.started').pipe(
+        Effect.annotateLogs({
+          component: 'pi',
+          threadId: options.thread.id,
+          harnessSessionId: session.sessionId,
+          reason: event.reason,
+        }),
+      )
+    }
     if (event.type === 'compaction_end') {
+      lifecycleLog = Effect.logDebug('pi.compaction.completed').pipe(
+        Effect.annotateLogs({
+          component: 'pi',
+          threadId: options.thread.id,
+          harnessSessionId: session.sessionId,
+          reason: event.reason,
+          aborted: event.aborted,
+          willRetry: event.willRetry,
+        }),
+      )
       sessionState.compacting = false
       if (!sessionState.drainingSteering && sessionState.queuedSteering.length > 0) {
         sessionState.drainingSteering = true
@@ -447,7 +468,8 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
       ? drainSteering.pipe(Effect.catchTag('PiThreadRuntimeError', failActiveTurnFromSteering))
       : Effect.void
     return runPromise(
-      compaction.pipe(
+      lifecycleLog.pipe(
+        Effect.andThen(compaction),
         Effect.andThen(
           projectionLock.withPermit(projectPiSessionEvent({ state, event, emit, makeActivityId })),
         ),
@@ -496,6 +518,18 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
       )
       if (disposition === 'send') yield* sessionLock.withPermit(sendSteering(request))
       if (disposition === 'drain') yield* drainSteering
+      if (disposition === 'queued') {
+        yield* Effect.logDebug('pi.steering.queued').pipe(
+          Effect.annotateLogs({
+            component: 'pi',
+            threadId: options.thread.id,
+            turnId: request.turnId,
+            harnessSessionId: session.sessionId,
+            queueDepth: sessionState.queuedSteering.length,
+            compacting: sessionState.compacting,
+          }),
+        )
+      }
       return undefined
     }
 
@@ -562,6 +596,16 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   })
 
   const sessionFile = session.sessionManager.getSessionFile()
+  yield* Effect.logInfo('pi.session.opened').pipe(
+    Effect.annotateLogs({
+      component: 'pi',
+      threadId: options.thread.id,
+      harnessSessionId: session.sessionId,
+      provider: options.thread.model.provider,
+      modelId: options.thread.model.modelId,
+      resumed: options.thread.harnessSession !== null,
+    }),
+  )
   return {
     threadId: options.thread.id,
     harnessSession: {

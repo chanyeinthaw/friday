@@ -76,11 +76,19 @@ const makeChatSdkMessageHandler = <InboundError, InboundServices>(
         try: () => projectChatSdkMessage(thread, message),
         catch: callbackError,
       })
-      const worker = yield* options.onInboundMessage(input).pipe(
-        Effect.tapError((cause) => Effect.logError('Friday inbound message failed', cause)),
-        Effect.mapError(callbackError),
-        Effect.forkIn(options.scope),
+      yield* Effect.logInfo('platform.message.accepted').pipe(
+        Effect.annotateLogs({
+          component: 'chat-sdk',
+          platform: input.binding.platform,
+          channelId: input.binding.channelId,
+          conversationId: input.binding.conversationId,
+          platformMessageId: input.message.platformMessageId,
+          messageLength: input.message.content.text.length,
+        }),
       )
+      const worker = yield* options
+        .onInboundMessage(input)
+        .pipe(Effect.mapError(callbackError), Effect.forkIn(options.scope))
       return yield* Fiber.join(worker)
     }).pipe(Effect.tapError((cause) => Effect.logError('Friday Chat SDK callback failed', cause)))
 

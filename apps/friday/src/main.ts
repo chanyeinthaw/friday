@@ -1,20 +1,50 @@
-/* oxlint-disable effecttsgo/strict-effect-provide -- This executable is the application entry point and provides the complete live layer once. */
+/* oxlint-disable effecttsgo/process-env, effecttsgo/strict-effect-provide -- This executable is the application entry point, provides the complete live layer once, and selects the bootstrap log level from NODE_ENV. */
 
 import { BunRuntime } from '@effect/platform-bun'
-import * as Console from 'effect/Console'
+import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 
+import { FRIDAY_LOG_DIRECTORY, FRIDAY_LOG_PATH } from './FridayHome.ts'
 import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
+import { withFridayLogging } from './logging/Live.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive } from './persistence/Live.ts'
 
 const start = Effect.scoped(
   Effect.gen(function* () {
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
-    yield* Console.log('Friday is ready.')
+    yield* Effect.logInfo('application.started').pipe(
+      Effect.annotateLogs({
+        component: 'application',
+        logPath: FRIDAY_LOG_PATH,
+      }),
+    )
     return yield* Effect.never
   }),
 ).pipe(Effect.provide(FridayLive))
 
-BunRuntime.runMain(runFridayCli(process.argv.slice(2), start))
+const application = Effect.scoped(
+  withFridayLogging(
+    runFridayCli(process.argv.slice(2), start).pipe(
+      Effect.tapCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : Effect.logFatal(cause).pipe(
+              Effect.annotateLogs({
+                component: 'application',
+                event: 'application.failed',
+              }),
+            ),
+      ),
+    ),
+    {
+      directory: FRIDAY_LOG_DIRECTORY,
+      path: FRIDAY_LOG_PATH,
+      minimumLevel: process.env.NODE_ENV === 'development' ? 'Debug' : 'Info',
+    },
+  ),
+).pipe(Effect.provide(BunFileSystem.layer))
+
+BunRuntime.runMain(application, { disableErrorReporting: true })

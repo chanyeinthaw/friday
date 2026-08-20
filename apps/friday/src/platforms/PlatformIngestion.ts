@@ -89,6 +89,15 @@ export const PlatformIngestionLive = Layer.effect(
     return PlatformIngestion.of({
       ingest: (input, createThread) => {
         const key = `${input.binding.platform}:${input.binding.channelId}`
+        const annotations = {
+          component: 'ingestion',
+          platform: input.binding.platform,
+          channelId: input.binding.channelId,
+          conversationId: input.binding.conversationId,
+          platformMessageId: input.message.platformMessageId,
+          messageLength: input.message.content.text.length,
+          imageCount: input.message.content.images.length,
+        }
         const accepted = semaphore.withPermit(key)(
           Effect.gen(function* () {
             const foundThread = yield* persistence.findPlatformThread({
@@ -99,7 +108,17 @@ export const PlatformIngestionLive = Layer.effect(
               ? foundThread.value
               : yield* createThread(input).pipe(
                   Effect.tap((thread) => persistence.createThread(thread)),
+                  Effect.tap((thread) =>
+                    Effect.logInfo('thread.created').pipe(
+                      Effect.annotateLogs({ threadId: thread.id }),
+                    ),
+                  ),
                 )
+            if (Option.isSome(foundThread)) {
+              yield* Effect.logDebug('thread.resolved').pipe(
+                Effect.annotateLogs({ threadId: found.id }),
+              )
+            }
             if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
             const thread = found
             const coordinator = yield* friday.openThread(thread)
@@ -122,12 +141,21 @@ export const PlatformIngestionLive = Layer.effect(
                 completedAt: timestamp,
               })
               yield* coordinator.steer(latestTurn.value.id, steering)
+              yield* Effect.logInfo('turn.steered').pipe(
+                Effect.annotateLogs({
+                  threadId: thread.id,
+                  turnId: latestTurn.value.id,
+                  activityId: steering.id,
+                }),
+              )
               return Option.none<{
                 readonly awaitTerminal: Effect.Effect<
                   TerminalTurn,
                   ThreadRuntimeError | ThreadPersistenceError
                 >
                 readonly publicationBinding: ConversationBinding
+                readonly threadId: Thread['id']
+                readonly turnId: TurnType['id']
               }>()
             }
 
@@ -152,26 +180,71 @@ export const PlatformIngestionLive = Layer.effect(
               usage: null,
             })
             const handle = yield* coordinator.prompt(turn)
+            yield* Effect.logInfo('turn.started').pipe(
+              Effect.annotateLogs({
+                threadId: thread.id,
+                turnId: turn.id,
+                turnSequence: turn.sequence,
+                provider: turn.model.provider,
+                modelId: turn.model.modelId,
+                thinkingLevel: turn.thinkingLevel,
+              }),
+            )
             return Option.some({
               awaitTerminal: handle.awaitTerminal,
               publicationBinding: input.binding,
+              threadId: thread.id,
+              turnId: turn.id,
             })
           }),
         )
         return accepted.pipe(
+          Effect.annotateLogs(annotations),
+          Effect.withLogSpan('platform.ingest'),
           Effect.flatMap(
             Option.match({
               onNone: () => Effect.void,
-              onSome: ({ awaitTerminal, publicationBinding }) =>
+              onSome: ({ awaitTerminal, publicationBinding, threadId, turnId }) =>
                 platforms.withTyping(
                   publicationBinding,
                   awaitTerminal.pipe(
+                    Effect.tap((terminal) =>
+                      terminal.status === 'completed'
+                        ? Effect.logInfo('turn.completed').pipe(
+                            Effect.annotateLogs({
+                              threadId,
+                              turnId,
+                              inputTokens: terminal.usage?.inputTokens,
+                              outputTokens: terminal.usage?.outputTokens,
+                              totalTokens: terminal.usage?.totalTokens,
+                            }),
+                          )
+                        : terminal.status === 'interrupted'
+                          ? Effect.logWarning('turn.interrupted').pipe(
+                              Effect.annotateLogs({ threadId, turnId }),
+                            )
+                          : Effect.logError('turn.failed').pipe(
+                              Effect.annotateLogs({ threadId, turnId }),
+                            ),
+                    ),
                     Effect.flatMap((terminal) =>
                       terminal.status === 'completed'
-                        ? platforms.publish({
-                            binding: publicationBinding,
-                            text: terminal.agentMessage,
-                          })
+                        ? platforms
+                            .publish({
+                              binding: publicationBinding,
+                              text: terminal.agentMessage,
+                            })
+                            .pipe(
+                              Effect.andThen(
+                                Effect.logInfo('publication.completed').pipe(
+                                  Effect.annotateLogs({
+                                    threadId,
+                                    turnId,
+                                    responseLength: terminal.agentMessage.length,
+                                  }),
+                                ),
+                              ),
+                            )
                         : Effect.void,
                     ),
                   ),
