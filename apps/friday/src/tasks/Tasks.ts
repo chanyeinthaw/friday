@@ -1,0 +1,780 @@
+/* oxlint-disable effecttsgo/node-builtin-import -- Working-directory validation uses Node path semantics. */
+
+import {
+  ActivityId,
+  AgentThread,
+  SteeringActivity,
+  TaskId,
+  ThreadId,
+  Turn,
+  TurnId,
+  WorkingDirectory,
+  type BootstrapTaskRequest,
+  type CancelTaskRequest,
+  type ChannelThread,
+  type IsoDateTime,
+  type ListTasksRequest,
+  type StartedTask,
+  type StartTaskRequest,
+  type SteerTaskRequest,
+  type TaskSummary,
+} from '@friday/contracts/conversation'
+import * as Crypto from 'effect/Crypto'
+import * as DateTime from 'effect/DateTime'
+import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+import * as Semaphore from 'effect/Semaphore'
+import { isAbsolute } from 'node:path'
+
+import { Friday, type FridayContract } from '../Friday.ts'
+import { ChannelTurns, type ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
+import type { TerminalTurn, ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
+import {
+  ThreadPersistence,
+  type ThreadPersistenceContract,
+  type ThreadPersistenceError,
+} from '../conversation/ThreadPersistence.ts'
+import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { TaskModels, type TaskModelsContract } from './TaskModels.ts'
+import {
+  isActiveTaskStatus,
+  matchesTaskStatusFilter,
+  workingDirectoriesConflict,
+} from './TaskPolicy.ts'
+
+export class TaskError extends Schema.Error<TaskError>('TaskError')({
+  _tag: Schema.tag('TaskError'),
+  operation: Schema.Literals(['start', 'bootstrap', 'steer', 'list', 'cancel']),
+  reason: Schema.Literals([
+    'model-not-configured',
+    'invalid-working-directory',
+    'channel-workspace',
+    'working-directory-busy',
+    'task-not-found',
+    'task-not-owned',
+    'task-not-active',
+    'parent-not-found',
+    'parent-not-channel',
+    'start-failed',
+  ]),
+  detail: Schema.String,
+}) {}
+
+export interface TasksContract {
+  readonly start: (
+    request: StartTaskRequest,
+  ) => Effect.Effect<StartedTask, TaskError | ThreadPersistenceError>
+  readonly bootstrap: (
+    request: BootstrapTaskRequest,
+  ) => Effect.Effect<StartedTask, TaskError | ThreadPersistenceError>
+  readonly steer: (
+    request: SteerTaskRequest,
+  ) => Effect.Effect<void, TaskError | ThreadPersistenceError>
+  readonly list: (
+    request: ListTasksRequest,
+  ) => Effect.Effect<ReadonlyArray<TaskSummary>, TaskError | ThreadPersistenceError>
+  readonly cancel: (
+    request: CancelTaskRequest,
+  ) => Effect.Effect<void, TaskError | ThreadPersistenceError>
+}
+
+export class Tasks extends Context.Service<Tasks, TasksContract>()('friday/tasks/Tasks') {}
+
+export interface MakeTasksOptions {
+  readonly persistence: ThreadPersistenceContract
+  readonly friday: FridayContract
+  readonly models: TaskModelsContract
+  readonly channelTurns: ChannelTurnsContract
+  readonly fileSystem: FileSystem.FileSystem
+  readonly randomUUID: Effect.Effect<string, TaskError>
+  readonly now: Effect.Effect<IsoDateTime>
+  readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>
+}
+
+const decodeActivityId = Schema.decodeUnknownEffect(ActivityId)
+const decodeAgentThread = Schema.decodeUnknownEffect(AgentThread)
+const decodeSteeringActivity = Schema.decodeUnknownEffect(SteeringActivity)
+const decodeTaskId = Schema.decodeUnknownEffect(TaskId)
+const decodeThreadId = Schema.decodeUnknownEffect(ThreadId)
+const decodeTurn = Schema.decodeUnknownEffect(Turn)
+const decodeTurnId = Schema.decodeUnknownEffect(TurnId)
+const decodeWorkingDirectory = Schema.decodeUnknownEffect(WorkingDirectory)
+
+const renderTaskOutcome = (taskId: TaskId, terminal: TerminalTurn): string => {
+  switch (terminal.status) {
+    case 'completed':
+      return `Task ${taskId} completed.\n\nResult:\n${terminal.agentMessage}`
+    case 'interrupted':
+      return `Task ${taskId} was interrupted.${
+        terminal.agentMessage ? `\n\nPartial result:\n${terminal.agentMessage}` : ''
+      }`
+    case 'failed':
+      return `Task ${taskId} failed.\n\nError:\n${terminal.errorMessage}`
+  }
+}
+
+const taskError = (
+  reason: TaskError['reason'],
+  detail: string,
+  operation: TaskError['operation'] = 'start',
+) => new TaskError({ operation, reason, detail })
+
+const resolveModel = Effect.fn('Tasks.resolveModel')(function* (
+  models: TaskModelsContract,
+  requested: StartTaskRequest['model'],
+  operation: TaskError['operation'],
+) {
+  const resolved =
+    requested === undefined ? yield* models.defaultModel : yield* models.resolve(requested)
+  return yield* Option.match(resolved, {
+    onNone: () =>
+      Effect.fail(
+        taskError(
+          'model-not-configured',
+          requested === undefined
+            ? 'No default subagent model is configured.'
+            : `Subagent model '${requested.provider}/${requested.modelId}' is not configured.`,
+          operation,
+        ),
+      ),
+    onSome: Effect.succeed,
+  })
+})
+
+const requireChannelThread = Effect.fn('Tasks.requireChannelThread')(function* (
+  persistence: ThreadPersistenceContract,
+  parentThreadId: StartTaskRequest['parentThreadId'],
+) {
+  const found = yield* persistence.getThread(parentThreadId)
+  return yield* Option.match(found, {
+    onNone: () =>
+      Effect.fail(
+        taskError('parent-not-found', `Parent Thread '${parentThreadId}' was not found.`),
+      ),
+    onSome: (thread) =>
+      thread.audience === 'user'
+        ? Effect.succeed(thread)
+        : Effect.fail(
+            taskError('parent-not-channel', `Thread '${parentThreadId}' is not a channel Thread.`),
+          ),
+  })
+})
+
+const requireOwnedTask = Effect.fn('Tasks.requireOwnedTask')(function* (
+  persistence: ThreadPersistenceContract,
+  operation: TaskError['operation'],
+  parentThreadId: ThreadId,
+  taskId: TaskId,
+) {
+  const threadId = yield* decodeThreadId(taskId).pipe(
+    Effect.mapError(() =>
+      taskError('task-not-found', `Task '${taskId}' was not found.`, operation),
+    ),
+  )
+  const found = yield* persistence.getThread(threadId)
+  return yield* Option.match(found, {
+    onNone: () =>
+      Effect.fail(taskError('task-not-found', `Task '${taskId}' was not found.`, operation)),
+    onSome: (thread) => {
+      if (thread.audience !== 'agent') {
+        return Effect.fail(
+          taskError('task-not-found', `Task '${taskId}' was not found.`, operation),
+        )
+      }
+      if (thread.parent.threadId !== parentThreadId) {
+        return Effect.fail(
+          taskError(
+            'task-not-owned',
+            `Task '${taskId}' does not belong to this channel.`,
+            operation,
+          ),
+        )
+      }
+      return Effect.succeed(thread)
+    },
+  })
+})
+
+const validateWorkingDirectory = Effect.fn('Tasks.validateWorkingDirectory')(function* (
+  fileSystem: FileSystem.FileSystem,
+  parent: ChannelThread,
+  workingDirectory: StartTaskRequest['workingDirectory'],
+) {
+  if (!isAbsolute(workingDirectory)) {
+    return yield* taskError(
+      'invalid-working-directory',
+      `Task working directory '${workingDirectory}' must be absolute.`,
+    )
+  }
+  const directory = yield* fileSystem.realPath(workingDirectory).pipe(
+    Effect.flatMap((path) => fileSystem.stat(path).pipe(Effect.as(path))),
+    Effect.mapError(() =>
+      taskError(
+        'invalid-working-directory',
+        `Task working directory '${workingDirectory}' does not exist.`,
+      ),
+    ),
+  )
+  const info = yield* fileSystem
+    .stat(directory)
+    .pipe(
+      Effect.mapError(() =>
+        taskError(
+          'invalid-working-directory',
+          `Task working directory '${workingDirectory}' cannot be inspected.`,
+        ),
+      ),
+    )
+  if (info.type !== 'Directory') {
+    return yield* taskError(
+      'invalid-working-directory',
+      `Task working directory '${workingDirectory}' is not a directory.`,
+    )
+  }
+  const channelWorkspace = yield* fileSystem
+    .realPath(parent.workingDirectory)
+    .pipe(
+      Effect.mapError(() =>
+        taskError('invalid-working-directory', 'The parent channel workspace cannot be resolved.'),
+      ),
+    )
+  if (workingDirectoriesConflict(directory, channelWorkspace)) {
+    return yield* taskError(
+      'channel-workspace',
+      'Normal tasks cannot run in the parent channel workspace.',
+    )
+  }
+  return yield* decodeWorkingDirectory(directory).pipe(
+    Effect.mapError((cause) =>
+      taskError(
+        'invalid-working-directory',
+        `Task working directory '${directory}' is invalid: ${String(cause)}`,
+      ),
+    ),
+  )
+})
+
+interface LaunchTaskInput {
+  readonly parent: ChannelThread
+  readonly parentTurnId: TurnId
+  readonly task: string
+  readonly workingDirectory: StartTaskRequest['workingDirectory']
+  readonly model: StartTaskRequest['model']
+  readonly thinkingLevel: StartTaskRequest['thinkingLevel']
+  readonly role: AgentThread['role']
+  readonly operation: 'start' | 'bootstrap'
+}
+
+export const makeTasks = (options: MakeTasksOptions): TasksContract => {
+  const launchLock = Semaphore.makeUnsafe(1)
+  const launchTaskUnlocked = Effect.fn('Tasks.launchTask')(function* (input: LaunchTaskInput) {
+    const existingTasks = yield* options.persistence.listAgentThreads({
+      parentThreadId: input.parent.id,
+    })
+    for (const existing of existingTasks) {
+      if (existing.id === input.parent.id) continue
+      if (!workingDirectoriesConflict(existing.workingDirectory, input.workingDirectory)) continue
+      const latest = yield* options.persistence.getLatestTurn(existing.id)
+      if (Option.isSome(latest) && isActiveTaskStatus(latest.value.status)) {
+        return yield* taskError(
+          'working-directory-busy',
+          `Working directory '${input.workingDirectory}' is already used by active task '${existing.id}'.`,
+          input.operation,
+        )
+      }
+    }
+    const model = yield* resolveModel(options.models, input.model, input.operation)
+    const timestamp = yield* options.now
+    const taskUuid = yield* options.randomUUID
+    const turnUuid = yield* options.randomUUID
+    const taskId = yield* decodeTaskId(`task-${taskUuid}`).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to construct the task identifier: ${String(cause)}`,
+          input.operation,
+        ),
+      ),
+    )
+    const threadId = yield* decodeThreadId(taskId).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to construct the agent Thread identifier: ${String(cause)}`,
+          input.operation,
+        ),
+      ),
+    )
+    const turnId = yield* decodeTurnId(`turn-${turnUuid}`).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to construct the Turn identifier: ${String(cause)}`,
+          input.operation,
+        ),
+      ),
+    )
+    const thread = yield* decodeAgentThread({
+      id: threadId,
+      audience: 'agent',
+      parent: { threadId: input.parent.id, turnId: input.parentTurnId },
+      role: input.role,
+      harness: input.parent.harness,
+      harnessSession: null,
+      workingDirectory: input.workingDirectory,
+      model,
+      thinkingLevel: input.thinkingLevel ?? input.parent.thinkingLevel,
+      conversationBinding: null,
+      status: 'active',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      closedAt: null,
+    }).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to construct the agent Thread: ${String(cause)}`,
+          input.operation,
+        ),
+      ),
+    )
+    const turn = yield* decodeTurn({
+      id: turnId,
+      threadId,
+      sequence: 1,
+      input: { source: 'agent', content: { text: input.task, images: [] } },
+      agentMessage: null,
+      activities: [],
+      model,
+      thinkingLevel: thread.thinkingLevel,
+      harnessTurnId: null,
+      status: 'pending',
+      requestedAt: timestamp,
+      startedAt: null,
+      completedAt: null,
+      errorMessage: null,
+      usage: null,
+    }).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to construct the initial task Turn: ${String(cause)}`,
+          input.operation,
+        ),
+      ),
+    )
+
+    yield* options.persistence.createThread(thread)
+    const coordinator = yield* options.friday
+      .openThread(thread)
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to open task '${taskId}': ${String(cause)}`,
+            input.operation,
+          ),
+        ),
+      )
+    const handle = yield* coordinator
+      .prompt(turn)
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to start task '${taskId}': ${String(cause)}`,
+            input.operation,
+          ),
+        ),
+      )
+    yield* options.fork(
+      handle.awaitTerminal.pipe(
+        Effect.flatMap((terminal) =>
+          Effect.gen(function* () {
+            yield* options.persistence.closeThread({
+              threadId: thread.id,
+              closedAt: yield* options.now,
+            })
+            yield* options.channelTurns.accept({
+              thread: input.parent,
+              message: {
+                source: 'agent',
+                content: { text: renderTaskOutcome(taskId, terminal), images: [] },
+              },
+            })
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logError('Task completion delivery failed', cause).pipe(
+            Effect.annotateLogs({ taskId, parentThreadId: input.parent.id }),
+          ),
+        ),
+      ),
+    )
+
+    return { taskId, status: 'pending' as const }
+  })
+  const launchTask = (input: LaunchTaskInput) => launchLock.withPermit(launchTaskUnlocked(input))
+
+  const start = Effect.fn('Tasks.start')(function* (request: StartTaskRequest) {
+    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    const workingDirectory = yield* validateWorkingDirectory(
+      options.fileSystem,
+      parent,
+      request.workingDirectory,
+    )
+    return yield* launchTask({
+      parent,
+      parentTurnId: request.parentTurnId,
+      task: request.task,
+      workingDirectory,
+      model: request.model,
+      thinkingLevel: request.thinkingLevel,
+      role: 'subagent',
+      operation: 'start',
+    })
+  })
+
+  const bootstrap = Effect.fn('Tasks.bootstrap')(function* (request: BootstrapTaskRequest) {
+    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    const resolvedWorkingDirectory = yield* options.fileSystem
+      .realPath(parent.workingDirectory)
+      .pipe(
+        Effect.flatMap((path) =>
+          options.fileSystem
+            .stat(path)
+            .pipe(
+              Effect.flatMap((info) =>
+                info.type === 'Directory'
+                  ? Effect.succeed(path)
+                  : Effect.fail(
+                      taskError(
+                        'invalid-working-directory',
+                        `Channel workspace '${parent.workingDirectory}' is not a directory.`,
+                        'bootstrap',
+                      ),
+                    ),
+              ),
+            ),
+        ),
+        Effect.mapError((cause) =>
+          cause instanceof TaskError
+            ? cause
+            : taskError(
+                'invalid-working-directory',
+                `Channel workspace '${parent.workingDirectory}' cannot be used for bootstrap work.`,
+                'bootstrap',
+              ),
+        ),
+      )
+    const workingDirectory = yield* decodeWorkingDirectory(resolvedWorkingDirectory).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'invalid-working-directory',
+          `Channel workspace '${resolvedWorkingDirectory}' is invalid: ${String(cause)}`,
+          'bootstrap',
+        ),
+      ),
+    )
+    return yield* launchTask({
+      parent,
+      parentTurnId: request.parentTurnId,
+      task: request.task,
+      workingDirectory,
+      model: request.model,
+      thinkingLevel: request.thinkingLevel,
+      role: 'bootstrap',
+      operation: 'bootstrap',
+    })
+  })
+
+  const makeContinuationTurn = Effect.fn('Tasks.makeContinuationTurn')(function* (
+    thread: AgentThread,
+    request: SteerTaskRequest,
+    latest: Turn,
+  ) {
+    const timestamp = yield* options.now
+    const turnUuid = yield* options.randomUUID
+    const turnId = yield* decodeTurnId(`turn-${turnUuid}`).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to construct the continuation Turn: ${String(cause)}`,
+          'steer',
+        ),
+      ),
+    )
+    return yield* decodeTurn({
+      id: turnId,
+      threadId: thread.id,
+      sequence: latest.sequence + 1,
+      input: { source: 'agent', content: { text: request.message, images: [] } },
+      agentMessage: null,
+      activities: [],
+      model: thread.model,
+      thinkingLevel: thread.thinkingLevel,
+      harnessTurnId: null,
+      status: 'pending',
+      requestedAt: timestamp,
+      startedAt: null,
+      completedAt: null,
+      errorMessage: null,
+      usage: null,
+    }).pipe(
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to construct the continuation Turn: ${String(cause)}`,
+          'steer',
+        ),
+      ),
+    )
+  })
+
+  const steer = Effect.fn('Tasks.steer')(function* (request: SteerTaskRequest) {
+    const thread = yield* requireOwnedTask(
+      options.persistence,
+      'steer',
+      request.parentThreadId,
+      request.taskId,
+    )
+    const latest = yield* options.persistence.getLatestTurn(thread.id)
+    const turn = yield* Option.match(latest, {
+      onNone: () =>
+        Effect.fail(
+          taskError('task-not-active', `Task '${request.taskId}' has no Turns.`, 'steer'),
+        ),
+      onSome: Effect.succeed,
+    })
+    const coordinator = yield* options.friday
+      .openThread(thread)
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to open task '${request.taskId}': ${String(cause)}`,
+            'steer',
+          ),
+        ),
+      )
+    if (isActiveTaskStatus(turn.status)) {
+      const timestamp = yield* options.now
+      const activityUuid = yield* options.randomUUID
+      const activityId = yield* decodeActivityId(`activity-${activityUuid}`).pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to construct steering Activity: ${String(cause)}`,
+            'steer',
+          ),
+        ),
+      )
+      const activity = yield* decodeSteeringActivity({
+        id: activityId,
+        sequence: turn.activities.length,
+        status: 'completed',
+        type: 'steering',
+        message: { source: 'agent', content: { text: request.message, images: [] } },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: timestamp,
+      }).pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to construct steering Activity: ${String(cause)}`,
+            'steer',
+          ),
+        ),
+      )
+      return yield* coordinator
+        .steer(turn.id, activity)
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError(
+              'start-failed',
+              `Failed to steer task '${request.taskId}': ${String(cause)}`,
+              'steer',
+            ),
+          ),
+        )
+    }
+    const continuation = yield* makeContinuationTurn(thread, request, turn)
+    const handle = yield* coordinator
+      .prompt(continuation)
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to continue task '${request.taskId}': ${String(cause)}`,
+            'steer',
+          ),
+        ),
+      )
+    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    yield* options.fork(
+      handle.awaitTerminal.pipe(
+        Effect.flatMap((terminal) =>
+          Effect.gen(function* () {
+            yield* options.persistence.closeThread({
+              threadId: thread.id,
+              closedAt: yield* options.now,
+            })
+            yield* options.channelTurns.accept({
+              thread: parent,
+              message: {
+                source: 'agent',
+                content: { text: renderTaskOutcome(request.taskId, terminal), images: [] },
+              },
+            })
+          }),
+        ),
+        Effect.catchCause((cause) => Effect.logError('Task continuation delivery failed', cause)),
+      ),
+    )
+  })
+
+  const list = Effect.fn('Tasks.list')(function* (request: ListTasksRequest) {
+    yield* requireChannelThread(options.persistence, request.parentThreadId)
+    const threads = yield* options.persistence.listAgentThreads({
+      parentThreadId: request.parentThreadId,
+    })
+    const summaries = yield* Effect.forEach(threads, (thread) =>
+      Effect.gen(function* () {
+        const first = yield* options.persistence.getFirstTurn(thread.id)
+        const latest = yield* options.persistence.getLatestTurn(thread.id)
+        if (Option.isNone(first) || Option.isNone(latest)) return null
+        return {
+          taskId: yield* decodeTaskId(thread.id).pipe(
+            Effect.mapError(() =>
+              taskError(
+                'task-not-found',
+                `Agent Thread '${thread.id}' is not a valid task.`,
+                'list',
+              ),
+            ),
+          ),
+          role: thread.role,
+          status: latest.value.status,
+          task: first.value.input.content.text,
+          workingDirectory: thread.workingDirectory,
+          model: thread.model,
+          thinkingLevel: thread.thinkingLevel,
+          createdAt: thread.createdAt,
+          completedAt: latest.value.completedAt,
+        } satisfies TaskSummary
+      }),
+    )
+    const present = summaries.filter((summary): summary is TaskSummary => summary !== null)
+    const filter = request.status ?? 'all'
+    return present.filter((summary) => matchesTaskStatusFilter(summary.status, filter))
+  })
+
+  const cancel = Effect.fn('Tasks.cancel')(function* (request: CancelTaskRequest) {
+    const thread = yield* requireOwnedTask(
+      options.persistence,
+      'cancel',
+      request.parentThreadId,
+      request.taskId,
+    )
+    const latest = yield* options.persistence.getLatestTurn(thread.id)
+    const turn = yield* Option.match(latest, {
+      onNone: () =>
+        Effect.fail(
+          taskError('task-not-active', `Task '${request.taskId}' has no Turns.`, 'cancel'),
+        ),
+      onSome: Effect.succeed,
+    })
+    if (!isActiveTaskStatus(turn.status)) {
+      return yield* taskError(
+        'task-not-active',
+        `Task '${request.taskId}' is already ${turn.status}.`,
+        'cancel',
+      )
+    }
+    const coordinator = yield* options.friday
+      .openThread(thread)
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to open task '${request.taskId}': ${String(cause)}`,
+            'cancel',
+          ),
+        ),
+      )
+    yield* coordinator
+      .cancel(turn.id)
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to cancel task '${request.taskId}': ${String(cause)}`,
+            'cancel',
+          ),
+        ),
+      )
+    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    yield* options.channelTurns
+      .accept({
+        thread: parent,
+        message: {
+          source: 'agent',
+          content: {
+            text: `Task ${request.taskId} cancellation was requested.\n\nReason:\n${request.reason}`,
+            images: [],
+          },
+        },
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to notify the channel about task '${request.taskId}' cancellation: ${String(cause)}`,
+            'cancel',
+          ),
+        ),
+      )
+  })
+
+  return Tasks.of({
+    start,
+    bootstrap,
+    steer,
+    list,
+    cancel,
+  })
+}
+
+export const TasksLive = Layer.effect(
+  Tasks,
+  Effect.gen(function* () {
+    const persistence = yield* ThreadPersistence
+    const friday = yield* Friday
+    const models = yield* TaskModels
+    const channelTurns = yield* ChannelTurns
+    const fileSystem = yield* FileSystem.FileSystem
+    const crypto = yield* Crypto.Crypto
+
+    return makeTasks({
+      persistence,
+      friday,
+      models,
+      channelTurns,
+      fileSystem,
+      randomUUID: crypto.randomUUIDv4.pipe(
+        Effect.mapError((cause) =>
+          taskError('start-failed', `Failed to generate an identifier: ${String(cause)}`),
+        ),
+      ),
+      now: DateTime.now.pipe(Effect.map(DateTime.formatIso)),
+      fork: (effect) => effect.pipe(Effect.forkDetach, Effect.asVoid),
+    })
+  }),
+)
+
+export type TaskCoordinator = ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>

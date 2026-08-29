@@ -14,6 +14,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { Friday, type FridayContract } from '../Friday.ts'
+import { ChannelTurnsLive } from '../conversation/ChannelTurns.ts'
 import {
   ThreadPersistence,
   type ThreadPersistenceContract,
@@ -74,9 +75,10 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
         Layer.succeed(Crypto.Crypto, testCrypto),
         PlatformRegistryLive,
       )
+      const TurnsLive = ChannelTurnsLive.pipe(Layer.provide(dependencies))
       const TestLive = Layer.merge(
-        dependencies,
-        PlatformIngestionLive.pipe(Layer.provide(dependencies)),
+        Layer.merge(dependencies, TurnsLive),
+        PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
       )
 
       yield* Effect.gen(function* () {
@@ -110,9 +112,10 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         Layer.succeed(Crypto.Crypto, testCrypto),
         PlatformRegistryLive,
       )
+      const TurnsLive = ChannelTurnsLive.pipe(Layer.provide(dependencies))
       const TestLive = Layer.merge(
-        dependencies,
-        PlatformIngestionLive.pipe(Layer.provide(dependencies)),
+        Layer.merge(dependencies, TurnsLive),
+        PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
       )
 
       yield* Effect.gen(function* () {
@@ -163,6 +166,7 @@ const makeFriday = (
             }),
           ),
         steer: () => Effect.sync(() => events.push('steer')),
+        cancel: () => Effect.void,
         start: Effect.void,
         drain: Effect.void,
       } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
@@ -195,6 +199,8 @@ const makePersistence = (
     createThread: () => Effect.void,
     getThread: () => Effect.succeedNone,
     findPlatformThread: () => Effect.succeedSome(thread),
+    listAgentThreads: () => Effect.succeed([]),
+    closeThread: () => Effect.void,
     setThreadHarnessSession: () => Effect.void,
     createTurn: (turn) => Effect.sync(() => void (storedTurn = turn)),
     getTurn: () =>
@@ -207,6 +213,7 @@ const makePersistence = (
               agentMessage: 'Friday is done.',
             }),
       ),
+    getFirstTurn: () => Effect.succeedNone,
     getLatestTurn: () =>
       Effect.succeed(
         options.latestIsActive

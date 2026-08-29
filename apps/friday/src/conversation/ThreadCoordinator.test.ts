@@ -127,6 +127,7 @@ it.effect('persists a Turn before prompting its runtime', () =>
       harnessSession,
       prompt: ({ turnId }: { readonly turnId: typeof turn.id }) =>
         Effect.sync(() => operations.push({ type: 'prompt', value: turnId })),
+      cancel: () => Effect.void,
       events: Stream.empty,
     }
     const coordinator = yield* makeThreadCoordinator(runtime).pipe(
@@ -150,6 +151,7 @@ it.effect('completes the Turn handle after a prompt delivery failure is persiste
         threadId: turn.threadId,
         harnessSession,
         prompt: () => Effect.fail('prompt-boom'),
+        cancel: () => Effect.void,
         events: Stream.never,
       }
       const coordinator = yield* makeThreadCoordinator(runtime).pipe(
@@ -177,6 +179,7 @@ it.effect('persists steering before delivering it to the runtime', () =>
       harnessSession,
       prompt: ({ turnId }: { readonly turnId: typeof turn.id }) =>
         Effect.sync(() => operations.push({ type: 'prompt', value: turnId })),
+      cancel: () => Effect.void,
       events: Stream.empty,
     }
     const coordinator = yield* makeThreadCoordinator(runtime).pipe(
@@ -201,6 +204,7 @@ it.effect('signals completion only after the terminal event is persisted', () =>
         threadId: turn.threadId,
         harnessSession,
         prompt: () => Effect.void,
+        cancel: () => Effect.void,
         events: Stream.unwrap(
           Deferred.await(events).pipe(Effect.map((items) => Stream.fromIterable(items))),
         ),
@@ -241,6 +245,7 @@ it.effect('persists active snapshots and the completed Activity in event order',
       threadId: turn.threadId,
       harnessSession,
       prompt: () => Effect.void,
+      cancel: () => Effect.void,
       events: Stream.fromIterable(runtimeEvents),
     }
     const coordinator = yield* makeThreadCoordinator(runtime).pipe(
@@ -262,9 +267,12 @@ const makePersistence = (operations: Array<RecordedOperation>): ThreadPersistenc
   createThread: () => Effect.void,
   getThread: () => Effect.succeedNone,
   findPlatformThread: () => Effect.succeedNone,
+  listAgentThreads: () => Effect.succeed([]),
+  closeThread: () => Effect.void,
   setThreadHarnessSession: () => Effect.void,
   createTurn: (value) => Effect.sync(() => operations.push({ type: 'create-turn', value })),
   getTurn: () => Effect.succeedNone,
+  getFirstTurn: () => Effect.succeedNone,
   getLatestTurn: () => Effect.succeedNone,
   startTurn: ({ turnId }) =>
     Effect.sync(() => operations.push({ type: 'start-turn', value: turnId })),

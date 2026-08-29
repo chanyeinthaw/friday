@@ -44,6 +44,7 @@ export interface ThreadCoordinatorContract<PromptError, EventError> {
     turnId: Turn['id'],
     activity: SteeringActivity,
   ) => Effect.Effect<void, PromptError | ThreadPersistenceError>
+  readonly cancel: (turnId: TurnId) => Effect.Effect<void, PromptError>
   readonly start: Effect.Effect<void, never, Scope.Scope>
   readonly drain: Effect.Effect<void, EventError | ThreadPersistenceError>
 }
@@ -187,6 +188,7 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
           awaitTerminal: Deferred.await(signal),
         }
       }),
+    cancel: runtime.cancel,
     steer: (turnId, activity) => {
       const request: PromptRequest = {
         turnId,

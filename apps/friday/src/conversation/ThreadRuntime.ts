@@ -67,6 +67,7 @@ export interface ThreadRuntime<PromptError = never, EventError = never> {
   readonly threadId: ThreadId
   readonly harnessSession: HarnessSession
   readonly prompt: (request: PromptRequest) => Effect.Effect<void, PromptError>
+  readonly cancel: (turnId: TurnId) => Effect.Effect<void, PromptError>
   readonly events: Stream.Stream<ThreadRuntimeEvent, EventError>
 }
 

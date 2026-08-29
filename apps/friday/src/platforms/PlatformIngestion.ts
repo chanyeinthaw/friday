@@ -1,18 +1,7 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schema errors use the canonical _tag discriminator. */
 
-import {
-  ActivityId,
-  SteeringActivity,
-  Turn,
-  TurnId,
-  type ConversationBinding,
-  type SteeringActivity as SteeringActivityType,
-  type Thread,
-  type Turn as TurnType,
-} from '@friday/contracts/conversation'
+import type { Thread } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
-import * as Crypto from 'effect/Crypto'
-import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
@@ -21,25 +10,13 @@ import * as PartitionedSemaphore from 'effect/PartitionedSemaphore'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
-import { Friday } from '../Friday.ts'
-import type { TerminalTurn } from '../conversation/ThreadCoordinator.ts'
-import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { ChannelTurns, type ChannelTurnError } from '../conversation/ChannelTurns.ts'
 import {
   ThreadPersistence,
   type ThreadPersistenceError,
 } from '../conversation/ThreadPersistence.ts'
 import type { PlatformInput } from './PlatformAdapter.ts'
-import {
-  PlatformNotFoundError,
-  PlatformOperationError,
-  PlatformRegistry,
-} from './PlatformRegistry.ts'
-
-const decodeTurn = Schema.decodeUnknownSync(Turn)
-const decodeSteeringActivity = Schema.decodeUnknownSync(SteeringActivity)
-const decodeTurnId = Schema.decodeUnknownSync(TurnId)
-const decodeActivityId = Schema.decodeUnknownSync(ActivityId)
-const nowIso = Effect.map(DateTime.now, DateTime.formatIso)
+import { PlatformNotFoundError, PlatformOperationError } from './PlatformRegistry.ts'
 
 export class PlatformThreadNotFoundError extends Schema.Error<PlatformThreadNotFoundError>(
   'PlatformThreadNotFoundError',
@@ -54,7 +31,7 @@ export class PlatformThreadNotFoundError extends Schema.Error<PlatformThreadNotF
 }
 
 export type PlatformIngestionError<CreationError> =
-  | ThreadRuntimeError
+  | ChannelTurnError
   | ThreadPersistenceError
   | PlatformThreadNotFoundError
   | PlatformError.PlatformError
@@ -74,16 +51,11 @@ export class PlatformIngestion extends Context.Service<
   PlatformIngestionContract
 >()('friday/platforms/PlatformIngestion') {}
 
-const isActiveTurn = (turn: TurnType): boolean =>
-  turn.status === 'pending' || turn.status === 'running'
-
 export const PlatformIngestionLive = Layer.effect(
   PlatformIngestion,
   Effect.gen(function* () {
-    const friday = yield* Friday
     const persistence = yield* ThreadPersistence
-    const platforms = yield* PlatformRegistry
-    const crypto = yield* Crypto.Crypto
+    const channelTurns = yield* ChannelTurns
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
     return PlatformIngestion.of({
@@ -98,160 +70,33 @@ export const PlatformIngestionLive = Layer.effect(
           messageLength: input.message.content.text.length,
           imageCount: input.message.content.images.length,
         }
-        const accepted = semaphore.withPermit(key)(
-          Effect.gen(function* () {
-            const foundThread = yield* persistence.findPlatformThread({
-              platform: input.binding.platform,
-              conversationId: input.binding.conversationId,
-            })
-            const found = Option.isSome(foundThread)
-              ? foundThread.value
-              : yield* createThread(input).pipe(
-                  Effect.tap((thread) => persistence.createThread(thread)),
-                  Effect.tap((thread) =>
-                    Effect.logInfo('thread.created').pipe(
-                      Effect.annotateLogs({ threadId: thread.id }),
-                    ),
-                  ),
-                )
-            if (Option.isSome(foundThread)) {
-              yield* Effect.logDebug('thread.resolved').pipe(
-                Effect.annotateLogs({ threadId: found.id }),
-              )
-            }
-            if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
-            const thread = found
-            const coordinator = yield* friday.openThread(thread)
-            const latestTurn = yield* persistence.getLatestTurn(thread.id)
-            const timestamp = yield* nowIso
-
-            if (Option.isSome(latestTurn) && isActiveTurn(latestTurn.value)) {
-              const sequence = latestTurn.value.activities.reduce(
-                (highest, activity) => Math.max(highest, activity.sequence + 1),
-                0,
-              )
-              const steering: SteeringActivityType = decodeSteeringActivity({
-                id: decodeActivityId(yield* crypto.randomUUIDv4),
-                sequence,
-                status: 'completed',
-                type: 'steering',
-                message: input.message,
-                createdAt: timestamp,
-                updatedAt: timestamp,
-                completedAt: timestamp,
+        return semaphore
+          .withPermit(key)(
+            Effect.gen(function* () {
+              const foundThread = yield* persistence.findPlatformThread({
+                platform: input.binding.platform,
+                conversationId: input.binding.conversationId,
               })
-              yield* coordinator.steer(latestTurn.value.id, steering)
-              yield* Effect.logInfo('turn.steered').pipe(
-                Effect.annotateLogs({
-                  threadId: thread.id,
-                  turnId: latestTurn.value.id,
-                  activityId: steering.id,
-                }),
-              )
-              return Option.none<{
-                readonly awaitTerminal: Effect.Effect<
-                  TerminalTurn,
-                  ThreadRuntimeError | ThreadPersistenceError
-                >
-                readonly publicationBinding: ConversationBinding
-                readonly threadId: Thread['id']
-                readonly turnId: TurnType['id']
-              }>()
-            }
-
-            const turn: TurnType = decodeTurn({
-              id: decodeTurnId(yield* crypto.randomUUIDv4),
-              threadId: thread.id,
-              sequence: Option.match(latestTurn, {
-                onNone: () => 1,
-                onSome: (previous) => previous.sequence + 1,
-              }),
-              input: input.message,
-              agentMessage: null,
-              activities: [],
-              model: thread.model,
-              thinkingLevel: thread.thinkingLevel,
-              harnessTurnId: null,
-              status: 'pending',
-              requestedAt: timestamp,
-              startedAt: null,
-              completedAt: null,
-              errorMessage: null,
-              usage: null,
-            })
-            const handle = yield* coordinator.prompt(turn)
-            yield* Effect.logInfo('turn.started').pipe(
-              Effect.annotateLogs({
-                threadId: thread.id,
-                turnId: turn.id,
-                turnSequence: turn.sequence,
-                provider: turn.model.provider,
-                modelId: turn.model.modelId,
-                thinkingLevel: turn.thinkingLevel,
-              }),
-            )
-            return Option.some({
-              awaitTerminal: handle.awaitTerminal,
-              publicationBinding: input.binding,
-              threadId: thread.id,
-              turnId: turn.id,
-            })
-          }),
-        )
-        return accepted.pipe(
-          Effect.annotateLogs(annotations),
-          Effect.withLogSpan('platform.ingest'),
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.void,
-              onSome: ({ awaitTerminal, publicationBinding, threadId, turnId }) =>
-                platforms.withTyping(
-                  publicationBinding,
-                  awaitTerminal.pipe(
-                    Effect.tap((terminal) =>
-                      terminal.status === 'completed'
-                        ? Effect.logInfo('turn.completed').pipe(
-                            Effect.annotateLogs({
-                              threadId,
-                              turnId,
-                              inputTokens: terminal.usage?.inputTokens,
-                              outputTokens: terminal.usage?.outputTokens,
-                              totalTokens: terminal.usage?.totalTokens,
-                            }),
-                          )
-                        : terminal.status === 'interrupted'
-                          ? Effect.logWarning('turn.interrupted').pipe(
-                              Effect.annotateLogs({ threadId, turnId }),
-                            )
-                          : Effect.logError('turn.failed').pipe(
-                              Effect.annotateLogs({ threadId, turnId }),
-                            ),
+              const found = Option.isSome(foundThread)
+                ? foundThread.value
+                : yield* createThread(input).pipe(
+                    Effect.tap((thread) => persistence.createThread(thread)),
+                    Effect.tap((thread) =>
+                      Effect.logInfo('thread.created').pipe(
+                        Effect.annotateLogs({ threadId: thread.id }),
+                      ),
                     ),
-                    Effect.flatMap((terminal) =>
-                      terminal.status === 'completed'
-                        ? platforms
-                            .publish({
-                              binding: publicationBinding,
-                              text: terminal.agentMessage,
-                            })
-                            .pipe(
-                              Effect.andThen(
-                                Effect.logInfo('publication.completed').pipe(
-                                  Effect.annotateLogs({
-                                    threadId,
-                                    turnId,
-                                    responseLength: terminal.agentMessage.length,
-                                  }),
-                                ),
-                              ),
-                            )
-                        : Effect.void,
-                    ),
-                  ),
-                ),
+                  )
+              if (Option.isSome(foundThread)) {
+                yield* Effect.logDebug('thread.resolved').pipe(
+                  Effect.annotateLogs({ threadId: found.id }),
+                )
+              }
+              if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
+              yield* channelTurns.accept({ thread: found, message: input.message })
             }),
-          ),
-        )
+          )
+          .pipe(Effect.annotateLogs(annotations), Effect.withLogSpan('platform.ingest'))
       },
     })
   }),

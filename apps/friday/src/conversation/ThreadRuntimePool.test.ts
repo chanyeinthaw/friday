@@ -165,6 +165,7 @@ const makeCoordinator = (
       awaitTerminal,
     }),
   steer: () => Effect.void,
+  cancel: () => Effect.void,
   start: Effect.void,
   drain: Effect.sync(() => identity).pipe(Effect.asVoid),
 })

@@ -16,6 +16,7 @@ import * as Scope from 'effect/Scope'
 
 import { SystemPromptTemplatesLive } from '../../system-prompt/SystemPromptTemplates.ts'
 import { SystemPromptTemplates } from '../../system-prompt/SystemPromptTemplates.ts'
+import type { PiTaskOperations } from '../../tasks/PiTaskTool.ts'
 import { makePiThreadRuntime, type PiAgentSessionContract } from './PiThreadRuntime.ts'
 
 const decodeChannelThread = Schema.decodeSync(ChannelThread)
@@ -83,6 +84,14 @@ const session = (): PiAgentSessionContract => ({
   }),
 })
 
+const tasks: PiTaskOperations = {
+  start: () => Effect.die('not exercised'),
+  bootstrap: () => Effect.die('not exercised'),
+  steer: () => Effect.die('not exercised'),
+  list: () => Effect.die('not exercised'),
+  cancel: () => Effect.die('not exercised'),
+}
+
 const open = (thread: Thread, captured: Array<CreateAgentSessionOptions>) =>
   Effect.gen(function* () {
     const templates = yield* SystemPromptTemplates
@@ -93,6 +102,7 @@ const open = (thread: Thread, captured: Array<CreateAgentSessionOptions>) =>
       availableAgentModels: [
         decodeModelSelection({ provider: 'anthropic', modelId: 'claude-sonnet' }),
       ],
+      tasks,
       modelRuntime: {
         getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
         getAuth: async () => ({ type: 'api_key', key: 'test' }),
@@ -113,16 +123,19 @@ test('overrides Pi system prompts for channel and bootstrap agents only', async 
       const channelPrompt = channelOptions[0]?.resourceLoader?.getSystemPrompt()
       expect(channelPrompt ?? '').toContain('# Friday channel agent')
       expect(channelPrompt ?? '').toContain('- Default: `anthropic/claude-sonnet`')
+      expect(channelOptions[0]?.customTools?.map((tool) => tool.name)).toEqual(['task'])
 
       const bootstrapOptions: Array<CreateAgentSessionOptions> = []
       yield* open(agentThread('bootstrap'), bootstrapOptions)
       expect(bootstrapOptions[0]?.resourceLoader?.getSystemPrompt() ?? '').toContain(
         '# Friday bootstrap agent',
       )
+      expect(bootstrapOptions[0]?.customTools).toBeUndefined()
 
       const subagentOptions: Array<CreateAgentSessionOptions> = []
       yield* open(agentThread('subagent'), subagentOptions)
       expect(subagentOptions[0]?.resourceLoader).toBeUndefined()
+      expect(subagentOptions[0]?.customTools).toBeUndefined()
     }),
   )
 })

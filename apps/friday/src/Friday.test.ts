@@ -66,6 +66,7 @@ it.effect('opens a Thread through the runtime service and returns its started co
             }),
           ),
         steer: () => Effect.void,
+        cancel: () => Effect.void,
         start: Effect.void,
         drain: Effect.void,
       }
@@ -104,6 +105,8 @@ const makePersistence = (operations: Array<string>): ThreadPersistenceContract =
   createThread: () => Effect.void,
   getThread: () => Effect.succeedNone,
   findPlatformThread: () => Effect.succeedNone,
+  listAgentThreads: () => Effect.succeed([]),
+  closeThread: () => Effect.void,
   setThreadHarnessSession: () =>
     Effect.sync(() => {
       operations.push('set-harness-session')
@@ -113,6 +116,7 @@ const makePersistence = (operations: Array<string>): ThreadPersistenceContract =
       operations.push('create-turn')
     }),
   getTurn: () => Effect.succeedNone,
+  getFirstTurn: () => Effect.succeedNone,
   getLatestTurn: () => Effect.succeedNone,
   startTurn: () => Effect.void,
   putActivitySnapshot: () => Effect.void,

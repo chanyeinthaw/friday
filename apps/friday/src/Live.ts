@@ -5,6 +5,7 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
 import { FridayLive as FridayServiceLive } from './Friday.ts'
+import { ChannelTurnsLive } from './conversation/ChannelTurns.ts'
 import { makeThreadCoordinator } from './conversation/ThreadCoordinator.ts'
 import { ThreadRuntimePoolLive } from './conversation/ThreadRuntimePool.ts'
 import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
@@ -18,6 +19,9 @@ import {
   SystemPromptTemplates,
   SystemPromptTemplatesLive,
 } from './system-prompt/SystemPromptTemplates.ts'
+import { TaskModelsLive } from './tasks/TaskModels.ts'
+import { TaskToolDispatcher, TaskToolDispatcherLive } from './tasks/TaskToolDispatcher.ts'
+import { Tasks, TasksLive } from './tasks/Tasks.ts'
 
 const ThreadRuntimesLive = Layer.effect(
   ThreadRuntimes,
@@ -26,6 +30,7 @@ const ThreadRuntimesLive = Layer.effect(
     const crypto = yield* Crypto.Crypto
     const configuration = yield* AppConfig
     const systemPromptTemplates = yield* SystemPromptTemplates
+    const tasks = yield* TaskToolDispatcher
 
     return ThreadRuntimes.of({
       open: (thread) =>
@@ -34,6 +39,7 @@ const ThreadRuntimesLive = Layer.effect(
           modelRuntime,
           systemPromptTemplates,
           availableAgentModels: configuration.models.subagents,
+          tasks,
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError(
@@ -56,6 +62,14 @@ const ThreadRuntimesLive = Layer.effect(
                 ),
             // Pi currently exposes no event-stream error, but the service
             // boundary permits other harnesses to expose one later.
+            cancel: (turnId) =>
+              runtime
+                .cancel(turnId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ThreadRuntimeError({ operation: 'prompt', cause }),
+                  ),
+                ),
             events: runtime.events,
           })),
         ),
@@ -71,6 +85,7 @@ const CoreLive = Layer.mergeAll(
   PlatformRegistryLive,
   AppConfigLive,
   SystemPromptTemplatesLive,
+  TaskToolDispatcherLive,
 )
 
 const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
@@ -83,8 +98,39 @@ const PoolLive = ThreadRuntimePoolLive((thread) =>
   }),
 ).pipe(Layer.provide(Layer.merge(CoreLive, RuntimeLive)))
 const AgentLive = FridayServiceLive.pipe(Layer.provide(PoolLive))
+const ChannelTurnsConfiguredLive = ChannelTurnsLive.pipe(
+  Layer.provide(Layer.mergeAll(CoreLive, AgentLive)),
+)
+const TaskModelsConfiguredLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const configuration = yield* AppConfig
+    return TaskModelsLive(configuration.models.subagents)
+  }),
+).pipe(Layer.provide(CoreLive))
+const TasksConfiguredLive = TasksLive.pipe(
+  Layer.provide(
+    Layer.mergeAll(CoreLive, AgentLive, ChannelTurnsConfiguredLive, TaskModelsConfiguredLive),
+  ),
+)
+const TaskToolBindingLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const dispatcher = yield* TaskToolDispatcher
+    const tasks = yield* Tasks
+    yield* dispatcher.bind(tasks)
+  }),
+).pipe(Layer.provide(Layer.merge(CoreLive, TasksConfiguredLive)))
 const IngestionLive = PlatformIngestionLive.pipe(
-  Layer.provide(Layer.mergeAll(CoreLive, PoolLive, AgentLive)),
+  Layer.provide(Layer.mergeAll(CoreLive, ChannelTurnsConfiguredLive)),
 )
 
-export const FridayLive = Layer.mergeAll(CoreLive, RuntimeLive, PoolLive, AgentLive, IngestionLive)
+export const FridayLive = Layer.mergeAll(
+  CoreLive,
+  RuntimeLive,
+  PoolLive,
+  AgentLive,
+  ChannelTurnsConfiguredLive,
+  TaskModelsConfiguredLive,
+  TasksConfiguredLive,
+  TaskToolBindingLive,
+  IngestionLive,
+)

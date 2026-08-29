@@ -63,6 +63,34 @@ const agentThread = Schema.decodeSync(AgentThread)({
   closedAt: null,
 })
 
+const secondAgentThread = Schema.decodeSync(AgentThread)({
+  ...agentThread,
+  id: 'agent-thread-2',
+  parent: { threadId: thread.id, turnId: 'turn-2' },
+  workingDirectory: '/tmp/friday/agent-thread-2',
+  createdAt: '2026-03-21T11:00:00.000Z',
+  updatedAt: '2026-03-21T11:00:00.000Z',
+})
+
+const otherParentThread = Schema.decodeSync(ChannelThread)({
+  ...thread,
+  id: 'thread-2',
+  workingDirectory: '/tmp/friday/thread-2',
+  conversationBinding: {
+    ...thread.conversationBinding,
+    channelId: 'channel-2',
+    sourceMessageId: 'message-2',
+    conversationId: 'platform-conversation-2',
+  },
+})
+
+const otherAgentThread = Schema.decodeSync(AgentThread)({
+  ...agentThread,
+  id: 'agent-thread-other',
+  parent: { threadId: otherParentThread.id, turnId: 'turn-other' },
+  workingDirectory: '/tmp/friday/agent-thread-other',
+})
+
 const turn = Schema.decodeSync(Turn)({
   id: 'turn-1',
   threadId: 'thread-1',
@@ -162,6 +190,28 @@ test('creates and retrieves a channel Thread', async () => {
   expect(persisted).toEqual(thread)
 })
 
+test('closes a task Thread while retaining it for history', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(agentThread)
+    yield* persistence.closeThread({
+      threadId: agentThread.id,
+      closedAt: '2026-03-21T11:00:00.000Z',
+    })
+    return yield* persistence.getThread(agentThread.id)
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+
+  const stored = await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+  expect(Option.isSome(stored)).toBe(true)
+  if (Option.isSome(stored)) {
+    expect(stored.value.status).toBe('closed')
+    expect(stored.value.closedAt).toBe('2026-03-21T11:00:00.000Z')
+  }
+})
+
 test('persists a harness session cursor on its Thread', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
   const filename = join(directory, 'friday.sqlite')
@@ -203,6 +253,26 @@ test('creates and retrieves an agent Thread', async () => {
   await rm(directory, { recursive: true, force: true })
 
   expect(persisted).toEqual(agentThread)
+})
+
+test('lists agent Threads belonging to one parent in creation order', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+
+    yield* persistence.createThread(thread)
+    yield* persistence.createThread(otherParentThread)
+    yield* persistence.createThread(secondAgentThread)
+    yield* persistence.createThread(otherAgentThread)
+    yield* persistence.createThread(agentThread)
+    return yield* persistence.listAgentThreads({ parentThreadId: thread.id })
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+
+  const persisted = await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+
+  expect(persisted).toEqual([agentThread, secondAgentThread])
 })
 
 test('rejects a Turn whose Thread does not exist', async () => {

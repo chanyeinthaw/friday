@@ -1,5 +1,6 @@
 import type {
   Activity,
+  AgentThread,
   PlatformKind,
   PlatformConversationId,
   HarnessSession,
@@ -22,6 +23,15 @@ export type ThreadPersistenceError = PersistenceError
 export interface PlatformThreadLookup {
   readonly platform: PlatformKind
   readonly conversationId: PlatformConversationId
+}
+
+export interface AgentThreadLookup {
+  readonly parentThreadId: ThreadId
+}
+
+export interface ThreadClosedUpdate {
+  readonly threadId: ThreadId
+  readonly closedAt: IsoDateTime
 }
 
 export interface ThreadHarnessSessionUpdate {
@@ -63,11 +73,18 @@ export interface ThreadPersistenceContract {
   readonly findPlatformThread: (
     lookup: PlatformThreadLookup,
   ) => Effect.Effect<Option.Option<Thread>, ThreadPersistenceError>
+  readonly listAgentThreads: (
+    lookup: AgentThreadLookup,
+  ) => Effect.Effect<ReadonlyArray<AgentThread>, ThreadPersistenceError>
+  readonly closeThread: (update: ThreadClosedUpdate) => Effect.Effect<void, ThreadPersistenceError>
   readonly setThreadHarnessSession: (
     update: ThreadHarnessSessionUpdate,
   ) => Effect.Effect<void, ThreadPersistenceError>
   readonly createTurn: (turn: Turn) => Effect.Effect<void, ThreadPersistenceError>
   readonly getTurn: (turnId: TurnId) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>
+  readonly getFirstTurn: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>
   readonly getLatestTurn: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>

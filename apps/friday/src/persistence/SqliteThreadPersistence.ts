@@ -1,6 +1,7 @@
 import {
   Activity,
   ActivityId,
+  AgentThread,
   PlatformKind,
   PlatformConversationId,
   type PlatformKind as PlatformKindType,
@@ -24,6 +25,7 @@ import { PersistenceDecodeError, PersistenceSqlError } from './Errors.ts'
 import { runMigrations } from './Migrations.ts'
 
 const ThreadJson = Schema.fromJsonString(Thread)
+const AgentThreadJson = Schema.fromJsonString(AgentThread)
 const TurnJson = Schema.fromJsonString(Turn)
 const ActivityJson = Schema.fromJsonString(Activity)
 const encodeThreadJson = Schema.encodeEffect(ThreadJson)
@@ -35,10 +37,13 @@ const FindPlatformThreadRequest = Schema.Struct({
   platform: PlatformKind,
   conversationId: PlatformConversationId,
 })
+const ListAgentThreadsRequest = Schema.Struct({ parentThreadId: ThreadId })
 const GetTurnRequest = Schema.Struct({ turnId: TurnId })
+const GetFirstTurnRequest = Schema.Struct({ threadId: ThreadId })
 const GetLatestTurnRequest = Schema.Struct({ threadId: ThreadId })
 const GetActivityRequest = Schema.Struct({ activityId: ActivityId })
 const PersistedThreadRow = Schema.Struct({ payload: ThreadJson })
+const PersistedAgentThreadRow = Schema.Struct({ payload: AgentThreadJson })
 const PersistedTurnRow = Schema.Struct({ payload: TurnJson })
 const PersistedActivityRow = Schema.Struct({ payload: ActivityJson })
 
@@ -167,6 +172,18 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     `,
   })
 
+  const selectAgentThreads = SqlSchema.findAll({
+    Request: ListAgentThreadsRequest,
+    Result: PersistedAgentThreadRow,
+    execute: ({ parentThreadId }) => sql`
+      SELECT payload_json AS payload
+      FROM threads
+      WHERE audience = 'agent'
+        AND json_extract(payload_json, '$.parent.threadId') = ${parentThreadId}
+      ORDER BY created_at ASC, thread_id ASC
+    `,
+  })
+
   const selectTurn = SqlSchema.findOneOption({
     Request: GetTurnRequest,
     Result: PersistedTurnRow,
@@ -174,6 +191,18 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
       SELECT payload_json AS payload
       FROM turns
       WHERE turn_id = ${turnId}
+      LIMIT 1
+    `,
+  })
+
+  const selectFirstTurn = SqlSchema.findOneOption({
+    Request: GetFirstTurnRequest,
+    Result: PersistedTurnRow,
+    execute: ({ threadId }) => sql`
+      SELECT payload_json AS payload
+      FROM turns
+      WHERE thread_id = ${threadId}
+      ORDER BY sequence ASC
       LIMIT 1
     `,
   })
@@ -216,10 +245,22 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
       Effect.mapError(toPersistenceError('ThreadPersistence.findPlatformThread')),
     )
 
+  const listAgentThreads = (parentThreadId: ThreadType['id']) =>
+    selectAgentThreads({ parentThreadId }).pipe(
+      Effect.map((rows) => rows.map((row) => row.payload)),
+      Effect.mapError(toPersistenceError('ThreadPersistence.listAgentThreads')),
+    )
+
   const getTurn = (turnId: TurnType['id']) =>
     selectTurn({ turnId }).pipe(
       Effect.map(Option.map((row) => row.payload)),
       Effect.mapError(toPersistenceError('ThreadPersistence.getTurn')),
+    )
+
+  const getFirstTurn = (threadId: ThreadType['id']) =>
+    selectFirstTurn({ threadId }).pipe(
+      Effect.map(Option.map((row) => row.payload)),
+      Effect.mapError(toPersistenceError('ThreadPersistence.getFirstTurn')),
     )
 
   const getLatestTurn = (threadId: ThreadType['id']) =>
@@ -325,6 +366,23 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
       ),
     getThread,
     findPlatformThread: findActivePlatformThread,
+    listAgentThreads: ({ parentThreadId }) => listAgentThreads(parentThreadId),
+    closeThread: (update) =>
+      getThread(update.threadId).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: (thread) =>
+              updateThread({
+                ...thread,
+                status: 'closed',
+                updatedAt: update.closedAt,
+                closedAt: update.closedAt,
+              }),
+          }),
+        ),
+        Effect.mapError(toPersistenceError('ThreadPersistence.closeThread')),
+      ),
     setThreadHarnessSession: (update) =>
       getThread(update.threadId).pipe(
         Effect.flatMap(
@@ -342,6 +400,7 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     createTurn: (turn) =>
       insertTurn(turn).pipe(Effect.mapError(toPersistenceError('ThreadPersistence.createTurn'))),
     getTurn,
+    getFirstTurn,
     getLatestTurn,
     startTurn: (update) =>
       updateExistingTurn('ThreadPersistence.startTurn', update.turnId, (turn) => ({

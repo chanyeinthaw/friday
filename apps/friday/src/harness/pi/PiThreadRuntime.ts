@@ -37,6 +37,7 @@ import type {
   ThreadRuntimeEvent,
 } from '../../conversation/ThreadRuntime.ts'
 import type { SystemPromptTemplatesContract } from '../../system-prompt/SystemPromptTemplates.ts'
+import { makePiTaskTool, type PiTaskOperations } from '../../tasks/PiTaskTool.ts'
 
 const PiResumeCursor = Schema.Struct({
   sessionFile: Schema.String,
@@ -103,6 +104,7 @@ export interface MakePiThreadRuntimeOptions {
   ) => Effect.Effect<PiAgentSessionContract, PiThreadRuntimeError>
   readonly systemPromptTemplates?: SystemPromptTemplatesContract
   readonly availableAgentModels?: AppConfig['models']['subagents']
+  readonly tasks?: PiTaskOperations
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso)
@@ -281,6 +283,7 @@ export const projectPiSessionEvent = Effect.fn('projectPiSessionEvent')(function
 
 const makeSession = Effect.fn('makePiAgentSession')(function* (
   options: MakePiThreadRuntimeOptions,
+  taskContext: { activeTurnId: TurnId | null },
 ) {
   const modelRuntime = options.modelRuntime
   if (!modelRuntime) {
@@ -368,12 +371,22 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
         }),
     })
   }
+  const taskTool =
+    options.thread.audience === 'user' && options.tasks
+      ? makePiTaskTool({
+          thread: options.thread,
+          tasks: options.tasks,
+          activeTurnId: () => taskContext.activeTurnId,
+          runPromise: Effect.runPromise,
+        })
+      : undefined
   const sessionOptions: CreateAgentSessionOptions = {
     cwd: options.thread.workingDirectory,
     modelRuntime,
     model,
     thinkingLevel: options.thread.thinkingLevel,
   }
+  if (taskTool) sessionOptions.customTools = [taskTool]
   if (sessionManager) sessionOptions.sessionManager = sessionManager
   if (resourceLoader) sessionOptions.resourceLoader = resourceLoader
   const created = yield* Effect.tryPromise({
@@ -397,12 +410,17 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
   return created
 })
 
+interface PiTaskContext {
+  activeTurnId: TurnId | null
+}
+
 export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   options: MakePiThreadRuntimeOptions,
 ) {
+  const taskContext: PiTaskContext = { activeTurnId: null }
   const session = options.sessionFactory
     ? yield* options.sessionFactory(options.thread)
-    : (yield* makeSession(options)).session
+    : (yield* makeSession(options, taskContext)).session
   const crypto = yield* Crypto.Crypto
   const makeActivityId = crypto.randomUUIDv4.pipe(
     Effect.map((id) => decodeActivityId(`activity-${id}`)),
@@ -589,6 +607,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
     }
 
     state.activeTurnId = request.turnId
+    taskContext.activeTurnId = request.turnId
     state.nextSequence = 0
     state.finalAgentMessage = ''
     state.terminalFailure = null
@@ -617,6 +636,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
         completedAt,
       })
       state.activeTurnId = null
+      taskContext.activeTurnId = null
       return yield* result
     }
     const failure: PiProjectionState['terminalFailure'] = yield* Effect.sync(
@@ -647,7 +667,26 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
       })
     }
     state.activeTurnId = null
+    taskContext.activeTurnId = null
     return undefined
+  })
+
+  const cancel = Effect.fn('PiThreadRuntime.cancel')(function* (turnId: TurnId) {
+    if (state.activeTurnId !== turnId) {
+      return yield* new PiThreadRuntimeError({
+        operation: 'prompt',
+        detail: `Turn '${turnId}' is not the active Pi Turn.`,
+      })
+    }
+    yield* Effect.tryPromise({
+      try: () => session.abort(),
+      catch: (cause) =>
+        new PiThreadRuntimeError({
+          operation: 'prompt',
+          detail: `Failed to cancel Pi Turn '${turnId}'.`,
+          cause,
+        }),
+    })
   })
 
   const sessionFile = session.sessionManager.getSessionFile()
@@ -670,6 +709,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
         : { sessionId: session.sessionId },
     },
     prompt,
+    cancel,
     events: Stream.fromQueue(eventsQueue),
   } satisfies ThreadRuntime<PiThreadRuntimeError>
 })
