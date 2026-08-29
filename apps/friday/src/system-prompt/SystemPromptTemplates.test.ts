@@ -3,7 +3,11 @@ import { ChannelThread, ModelSelection } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import { SystemPromptTemplates, SystemPromptTemplatesLive } from './SystemPromptTemplates.ts'
+import {
+  makeSystemPromptTemplates,
+  SystemPromptTemplates,
+  SystemPromptTemplatesLive,
+} from './SystemPromptTemplates.ts'
 
 const decodeModelSelection = Schema.decodeSync(ModelSelection)
 
@@ -47,10 +51,79 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, '- Channel: orbs-at-home')
     assert.include(prompt, 'Development for the orbs-at-home repository.')
     assert.include(prompt, '`/tmp/friday/channel-thread`')
-    assert.include(prompt, '- Default: `anthropic/claude-sonnet`')
-    assert.include(prompt, '- `openai/gpt-5`')
+    assert.include(prompt, '- Default: `anthropic/claude-sonnet`\n\n- `openai/gpt-5`')
     assert.notInclude(prompt, '{{')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('renders channel prompts without configured agent models or a description', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread: { ...thread, channelContext: { ...thread.channelContext, description: '' } },
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, '(No channel description)')
+    assert.include(prompt, '(No agent models are configured.)')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('rejects templates with missing variables', () =>
+  Effect.gen(function* () {
+    const templates = makeSystemPromptTemplates({
+      channelAgent: '{{channelName}} {{missingValue}} {{anotherMissingValue}}',
+      bootstrapAgent: 'Bootstrap',
+    })
+    const error = yield* Effect.flip(
+      templates.renderChannelAgent({ thread, availableAgentModels: [] }),
+    )
+
+    assert.strictEqual(error.template, 'channel-agent')
+    assert.strictEqual(error.detail, 'Missing template variables: missingValue,anotherMissingValue')
+  }),
+)
+
+it.effect('reports the bootstrap template when its variables are missing', () =>
+  Effect.gen(function* () {
+    const templates = makeSystemPromptTemplates({
+      channelAgent: 'Channel',
+      bootstrapAgent: '{{bootstrapVariable}}',
+    })
+    const error = yield* Effect.flip(templates.renderBootstrapAgent)
+
+    assert.strictEqual(error.template, 'bootstrap-agent')
+    assert.strictEqual(error.detail, 'Missing template variables: bootstrapVariable')
+  }),
+)
+
+it.effect('supports multi-character alphanumeric variable names', () =>
+  Effect.gen(function* () {
+    const templates = makeSystemPromptTemplates({
+      channelAgent: '{{channelName2}}',
+      bootstrapAgent: 'Bootstrap',
+    })
+    const error = yield* Effect.flip(
+      templates.renderChannelAgent({ thread, availableAgentModels: [] }),
+    )
+
+    assert.strictEqual(error.detail, 'Missing template variables: channelName2')
+  }),
+)
+
+it.effect('trims rendered templates', () =>
+  Effect.gen(function* () {
+    const templates = makeSystemPromptTemplates({
+      channelAgent: '  {{channelName}}  \n',
+      bootstrapAgent: '  Bootstrap  \n',
+    })
+
+    assert.strictEqual(
+      yield* templates.renderChannelAgent({ thread, availableAgentModels: [] }),
+      'orbs-at-home',
+    )
+    assert.strictEqual(yield* templates.renderBootstrapAgent, 'Bootstrap')
+  }),
 )
 
 it.effect('renders the bootstrap prompt without replacing Pi for normal subagents', () =>

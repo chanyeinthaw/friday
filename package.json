@@ -9,6 +9,7 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "lint": "effect-tsgo patch --no-typescript --oxlint && oxlint .",
+    "mutation:system-prompt": "stryker run stryker.config.json --inPlace",
     "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts' --exclude '**/*.live.test.ts' && pnpm --filter @friday/friday test:integration",
     "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test"
   },
@@ -16,10 +17,13 @@
     "@effect/tsgo": "catalog:",
     "@effect/vitest": "catalog:",
     "@oxlint/plugins": "1.77.0",
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/vitest-runner": "^10.0.0",
     "effect": "catalog:",
     "oxfmt": "0.63.0",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
+    "typescript": "5.9.3",
     "vitest": "catalog:"
   },
   "engines": {

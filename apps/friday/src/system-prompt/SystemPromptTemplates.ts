@@ -34,35 +34,24 @@ export class SystemPromptTemplates extends Context.Service<
 
 const TemplateVariable = /{{([A-Za-z][A-Za-z0-9]*)}}/g
 
+const unresolvedVariables = (source: string): ReadonlyArray<string> =>
+  Array.from(source.matchAll(TemplateVariable), ([, variable]) => variable ?? '')
+
 const renderTemplate = (
   template: 'channel-agent' | 'bootstrap-agent',
   source: string,
   variables: Readonly<Record<string, string>>,
 ): Effect.Effect<string, SystemPromptTemplateError> =>
   Effect.gen(function* () {
-    const referenced = new Set(
-      Array.from(source.matchAll(TemplateVariable), (match) => match[1]).filter(
-        (variable): variable is string => variable !== undefined,
-      ),
-    )
-    const missing = Array.from(referenced).filter((variable) => variables[variable] === undefined)
-    if (missing.length > 0) {
-      return yield* new SystemPromptTemplateError({
-        template,
-        detail: `Missing template variables: ${missing.join(', ')}`,
-      })
+    let rendered = source
+    for (const [variable, value] of Object.entries(variables)) {
+      rendered = rendered.replaceAll(`{{${variable}}}`, value)
     }
-    const rendered = source.replaceAll(
-      TemplateVariable,
-      (_, variable: string) => variables[variable] ?? '',
-    )
-    const unresolved = Array.from(rendered.matchAll(TemplateVariable), (match) => match[1]).filter(
-      (variable): variable is string => variable !== undefined,
-    )
+    const unresolved = unresolvedVariables(rendered)
     if (unresolved.length > 0) {
       return yield* new SystemPromptTemplateError({
         template,
-        detail: `Unresolved template variables: ${unresolved.join(', ')}`,
+        detail: `Missing template variables: ${unresolved.join(',')}`,
       })
     }
     return rendered.trim()
@@ -75,19 +64,28 @@ const renderAvailableModels = (models: ReadonlyArray<ModelSelection>): string =>
         .map(({ provider, modelId }, index) =>
           index === 0 ? `- Default: \`${provider}/${modelId}\`` : `- \`${provider}/${modelId}\``,
         )
-        .join('\n')
+        .join('\n\n')
 
-export const SystemPromptTemplatesLive = Layer.succeed(
-  SystemPromptTemplates,
+export const makeSystemPromptTemplates = (templates: {
+  readonly channelAgent: string
+  readonly bootstrapAgent: string
+}): SystemPromptTemplatesContract =>
   SystemPromptTemplates.of({
     renderChannelAgent: (context) =>
-      renderTemplate('channel-agent', channelAgentTemplate, {
+      renderTemplate('channel-agent', templates.channelAgent, {
         platform: context.thread.conversationBinding.platform,
         channelName: context.thread.channelContext.name,
         channelDescription: context.thread.channelContext.description || '(No channel description)',
         currentWorkingDirectory: context.thread.workingDirectory,
         availableAgentModels: renderAvailableModels(context.availableAgentModels),
       }),
-    renderBootstrapAgent: renderTemplate('bootstrap-agent', bootstrapAgentTemplate, {}),
+    renderBootstrapAgent: renderTemplate('bootstrap-agent', templates.bootstrapAgent, {}),
+  })
+
+export const SystemPromptTemplatesLive = Layer.succeed(
+  SystemPromptTemplates,
+  makeSystemPromptTemplates({
+    channelAgent: channelAgentTemplate,
+    bootstrapAgent: bootstrapAgentTemplate,
   }),
 )
