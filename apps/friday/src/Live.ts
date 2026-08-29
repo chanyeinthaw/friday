@@ -16,6 +16,7 @@ import { makePiTextGeneration } from './harness/pi/PiTextGeneration.ts'
 import { TextGeneration } from './harness/TextGeneration.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { ThreadPersistenceLive } from './persistence/Live.ts'
+import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
 import { PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
 import {
@@ -94,6 +95,7 @@ const CoreLive = Layer.mergeAll(
 const TextGenerationLive = Layer.effect(TextGeneration, makePiTextGeneration()).pipe(
   Layer.provide(CoreLive),
 )
+const ConversationTitlesConfiguredLive = ConversationTitlesLive.pipe(Layer.provide(CoreLive))
 const ChannelProgressConfiguredLive = ChannelProgressLive.pipe(Layer.provide(CoreLive))
 const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
 const PoolLive = ThreadRuntimePoolLive((thread) =>
@@ -124,6 +126,7 @@ const TasksConfiguredLive = TasksLive.pipe(
       CoreLive,
       AgentLive,
       ChannelProgressConfiguredLive,
+      ConversationTitlesConfiguredLive,
       ChannelTurnsConfiguredLive,
       TaskModelsConfiguredLive,
     ),
@@ -137,7 +140,14 @@ const TaskToolBindingLive = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(Layer.merge(CoreLive, TasksConfiguredLive)))
 const IngestionLive = PlatformIngestionLive.pipe(
-  Layer.provide(Layer.mergeAll(CoreLive, ChannelTurnsConfiguredLive, TextGenerationLive)),
+  Layer.provide(
+    Layer.mergeAll(
+      CoreLive,
+      ChannelTurnsConfiguredLive,
+      ConversationTitlesConfiguredLive,
+      TextGenerationLive,
+    ),
+  ),
 )
 
 export const FridayLive = Layer.mergeAll(
@@ -146,6 +156,7 @@ export const FridayLive = Layer.mergeAll(
   PoolLive,
   AgentLive,
   TextGenerationLive,
+  ConversationTitlesConfiguredLive,
   ChannelProgressConfiguredLive,
   ChannelTurnsConfiguredLive,
   TaskModelsConfiguredLive,

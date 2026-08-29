@@ -31,6 +31,10 @@ import * as Semaphore from 'effect/Semaphore'
 import { isAbsolute } from 'node:path'
 
 import { Friday, type FridayContract } from '../Friday.ts'
+import {
+  ConversationTitles,
+  type ConversationTitlesContract,
+} from '../platforms/ConversationTitles.ts'
 import { ChannelTurns, type ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
 import type { TerminalTurn, ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
 import {
@@ -91,6 +95,7 @@ export interface MakeTasksOptions {
   readonly friday: FridayContract
   readonly models: TaskModelsContract
   readonly channelTurns: ChannelTurnsContract
+  readonly conversationTitles?: ConversationTitlesContract
   readonly fileSystem: FileSystem.FileSystem
   readonly randomUUID: Effect.Effect<string, TaskError>
   readonly now: Effect.Effect<IsoDateTime>
@@ -406,6 +411,9 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       handle.awaitTerminal.pipe(
         Effect.flatMap((terminal) =>
           Effect.gen(function* () {
+            if (options.conversationTitles) {
+              yield* options.conversationTitles.taskFinished(input.parent)
+            }
             yield* options.persistence.closeThread({
               threadId: thread.id,
               closedAt: yield* options.now,
@@ -427,6 +435,9 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       ),
     )
 
+    if (options.conversationTitles) {
+      yield* options.conversationTitles.taskStarted(input.parent)
+    }
     return { taskId, status: 'pending' as const }
   })
   const launchTask = (input: LaunchTaskInput) => launchLock.withPermit(launchTaskUnlocked(input))
@@ -769,6 +780,7 @@ export const TasksLive = Layer.effect(
     const friday = yield* Friday
     const models = yield* TaskModels
     const channelTurns = yield* ChannelTurns
+    const conversationTitles = yield* ConversationTitles
     const fileSystem = yield* FileSystem.FileSystem
     const crypto = yield* Crypto.Crypto
 
@@ -777,6 +789,7 @@ export const TasksLive = Layer.effect(
       friday,
       models,
       channelTurns,
+      conversationTitles,
       fileSystem,
       randomUUID: crypto.randomUUIDv4.pipe(
         Effect.mapError((cause) =>

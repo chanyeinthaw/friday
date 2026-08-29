@@ -25,6 +25,7 @@ import {
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
 import type { PlatformAdapter } from './PlatformAdapter.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
@@ -96,6 +97,14 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
           TextGeneration,
           TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
         ),
+        Layer.succeed(
+          ConversationTitles,
+          ConversationTitles.of({
+            generated: () => Effect.void,
+            taskStarted: () => Effect.void,
+            taskFinished: () => Effect.void,
+          }),
+        ),
         PlatformRegistryLive,
       )
       const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
@@ -140,6 +149,14 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         Layer.succeed(
           TextGeneration,
           TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+        ),
+        Layer.succeed(
+          ConversationTitles,
+          ConversationTitles.of({
+            generated: () => Effect.void,
+            taskStarted: () => Effect.void,
+            taskFinished: () => Effect.void,
+          }),
         ),
         PlatformRegistryLive,
       )

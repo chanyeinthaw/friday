@@ -119,7 +119,7 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
                 const candidate = threadSource(key)
                 for await (const message of candidate.messages) {
                   if (message.id !== target.messageId) continue
-                  await candidate.createSentMessageFromMessage(message).addReaction(emoji.check)
+                  await candidate.createSentMessageFromMessage(message).addReaction(emoji.eyes)
                   return true
                 }
                 return false

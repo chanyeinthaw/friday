@@ -13,16 +13,13 @@ import type * as Scope from 'effect/Scope'
 import { ChannelTurns, type ChannelTurnError } from '../conversation/ChannelTurns.ts'
 import { AppConfig } from '../config/AppConfigLive.ts'
 import { TextGeneration } from '../harness/TextGeneration.ts'
+import { ConversationTitles } from './ConversationTitles.ts'
 import {
   ThreadPersistence,
   type ThreadPersistenceError,
 } from '../conversation/ThreadPersistence.ts'
 import type { PlatformInput } from './PlatformAdapter.ts'
-import {
-  PlatformNotFoundError,
-  PlatformOperationError,
-  PlatformRegistry,
-} from './PlatformRegistry.ts'
+import { PlatformNotFoundError, PlatformOperationError } from './PlatformRegistry.ts'
 
 export class PlatformThreadNotFoundError extends Schema.Error<PlatformThreadNotFoundError>(
   'PlatformThreadNotFoundError',
@@ -63,8 +60,8 @@ export const PlatformIngestionLive = Layer.effect(
     const persistence = yield* ThreadPersistence
     const channelTurns = yield* ChannelTurns
     const textGeneration = yield* TextGeneration
-    const platforms = yield* PlatformRegistry
     const configuration = yield* AppConfig
+    const conversationTitles = yield* ConversationTitles
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
     return PlatformIngestion.of({
@@ -112,12 +109,7 @@ export const PlatformIngestionLive = Layer.effect(
                     thinkingLevel: 'low',
                   })
                   .pipe(
-                    Effect.flatMap((title) =>
-                      platforms.setConversationTitle({
-                        binding: found.conversationBinding,
-                        title,
-                      }),
-                    ),
+                    Effect.flatMap((title) => conversationTitles.generated(found, title)),
                     Effect.matchEffect({
                       onFailure: (cause) =>
                         Effect.logWarning('conversation.title.failed').pipe(
