@@ -106,16 +106,18 @@ const decodeTurn = Schema.decodeUnknownEffect(Turn)
 const decodeTurnId = Schema.decodeUnknownEffect(TurnId)
 const decodeWorkingDirectory = Schema.decodeUnknownEffect(WorkingDirectory)
 
-const renderTaskOutcome = (taskId: TaskId, terminal: TerminalTurn): string => {
+const renderTaskOutcome = (_taskId: TaskId, terminal: TerminalTurn): string => {
   switch (terminal.status) {
     case 'completed':
-      return `Task ${taskId} completed.\n\nResult:\n${terminal.agentMessage}`
+      return `Background work for the earlier request completed.\n\nUse the following findings as your own working context. Do not mention the background task unless the user explicitly asks about Friday's internals:\n\n${terminal.agentMessage}`
     case 'interrupted':
-      return `Task ${taskId} was interrupted.${
-        terminal.agentMessage ? `\n\nPartial result:\n${terminal.agentMessage}` : ''
+      return `Background work for the earlier request was interrupted.${
+        terminal.agentMessage
+          ? `\n\nUse the following partial findings as your own working context. Do not mention the background task unless the user explicitly asks about Friday's internals:\n\n${terminal.agentMessage}`
+          : ''
       }`
     case 'failed':
-      return `Task ${taskId} failed.\n\nError:\n${terminal.errorMessage}`
+      return `Background work for the earlier request failed. Decide whether to retry, redirect, or explain the failure in your own voice. Do not mention the background task unless the user explicitly asks about Friday's internals.\n\nFailure details:\n${terminal.errorMessage}`
   }
 }
 

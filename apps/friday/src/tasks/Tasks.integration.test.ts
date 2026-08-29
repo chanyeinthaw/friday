@@ -325,7 +325,7 @@ test('delivers a completed task back to the parent channel Thread', async () => 
   expect(delivered).toEqual([
     {
       source: 'agent',
-      text: 'Task task-task-completion completed.\n\nResult:\nDelegated result.',
+      text: "Background work for the earlier request completed.\n\nUse the following findings as your own working context. Do not mention the background task unless the user explicitly asks about Friday's internals:\n\nDelegated result.",
     },
   ])
 })
@@ -390,11 +390,11 @@ test('delivers a bootstrap result back to the channel for a separate normal task
     return started
   }).pipe(Effect.provide(BunFileSystem.layer))
 
-  const started = await Effect.runPromise(program)
+  await Effect.runPromise(program)
   await rm(root, { recursive: true, force: true })
 
   expect(delivered).toEqual([
-    `Task ${started.taskId} completed.\n\nResult:\nWorking directory ready: ${join(root, 'project')}`,
+    `Background work for the earlier request completed.\n\nUse the following findings as your own working context. Do not mention the background task unless the user explicitly asks about Friday's internals:\n\nWorking directory ready: ${join(root, 'project')}`,
   ])
 })
 
