@@ -114,7 +114,7 @@ const makeFriday = (promptedTurns: Array<Turn>): FridayContract => ({
 test('starts a subagent task without waiting for its terminal result', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-test-'))
   const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(root, 'project')
+  const projectDirectory = join(channelWorkspace, 'project')
   await Promise.all([
     Bun.write(join(channelWorkspace, '.keep'), ''),
     Bun.write(join(projectDirectory, '.keep'), ''),
@@ -165,7 +165,7 @@ test('starts a subagent task without waiting for its terminal result', async () 
 test('applies the selected subagent profile model and thinking level', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-profile-'))
   const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(root, 'project')
+  const projectDirectory = join(channelWorkspace, 'project')
   await Promise.all([
     Bun.write(join(channelWorkspace, '.keep'), ''),
     Bun.write(join(projectDirectory, '.keep'), ''),
@@ -259,7 +259,7 @@ test('starts a bootstrap task in the channel workspace with the bootstrap role',
 test('delivers a completed task back to the parent channel Thread', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-test-'))
   const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(root, 'project')
+  const projectDirectory = join(channelWorkspace, 'project')
   await Promise.all([
     Bun.write(join(channelWorkspace, '.keep'), ''),
     Bun.write(join(projectDirectory, '.keep'), ''),
@@ -628,7 +628,7 @@ test('rejects cancellation for a terminal task', async () => {
 test('rejects concurrent tasks sharing one canonical working directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-concurrency-'))
   const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(root, 'project')
+  const projectDirectory = join(channelWorkspace, 'project')
   await Promise.all([
     Bun.write(join(channelWorkspace, '.keep'), ''),
     Bun.write(join(projectDirectory, '.keep'), ''),
@@ -677,7 +677,7 @@ test('rejects concurrent tasks sharing one canonical working directory', async (
 test('rejects an unconfigured task model', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-test-'))
   const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(root, 'project')
+  const projectDirectory = join(channelWorkspace, 'project')
   await Promise.all([
     Bun.write(join(channelWorkspace, '.keep'), ''),
     Bun.write(join(projectDirectory, '.keep'), ''),
@@ -779,7 +779,44 @@ const taskPersistence = (
   getLatestTurn: () => Effect.succeedSome(latest),
 })
 
-test('rejects the channel workspace for a normal task', async () => {
+test('rejects directories outside the channel workspace for a normal task', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-test-'))
+  const channelWorkspace = join(root, 'channel')
+  const externalWorkspace = join(root, 'external-project')
+  await Bun.write(join(channelWorkspace, '.keep'), '')
+  await Bun.write(join(externalWorkspace, '.keep'), '')
+  const parent = parentThread(channelWorkspace)
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence: makePersistence(parent, []),
+      friday: makeFriday([]),
+      models: makeTaskModels([]),
+      channelTurns: noChannelTurns,
+      fileSystem,
+      randomUUID: Effect.succeed('unused'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: () => Effect.void,
+    })
+    const request = {
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Do work.',
+      workingDirectory: decodeWorkingDirectory(externalWorkspace),
+    } as const
+
+    const workspaceError = yield* Effect.flip(tasks.start(request))
+    expect(workspaceError._tag).toBe('TaskError')
+    if (workspaceError._tag === 'TaskError') {
+      expect(workspaceError.reason).toBe('outside-channel-workspace')
+    }
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+})
+
+test('rejects the channel workspace root for a normal task', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-test-'))
   const channelWorkspace = join(root, 'channel')
   await Bun.write(join(channelWorkspace, '.keep'), '')

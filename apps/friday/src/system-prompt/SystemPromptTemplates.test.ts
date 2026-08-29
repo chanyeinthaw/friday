@@ -62,6 +62,9 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, '- Channel: orbs-at-home')
     assert.include(prompt, 'Development for the orbs-at-home repository.')
     assert.include(prompt, '`/tmp/friday/channel-thread`')
+    assert.include(prompt, '`/tmp/friday/channel-thread/<repository-name>`')
+    assert.include(prompt, '`/tmp/friday/channel-thread/tasks/<task-id-or-purpose>`')
+    assert.include(prompt, 'never choose `/tmp` or another directory outside the workspace')
     assert.include(prompt, '`primary`: General delegated work.')
     assert.include(prompt, 'Model: `anthropic/claude-sonnet`')
     assert.include(prompt, 'Thinking: `max`')
@@ -147,5 +150,9 @@ it.effect('renders the bootstrap prompt without replacing Pi for normal subagent
 
     assert.include(prompt, 'You are a bootstrap agent running inside Friday.')
     assert.include(prompt, "Do not perform the user's main task.")
+    assert.include(prompt, 'Never use `/tmp`')
+    assert.include(prompt, '`<workspace-root>/<repository-name>`')
+    assert.include(prompt, '`<workspace-root>/tasks/<task-id-or-purpose>`')
+    assert.include(prompt, 'reuse it')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )

@@ -45,7 +45,8 @@ const TaskToolParameters = Type.Union([
       description: 'Clear objective, context, expected result, and constraints.',
     }),
     workingDirectory: Type.String({
-      description: 'Absolute working directory outside the channel workspace.',
+      description:
+        'Absolute project or task directory inside the channel workspace, but not the workspace root.',
     }),
     profile: Type.Optional(
       Type.String({ description: "Configured subagent profile name. Defaults to 'primary'." }),

@@ -43,6 +43,7 @@ import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
 import { TaskModels, type TaskModelsContract } from './TaskModels.ts'
 import {
   isActiveTaskStatus,
+  isWorkingDirectoryInsideWorkspace,
   matchesTaskStatusFilter,
   workingDirectoriesConflict,
 } from './TaskPolicy.ts'
@@ -54,6 +55,7 @@ export class TaskError extends Schema.Error<TaskError>('TaskError')({
     'model-not-configured',
     'invalid-working-directory',
     'channel-workspace',
+    'outside-channel-workspace',
     'working-directory-busy',
     'task-not-found',
     'task-not-owned',
@@ -247,7 +249,13 @@ const validateWorkingDirectory = Effect.fn('Tasks.validateWorkingDirectory')(fun
   if (workingDirectoriesConflict(directory, channelWorkspace)) {
     return yield* taskError(
       'channel-workspace',
-      'Normal tasks cannot run in the parent channel workspace.',
+      'Normal tasks cannot run at the parent channel workspace root.',
+    )
+  }
+  if (!isWorkingDirectoryInsideWorkspace(channelWorkspace, directory)) {
+    return yield* taskError(
+      'outside-channel-workspace',
+      `Normal tasks must run inside the parent channel workspace '${channelWorkspace}'.`,
     )
   }
   return yield* decodeWorkingDirectory(directory).pipe(

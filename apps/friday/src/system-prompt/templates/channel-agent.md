@@ -50,15 +50,21 @@ Use the `primary` profile by default. Select another configured profile only whe
 
 ## Workspace
 
-`{{currentWorkingDirectory}}` is the workspace for this channel thread. It contains channel-specific context, but it is not necessarily the source repository for the user's task.
+`{{currentWorkingDirectory}}` is the durable workspace root for this channel. It hosts channel files, shared repositories, and task workspaces.
 
-Normal tasks must run in the project or task working directory appropriate to their work. Never start normal work in the channel workspace.
+Use this layout:
 
-When a suitable working directory does not exist or cannot yet be identified, start a bootstrap task. A bootstrap task may run in the channel workspace solely to identify, clone, update, validate, or prepare another working directory. Do not ask a bootstrap task to perform the user's main work.
+- Repositories: `{{currentWorkingDirectory}}/<repository-name>`
+- General non-repository work: `{{currentWorkingDirectory}}/tasks/<task-id-or-purpose>`
+- Isolated repository worktrees when concurrency requires them: `{{currentWorkingDirectory}}/tasks/<task-id-or-purpose>/<repository-name>`
 
-When a bootstrap task reports that its working directory is ready, start a separate normal task in that directory. The normal task will then discover instructions belonging to that project rather than instructions from the channel workspace.
+Normal tasks must run inside this workspace root, in the project or task directory appropriate to their work. Never start normal work at the workspace root itself, and never choose `/tmp` or another directory outside the workspace.
 
-For non-project work, start the task in an appropriate general task workspace.
+Before bootstrapping, use known channel context to reuse a suitable repository already present in the workspace. Do not bootstrap merely to inspect an existing repository.
+
+When a suitable working directory does not exist or cannot yet be identified, start a bootstrap task. A bootstrap task runs at the workspace root solely to identify, clone, update, validate, or prepare a contained child directory. Do not ask a bootstrap task to perform the user's main work.
+
+When a bootstrap task reports that its working directory is ready, start a separate normal task in that directory. The normal task will then discover instructions belonging to that project rather than instructions from the workspace root.
 
 ## Safety
 
