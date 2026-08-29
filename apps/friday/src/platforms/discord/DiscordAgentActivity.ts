@@ -12,22 +12,34 @@ export const makeDiscordAgentActivity = (
 ): ((input: PlatformAgentActivity) => Effect.Effect<void, ChatSdkPublicationError>) => {
   const baseNames = new Map<string, string>()
   const activeTaskIds = new Map<string, Set<string>>()
+  let botUserId: string | null = null
 
   return (input) =>
     Effect.tryPromise({
       try: async () => {
         const location = discord.decodeThreadId(String(input.binding.conversationId))
-        if (!location.guildId) return
+        if (!location.guildId) return null
+        if (botUserId === null) {
+          const response = await fetch('https://discord.com/api/v10/users/@me', {
+            headers: { Authorization: `Bot ${botToken}` },
+          })
+          if (!response.ok) {
+            throw new Error(`Discord bot user lookup failed: HTTP ${response.status}`)
+          }
+          // SAFETY: Discord's documented current-user response always includes the user's snowflake ID.
+          const user = (await response.json()) as { id: string }
+          botUserId = user.id
+        }
         let baseName = baseNames.get(location.guildId)
         if (!baseName) {
           const response = await fetch(
-            `https://discord.com/api/v10/guilds/${location.guildId}/members/@me`,
+            `https://discord.com/api/v10/guilds/${location.guildId}/members/${botUserId}`,
             { headers: { Authorization: `Bot ${botToken}` } },
           )
           if (!response.ok) {
             throw new Error(`Discord bot member lookup failed: HTTP ${response.status}`)
           }
-          // SAFETY: Discord's documented current-member response exposes optional nick and user fields.
+          // SAFETY: Discord's documented guild-member response exposes optional nick and user fields.
           const member = (await response.json()) as {
             nick?: string | null
             user?: { username?: string }
@@ -52,7 +64,15 @@ export const makeDiscordAgentActivity = (
         )
         if (!response.ok)
           throw new Error(`Discord bot nickname update failed: HTTP ${response.status}`)
+        return { guildId: location.guildId, nickname, activeTaskCount: count }
       },
       catch: (cause) => new ChatSdkPublicationError({ operation: 'set-agent-activity', cause }),
-    })
+    }).pipe(
+      Effect.tap((result) =>
+        result === null
+          ? Effect.void
+          : Effect.logInfo('discord.agent-activity.updated').pipe(Effect.annotateLogs(result)),
+      ),
+      Effect.asVoid,
+    )
 }

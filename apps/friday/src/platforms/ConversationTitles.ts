@@ -24,9 +24,20 @@ export const ConversationTitlesLive = Layer.effect(
     const lock = yield* Semaphore.make(1)
     const updateActivity = (thread: ChannelThread, taskId: TaskId, active: boolean) =>
       lock.withPermit(
-        platforms
-          .setAgentActivity({ binding: thread.conversationBinding, taskId, active })
-          .pipe(Effect.ignore),
+        platforms.setAgentActivity({ binding: thread.conversationBinding, taskId, active }).pipe(
+          Effect.matchEffect({
+            onFailure: (cause) =>
+              Effect.logWarning('platform.agent-activity.failed').pipe(
+                Effect.annotateLogs({
+                  platform: thread.conversationBinding.platform,
+                  taskId,
+                  active,
+                  cause: String(cause),
+                }),
+              ),
+            onSuccess: () => Effect.void,
+          }),
+        ),
       )
 
     return ConversationTitles.of({
