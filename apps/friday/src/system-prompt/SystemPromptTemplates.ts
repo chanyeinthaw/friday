@@ -1,9 +1,10 @@
-import type { ChannelThread, ModelSelection } from '@friday/contracts/conversation'
+import type { ChannelThread } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 
+import type { SubagentProfile } from '../config/AppConfig.ts'
 import bootstrapAgentTemplate from './templates/bootstrap-agent.md' with { type: 'text' }
 import channelAgentTemplate from './templates/channel-agent.md' with { type: 'text' }
 
@@ -17,7 +18,7 @@ export class SystemPromptTemplateError extends Schema.Error<SystemPromptTemplate
 
 export interface ChannelAgentSystemPromptContext {
   readonly thread: ChannelThread
-  readonly availableAgentModels: ReadonlyArray<ModelSelection>
+  readonly availableAgentModels: ReadonlyArray<SubagentProfile>
 }
 
 export interface SystemPromptTemplatesContract {
@@ -57,12 +58,13 @@ const renderTemplate = (
     return rendered.trim()
   })
 
-const renderAvailableModels = (models: ReadonlyArray<ModelSelection>): string =>
-  models.length === 0
-    ? '(No agent models are configured.)'
-    : models
-        .map(({ provider, modelId }, index) =>
-          index === 0 ? `- Default: \`${provider}/${modelId}\`` : `- \`${provider}/${modelId}\``,
+const renderAvailableModels = (profiles: ReadonlyArray<SubagentProfile>): string =>
+  profiles.length === 0
+    ? '(No subagent profiles are configured.)'
+    : profiles
+        .map(
+          ({ name, description, model, thinkingLevel }) =>
+            `- \`${name}\`: ${description}\n  - Model: \`${model.provider}/${model.modelId}\`\n  - Thinking: \`${thinkingLevel}\`${name === 'primary' ? '\n  - Default' : ''}`,
         )
         .join('\n\n')
 

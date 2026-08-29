@@ -17,8 +17,13 @@ const configJson = `{
     },
     "subagents": [
       {
-        "provider": "anthropic",
-        "modelId": "claude-sonnet"
+        "name": "primary",
+        "description": "General delegated work.",
+        "model": {
+          "provider": "anthropic",
+          "modelId": "claude-sonnet"
+        },
+        "thinkingLevel": "max"
       }
     ]
   },
@@ -93,8 +98,11 @@ it.effect('loads literal and environment-backed secrets and preserves model pool
     const discord = config.platforms.discord
     assert(discord !== undefined)
     assert.strictEqual(config.models.subagents.length, 1)
-    assert.strictEqual(config.models.subagents[0]?.provider, 'anthropic')
-    assert.strictEqual(config.models.subagents[0]?.modelId, 'claude-sonnet')
+    assert.strictEqual(config.models.subagents[0]?.name, 'primary')
+    assert.strictEqual(config.models.subagents[0]?.description, 'General delegated work.')
+    assert.strictEqual(config.models.subagents[0]?.model.provider, 'anthropic')
+    assert.strictEqual(config.models.subagents[0]?.model.modelId, 'claude-sonnet')
+    assert.strictEqual(config.models.subagents[0]?.thinkingLevel, 'max')
     assert.strictEqual(discord.credentials.botToken, 'discord-token')
     assert.strictEqual(discord.credentials.applicationId, 'literal-application-id')
     assert.strictEqual(discord.credentials.publicKey, 'discord-public-key')

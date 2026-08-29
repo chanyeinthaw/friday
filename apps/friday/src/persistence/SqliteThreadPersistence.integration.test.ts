@@ -56,6 +56,7 @@ const agentThread = Schema.decodeSync(AgentThread)({
   model: { provider: 'anthropic', modelId: 'claude-sonnet' },
   thinkingLevel: 'high',
   role: 'subagent',
+  subagentProfile: 'primary',
   conversationBinding: null,
   status: 'active',
   createdAt: '2026-03-21T10:00:00.000Z',

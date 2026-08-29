@@ -2,7 +2,7 @@ import * as Schema from 'effect/Schema'
 
 import { AgentRole, WorkingDirectory } from './thread.ts'
 import { ThreadId, TurnId } from './ids.ts'
-import { ModelSelection, ThinkingLevel } from './model.ts'
+import { ModelSelection, SubagentProfileName, ThinkingLevel } from './model.ts'
 import { IsoDateTime } from './scalar.ts'
 
 export const TaskId = Schema.String.pipe(
@@ -28,8 +28,7 @@ export const StartTaskRequest = Schema.Struct({
   parentTurnId: TurnId,
   task: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
   workingDirectory: WorkingDirectory,
-  model: Schema.optionalKey(ModelSelection),
-  thinkingLevel: Schema.optionalKey(ThinkingLevel),
+  profile: Schema.optionalKey(SubagentProfileName),
 })
 export type StartTaskRequest = typeof StartTaskRequest.Type
 
@@ -37,8 +36,7 @@ export const BootstrapTaskRequest = Schema.Struct({
   parentThreadId: ThreadId,
   parentTurnId: TurnId,
   task: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
-  model: Schema.optionalKey(ModelSelection),
-  thinkingLevel: Schema.optionalKey(ThinkingLevel),
+  profile: Schema.optionalKey(SubagentProfileName),
 })
 export type BootstrapTaskRequest = typeof BootstrapTaskRequest.Type
 
@@ -71,6 +69,7 @@ export type StartedTask = typeof StartedTask.Type
 export const TaskSummary = Schema.Struct({
   taskId: TaskId,
   role: AgentRole,
+  profile: Schema.optionalKey(SubagentProfileName),
   status: TaskStatus,
   task: Schema.String,
   workingDirectory: WorkingDirectory,

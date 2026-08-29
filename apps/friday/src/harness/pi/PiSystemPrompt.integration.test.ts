@@ -6,6 +6,7 @@ import {
   AgentThread,
   ChannelThread,
   ModelSelection,
+  SubagentProfileName,
   type Thread,
 } from '@friday/contracts/conversation'
 import type { CreateAgentSessionOptions } from '@earendil-works/pi-coding-agent'
@@ -20,8 +21,9 @@ import type { PiTaskOperations } from '../../tasks/PiTaskTool.ts'
 import { makePiThreadRuntime, type PiAgentSessionContract } from './PiThreadRuntime.ts'
 
 const decodeChannelThread = Schema.decodeSync(ChannelThread)
+const decodeModel = Schema.decodeSync(ModelSelection)
+const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 const decodeAgentThread = Schema.decodeSync(AgentThread)
-const decodeModelSelection = Schema.decodeSync(ModelSelection)
 
 const channelThread = decodeChannelThread({
   id: 'thread-prompt-channel',
@@ -51,6 +53,7 @@ const agentThread = (role: 'subagent' | 'bootstrap') =>
     audience: 'agent',
     parent: { threadId: channelThread.id, turnId: 'turn-parent' },
     role,
+    subagentProfile: 'primary',
     harness: 'pi',
     harnessSession: null,
     workingDirectory: `/tmp/friday/prompt-${role}`,
@@ -100,7 +103,12 @@ const open = (thread: Thread, captured: Array<CreateAgentSessionOptions>) =>
       thread,
       systemPromptTemplates: templates,
       availableAgentModels: [
-        decodeModelSelection({ provider: 'anthropic', modelId: 'claude-sonnet' }),
+        {
+          name: decodeProfileName('primary'),
+          description: 'General delegated work.',
+          model: decodeModel({ provider: 'anthropic', modelId: 'claude-sonnet' }),
+          thinkingLevel: 'max',
+        },
       ],
       tasks,
       modelRuntime: {
@@ -122,7 +130,8 @@ test('overrides Pi system prompts for channel and bootstrap agents only', async 
       yield* open(channelThread, channelOptions)
       const channelPrompt = channelOptions[0]?.resourceLoader?.getSystemPrompt()
       expect(channelPrompt ?? '').toContain('# Friday channel agent')
-      expect(channelPrompt ?? '').toContain('- Default: `anthropic/claude-sonnet`')
+      expect(channelPrompt ?? '').toContain('`primary`: General delegated work.')
+      expect(channelPrompt ?? '').toContain('Model: `anthropic/claude-sonnet`')
       expect(channelOptions[0]?.customTools?.map((tool) => tool.name)).toEqual(['task'])
 
       const bootstrapOptions: Array<CreateAgentSessionOptions> = []

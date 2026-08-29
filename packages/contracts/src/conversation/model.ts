@@ -19,6 +19,9 @@ export const ThinkingLevel = Schema.Literals([
 ])
 export type ThinkingLevel = typeof ThinkingLevel.Type
 
+export const SubagentProfileName = ModelIdentifier.pipe(Schema.brand('SubagentProfileName'))
+export type SubagentProfileName = typeof SubagentProfileName.Type
+
 export const ModelSelection = Schema.Struct({
   provider: ProviderId,
   modelId: ModelId,

@@ -8,12 +8,12 @@ Define the task-facing vocabulary while persisting each task as an agent thread.
 
 - Add task identifiers, operations, filters, summaries, and typed errors.
 - Add the `Tasks` Effect service interface without a live executor.
-- Add configured subagent model resolution by exact configured provider and model ID.
+- Add named, described subagent profiles that resolve configured model and thinking-level defaults.
 - Add persistence queries for agent threads belonging to a channel thread.
 - Keep task listing scoped by parent channel thread.
 - Verify contracts, model resolution, persistence ordering, and parent scoping.
 
-Completion criterion: callers can describe task operations through typed contracts, resolve only configured subagent models, and list the persisted agent threads belonging to one channel thread.
+Completion criterion: callers can describe task operations through typed contracts, resolve only configured subagent profiles, and list the persisted agent threads belonging to one channel thread.
 
 ## Phase 2: background task execution
 

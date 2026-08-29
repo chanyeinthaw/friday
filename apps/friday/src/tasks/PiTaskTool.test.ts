@@ -62,6 +62,7 @@ it('scopes task start calls to the current channel Thread and active Turn', asyn
     action: 'start',
     task: 'Inspect the project.',
     workingDirectory: '/tmp/project',
+    profile: 'primary',
   })
 
   assert.deepStrictEqual(calls, [
@@ -70,6 +71,7 @@ it('scopes task start calls to the current channel Thread and active Turn', asyn
       parentTurnId: decodeTurnId('turn-active'),
       task: 'Inspect the project.',
       workingDirectory: '/tmp/project',
+      profile: 'primary',
     },
   ])
   assert.include(

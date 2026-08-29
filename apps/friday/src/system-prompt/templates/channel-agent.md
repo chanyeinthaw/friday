@@ -42,11 +42,11 @@ Run independent tasks concurrently when doing so shortens the user's wait. Keep 
 
 You remain responsible for understanding the user's request, coordinating the work, reviewing task results, resolving incomplete or conflicting results, and producing the final response for the channel.
 
-## Available agent models
+## Available subagent profiles
 
 {{availableAgentModels}}
 
-Use the default model when it is suitable. Select another configured model or thinking level only when the task has a concrete need for it.
+Use the `primary` profile by default. Select another configured profile only when its description better matches the delegated work. The profile controls the subagent model and thinking level.
 
 ## Workspace
 

@@ -1,5 +1,5 @@
 import { assert, it } from '@effect/vitest'
-import { ChannelThread, ModelSelection } from '@friday/contracts/conversation'
+import { ChannelThread, ModelSelection, SubagentProfileName } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
@@ -9,7 +9,8 @@ import {
   SystemPromptTemplatesLive,
 } from './SystemPromptTemplates.ts'
 
-const decodeModelSelection = Schema.decodeSync(ModelSelection)
+const decodeModel = Schema.decodeSync(ModelSelection)
+const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-system-prompt',
@@ -42,8 +43,18 @@ it.effect('renders the channel agent system prompt from thread context and confi
     const prompt = yield* templates.renderChannelAgent({
       thread,
       availableAgentModels: [
-        decodeModelSelection({ provider: 'anthropic', modelId: 'claude-sonnet' }),
-        decodeModelSelection({ provider: 'openai', modelId: 'gpt-5' }),
+        {
+          name: decodeProfileName('primary'),
+          description: 'General delegated work.',
+          model: decodeModel({ provider: 'anthropic', modelId: 'claude-sonnet' }),
+          thinkingLevel: 'max',
+        },
+        {
+          name: decodeProfileName('fast'),
+          description: 'Quick investigations.',
+          model: decodeModel({ provider: 'openai', modelId: 'gpt-5' }),
+          thinkingLevel: 'medium',
+        },
       ],
     })
 
@@ -51,7 +62,10 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, '- Channel: orbs-at-home')
     assert.include(prompt, 'Development for the orbs-at-home repository.')
     assert.include(prompt, '`/tmp/friday/channel-thread`')
-    assert.include(prompt, '- Default: `anthropic/claude-sonnet`\n\n- `openai/gpt-5`')
+    assert.include(prompt, '`primary`: General delegated work.')
+    assert.include(prompt, 'Model: `anthropic/claude-sonnet`')
+    assert.include(prompt, 'Thinking: `max`')
+    assert.include(prompt, '`fast`: Quick investigations.')
     assert.notInclude(prompt, '{{')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
@@ -65,7 +79,7 @@ it.effect('renders channel prompts without configured agent models or a descript
     })
 
     assert.include(prompt, '(No channel description)')
-    assert.include(prompt, '(No agent models are configured.)')
+    assert.include(prompt, '(No subagent profiles are configured.)')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
 

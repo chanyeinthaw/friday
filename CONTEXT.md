@@ -60,8 +60,12 @@ _Avoid_: Surface, external platform, transport
 The association between a channel thread and its conversation location on a Platform. It identifies the Platform and the Platform-specific channel, initiating message, and conversation identifiers.
 _Avoid_: Surface binding, external binding, Discord thread
 
+**Subagent profile**:
+A named and described delegation preset that selects the model and thinking level for a bootstrap or ordinary subagent. The `primary` profile is the default when a task does not request another profile.
+_Avoid_: Model pool entry
+
 **Model selection**:
-The provider and model identifier used by a thread or turn. A thread stores the current selection; a turn stores the effective selection used for that input.
+The provider and model identifier used by a thread or turn. A thread stores the effective selection resolved from its subagent profile; a turn stores the effective selection used for that input.
 _Avoid_: Model provider
 
 **Thinking level**:

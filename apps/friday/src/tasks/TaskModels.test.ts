@@ -1,31 +1,44 @@
 import { assert, it } from '@effect/vitest'
-import { ModelSelection } from '@friday/contracts/conversation'
+import { SubagentProfileName } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
+import { SubagentProfile } from '../config/AppConfig.ts'
 import { makeTaskModels } from './TaskModels.ts'
 
-const decodeModel = Schema.decodeSync(ModelSelection)
-const fast = decodeModel({ provider: 'opencode-go', modelId: 'deepseek-v4-flash' })
-const deep = decodeModel({ provider: 'anthropic', modelId: 'claude-opus' })
+const decodeProfile = Schema.decodeSync(SubagentProfile)
+const decodeProfileName = Schema.decodeSync(SubagentProfileName)
+const primary = decodeProfile({
+  name: 'primary',
+  description: 'General delegated work.',
+  model: { provider: 'opencode-go', modelId: 'glm-5.3-flash' },
+  thinkingLevel: 'max',
+})
+const review = decodeProfile({
+  name: 'review',
+  description: 'Focused code review.',
+  model: { provider: 'anthropic', modelId: 'claude-opus' },
+  thinkingLevel: 'high',
+})
 
-it.effect('resolves only configured task models and exposes the first as default', () =>
+it.effect("resolves configured profiles and exposes 'primary' as default", () =>
   Effect.gen(function* () {
-    const models = makeTaskModels([fast, deep])
+    const models = makeTaskModels([review, primary])
 
-    assert.deepStrictEqual(Option.getOrNull(yield* models.defaultModel), fast)
-    assert.deepStrictEqual(Option.getOrNull(yield* models.resolve(deep)), deep)
-    assert(
-      Option.isNone(yield* models.resolve(decodeModel({ provider: 'openai', modelId: 'gpt-5' }))),
+    assert.deepStrictEqual(Option.getOrNull(yield* models.defaultProfile), primary)
+    assert.deepStrictEqual(
+      Option.getOrNull(yield* models.resolve(decodeProfileName('review'))),
+      review,
     )
+    assert(Option.isNone(yield* models.resolve(decodeProfileName('missing'))))
   }),
 )
 
-it.effect('has no default when no task models are configured', () =>
+it.effect("has no default without a 'primary' profile", () =>
   Effect.gen(function* () {
-    const models = makeTaskModels([])
+    const models = makeTaskModels([review])
 
-    assert(Option.isNone(yield* models.defaultModel))
+    assert(Option.isNone(yield* models.defaultProfile))
   }),
 )

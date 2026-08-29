@@ -1,6 +1,6 @@
 /* oxlint-disable eslint/no-underscore-dangle, effecttsgo/process-env -- Effect schema errors use the canonical _tag discriminator; the process environment is read at the configuration boundary. */
 
-import { ModelSelection, ThinkingLevel } from '@friday/contracts/conversation'
+import { ModelSelection, SubagentProfileName, ThinkingLevel } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as PlatformError from 'effect/PlatformError'
@@ -63,9 +63,17 @@ const SlackPlatform = Schema.Union([
   }),
 ])
 
+export const SubagentProfile = Schema.Struct({
+  name: SubagentProfileName,
+  description: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  model: ModelSelection,
+  thinkingLevel: ThinkingLevel,
+})
+export type SubagentProfile = typeof SubagentProfile.Type
+
 const Models = Schema.Struct({
   primary: ModelSelection,
-  subagents: Schema.Array(ModelSelection),
+  subagents: Schema.Array(SubagentProfile),
 })
 
 const Agent = Schema.Struct({

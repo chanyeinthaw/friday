@@ -1,10 +1,9 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, effecttsgo/any-unknown-in-error-context -- Pi tool input and dispatcher failures cross the SDK boundary and are schema-decoded before use. */
 
 import {
-  ModelSelection,
+  SubagentProfileName,
   TaskId,
   TaskStatusFilter,
-  ThinkingLevel,
   TurnId,
   WorkingDirectory,
   type ChannelThread,
@@ -24,14 +23,12 @@ const TaskToolInput = Schema.Union([
     action: Schema.Literal('start'),
     task: Schema.String,
     workingDirectory: WorkingDirectory,
-    model: Schema.optionalKey(ModelSelection),
-    thinkingLevel: Schema.optionalKey(ThinkingLevel),
+    profile: Schema.optionalKey(SubagentProfileName),
   }),
   Schema.Struct({
     action: Schema.Literal('bootstrap'),
     task: Schema.String,
-    model: Schema.optionalKey(ModelSelection),
-    thinkingLevel: Schema.optionalKey(ThinkingLevel),
+    profile: Schema.optionalKey(SubagentProfileName),
   }),
   Schema.Struct({ action: Schema.Literal('steer'), taskId: TaskId, message: Schema.String }),
   Schema.Struct({ action: Schema.Literal('list'), status: Schema.optionalKey(TaskStatusFilter) }),
@@ -40,21 +37,6 @@ const TaskToolInput = Schema.Union([
 
 const decodeTaskToolInput = Schema.decodeUnknownEffect(TaskToolInput)
 const decodeTurnId = Schema.decodeUnknownEffect(TurnId)
-
-const ModelSelectionParameters = Type.Object({
-  provider: Type.String({ description: 'Configured provider identifier.' }),
-  modelId: Type.String({ description: 'Configured model identifier.' }),
-})
-
-const ThinkingLevelParameters = Type.Union([
-  Type.Literal('off'),
-  Type.Literal('minimal'),
-  Type.Literal('low'),
-  Type.Literal('medium'),
-  Type.Literal('high'),
-  Type.Literal('xhigh'),
-  Type.Literal('max'),
-])
 
 const TaskToolParameters = Type.Union([
   Type.Object({
@@ -65,14 +47,16 @@ const TaskToolParameters = Type.Union([
     workingDirectory: Type.String({
       description: 'Absolute working directory outside the channel workspace.',
     }),
-    model: Type.Optional(ModelSelectionParameters),
-    thinkingLevel: Type.Optional(ThinkingLevelParameters),
+    profile: Type.Optional(
+      Type.String({ description: "Configured subagent profile name. Defaults to 'primary'." }),
+    ),
   }),
   Type.Object({
     action: Type.Literal('bootstrap'),
     task: Type.String({ description: 'Workspace preparation objective.' }),
-    model: Type.Optional(ModelSelectionParameters),
-    thinkingLevel: Type.Optional(ThinkingLevelParameters),
+    profile: Type.Optional(
+      Type.String({ description: "Configured subagent profile name. Defaults to 'primary'." }),
+    ),
   }),
   Type.Object({ action: Type.Literal('steer'), taskId: Type.String(), message: Type.String() }),
   Type.Object({
@@ -84,17 +68,20 @@ const TaskToolParameters = Type.Union([
   Type.Object({ action: Type.Literal('cancel'), taskId: Type.String(), reason: Type.String() }),
 ])
 
-const taskSummary = (task: TaskSummary) => ({
-  taskId: task.taskId,
-  role: task.role,
-  status: task.status,
-  task: task.task,
-  workingDirectory: task.workingDirectory,
-  model: task.model,
-  thinkingLevel: task.thinkingLevel,
-  createdAt: task.createdAt,
-  completedAt: task.completedAt,
-})
+const taskSummary = (task: TaskSummary) => {
+  const base = {
+    taskId: task.taskId,
+    role: task.role,
+    status: task.status,
+    task: task.task,
+    workingDirectory: task.workingDirectory,
+    model: task.model,
+    thinkingLevel: task.thinkingLevel,
+    createdAt: task.createdAt,
+    completedAt: task.completedAt,
+  }
+  return task.profile === undefined ? base : { ...base, profile: task.profile }
+}
 
 const output = <A>(value: A) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(value) }],
@@ -147,11 +134,8 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
             task: input.task,
             workingDirectory: input.workingDirectory,
           }
-          const withModel = input.model === undefined ? base : { ...base, model: input.model }
           const request: StartRequest =
-            input.thinkingLevel === undefined
-              ? withModel
-              : { ...withModel, thinkingLevel: input.thinkingLevel }
+            input.profile === undefined ? base : { ...base, profile: input.profile }
           return output(await options.runPromise(options.tasks.start(request)))
         }
         case 'bootstrap': {
@@ -160,11 +144,8 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
             parentTurnId: await options.runPromise(decodeTurnId(activeTurnId)),
             task: input.task,
           }
-          const withModel = input.model === undefined ? base : { ...base, model: input.model }
           const request: BootstrapRequest =
-            input.thinkingLevel === undefined
-              ? withModel
-              : { ...withModel, thinkingLevel: input.thinkingLevel }
+            input.profile === undefined ? base : { ...base, profile: input.profile }
           return output(await options.runPromise(options.tasks.bootstrap(request)))
         }
         case 'steer':

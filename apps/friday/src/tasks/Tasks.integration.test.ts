@@ -6,6 +6,8 @@ import {
   AgentThread,
   ChannelThread,
   IsoDateTime,
+  ModelSelection,
+  SubagentProfileName,
   TaskId,
   TurnId,
   WorkingDirectory,
@@ -30,6 +32,8 @@ import { makeTasks } from './Tasks.ts'
 
 const decodeAgentThread = Schema.decodeSync(AgentThread)
 const decodeIsoDateTime = Schema.decodeSync(IsoDateTime)
+const decodeModelSelection = Schema.decodeSync(ModelSelection)
+const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 const decodeTaskId = Schema.decodeSync(TaskId)
 const decodeTurnId = Schema.decodeSync(TurnId)
 const decodeWorkingDirectory = Schema.decodeSync(WorkingDirectory)
@@ -83,6 +87,14 @@ const makePersistence = (
 })
 
 const noChannelTurns: ChannelTurnsContract = { accept: () => Effect.void }
+const profilesFor = (parent: ReturnType<typeof parentThread>) => [
+  {
+    name: decodeProfileName('primary'),
+    description: 'General delegated work.',
+    model: parent.model,
+    thinkingLevel: 'max' as const,
+  },
+]
 
 const makeFriday = (promptedTurns: Array<Turn>): FridayContract => ({
   openThread: (_thread) =>
@@ -116,7 +128,7 @@ test('starts a subagent task without waiting for its terminal result', async () 
     const tasks = makeTasks({
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday(promptedTurns),
-      models: makeTaskModels([parent.model]),
+      models: makeTaskModels(profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
@@ -149,6 +161,55 @@ test('starts a subagent task without waiting for its terminal result', async () 
   expect(promptedTurns[0]?.input.content.text).toBe('Inspect the repository and report the result.')
 })
 
+test('applies the selected subagent profile model and thinking level', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-profile-'))
+  const channelWorkspace = join(root, 'channel')
+  const projectDirectory = join(root, 'project')
+  await Promise.all([
+    Bun.write(join(channelWorkspace, '.keep'), ''),
+    Bun.write(join(projectDirectory, '.keep'), ''),
+  ])
+  const parent = parentThread(channelWorkspace)
+  const profileName = decodeProfileName('review')
+  const createdThreads: Array<Thread> = []
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence: makePersistence(parent, createdThreads),
+      friday: makeFriday([]),
+      models: makeTaskModels([
+        ...profilesFor(parent),
+        {
+          name: profileName,
+          description: 'Focused review work.',
+          model: decodeModelSelection({ provider: 'anthropic', modelId: 'claude-opus' }),
+          thinkingLevel: 'high',
+        },
+      ]),
+      channelTurns: noChannelTurns,
+      fileSystem,
+      randomUUID: Effect.succeed('profile-task'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: () => Effect.void,
+    })
+    return yield* tasks.start({
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Review the project.',
+      workingDirectory: decodeWorkingDirectory(projectDirectory),
+      profile: profileName,
+    })
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  const thread = createdThreads[0]
+  expect(String(thread?.model.provider)).toBe('anthropic')
+  expect(String(thread?.model.modelId)).toBe('claude-opus')
+  expect(thread?.thinkingLevel).toBe('high')
+})
+
 test('starts a bootstrap task in the channel workspace with the bootstrap role', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-bootstrap-test-'))
   const channelWorkspace = join(root, 'channel')
@@ -163,7 +224,7 @@ test('starts a bootstrap task in the channel workspace with the bootstrap role',
     const tasks = makeTasks({
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday(promptedTurns),
-      models: makeTaskModels([parent.model]),
+      models: makeTaskModels(profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
@@ -228,7 +289,7 @@ test('delivers a completed task back to the parent channel Thread', async () => 
         closeThread: ({ threadId }) => Effect.sync(() => closed.push(threadId)),
       },
       friday,
-      models: makeTaskModels([parent.model]),
+      models: makeTaskModels(profilesFor(parent)),
       channelTurns: {
         accept: ({ message }) =>
           Effect.sync(() => delivered.push({ source: message.source, text: message.content.text })),
@@ -302,7 +363,7 @@ test('delivers a bootstrap result back to the channel for a separate normal task
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday,
-      models: makeTaskModels([parent.model]),
+      models: makeTaskModels(profilesFor(parent)),
       channelTurns: {
         accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
       },
@@ -341,6 +402,7 @@ test('lists tasks by the latest Turn status', async () => {
     audience: 'agent',
     parent: { threadId: parent.id, turnId: 'turn-parent' },
     role: 'subagent',
+    subagentProfile: 'primary',
     harness: 'pi',
     harnessSession: null,
     workingDirectory: '/tmp/project',
@@ -357,7 +419,7 @@ test('lists tasks by the latest Turn status', async () => {
   const tasks = makeTasks({
     persistence: taskPersistence(parent, thread, first, latest),
     friday: makeFriday([]),
-    models: makeTaskModels([parent.model]),
+    models: makeTaskModels(profilesFor(parent)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
@@ -408,7 +470,7 @@ test('steers an active task and continues an idle task with a new Turn', async (
   const tasks = makeTasks({
     persistence: { ...persistence, getLatestTurn: () => Effect.succeedSome(latest) },
     friday,
-    models: makeTaskModels([parent.model]),
+    models: makeTaskModels(profilesFor(parent)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('continuation'),
@@ -456,7 +518,7 @@ test('cancels only an active owned task', async () => {
           drain: Effect.never,
         }),
     },
-    models: makeTaskModels([parent.model]),
+    models: makeTaskModels(profilesFor(parent)),
     channelTurns: {
       accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
     },
@@ -507,7 +569,7 @@ test('rejects task operations from another channel', async () => {
         ),
     },
     friday: makeFriday([]),
-    models: makeTaskModels([owner.model]),
+    models: makeTaskModels(profilesFor(owner)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
@@ -536,7 +598,7 @@ test('rejects cancellation for a terminal task', async () => {
   const tasks = makeTasks({
     persistence: taskPersistence(parent, thread, completed, completed),
     friday: makeFriday([]),
-    models: makeTaskModels([parent.model]),
+    models: makeTaskModels(profilesFor(parent)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
@@ -583,7 +645,7 @@ test('rejects concurrent tasks sharing one canonical working directory', async (
     const tasks = makeTasks({
       persistence,
       friday: makeFriday([]),
-      models: makeTaskModels([parent.model]),
+      models: makeTaskModels(profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
@@ -652,6 +714,7 @@ const taskThread = (parent: ReturnType<typeof parentThread>): AgentThreadType =>
     audience: 'agent',
     parent: { threadId: parent.id, turnId: 'turn-parent' },
     role: 'subagent',
+    subagentProfile: 'primary',
     harness: 'pi',
     harnessSession: null,
     workingDirectory: '/tmp/project',

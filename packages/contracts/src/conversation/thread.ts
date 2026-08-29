@@ -3,7 +3,7 @@ import * as Schema from 'effect/Schema'
 import { ConversationBinding } from './platform.ts'
 import { HarnessId, HarnessSession } from './harness.ts'
 import { ThreadId, TurnId } from './ids.ts'
-import { ModelSelection, ThinkingLevel } from './model.ts'
+import { ModelSelection, SubagentProfileName, ThinkingLevel } from './model.ts'
 import { IsoDateTime } from './scalar.ts'
 
 export const WorkingDirectory = Schema.String.pipe(
@@ -60,6 +60,7 @@ export const AgentThread = Schema.Struct({
   audience: Schema.Literal('agent'),
   parent: ParentReference,
   role: AgentRole,
+  subagentProfile: Schema.optionalKey(SubagentProfileName),
   conversationBinding: Schema.Null,
 })
 export type AgentThread = typeof AgentThread.Type

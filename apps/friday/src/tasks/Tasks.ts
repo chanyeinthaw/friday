@@ -123,21 +123,21 @@ const taskError = (
   operation: TaskError['operation'] = 'start',
 ) => new TaskError({ operation, reason, detail })
 
-const resolveModel = Effect.fn('Tasks.resolveModel')(function* (
+const resolveProfile = Effect.fn('Tasks.resolveProfile')(function* (
   models: TaskModelsContract,
-  requested: StartTaskRequest['model'],
+  requested: StartTaskRequest['profile'],
   operation: TaskError['operation'],
 ) {
   const resolved =
-    requested === undefined ? yield* models.defaultModel : yield* models.resolve(requested)
+    requested === undefined ? yield* models.defaultProfile : yield* models.resolve(requested)
   return yield* Option.match(resolved, {
     onNone: () =>
       Effect.fail(
         taskError(
           'model-not-configured',
           requested === undefined
-            ? 'No default subagent model is configured.'
-            : `Subagent model '${requested.provider}/${requested.modelId}' is not configured.`,
+            ? "No 'primary' subagent profile is configured."
+            : `Subagent profile '${requested}' is not configured.`,
           operation,
         ),
       ),
@@ -263,8 +263,7 @@ interface LaunchTaskInput {
   readonly parentTurnId: TurnId
   readonly task: string
   readonly workingDirectory: StartTaskRequest['workingDirectory']
-  readonly model: StartTaskRequest['model']
-  readonly thinkingLevel: StartTaskRequest['thinkingLevel']
+  readonly profile: StartTaskRequest['profile']
   readonly role: AgentThread['role']
   readonly operation: 'start' | 'bootstrap'
 }
@@ -287,7 +286,8 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         )
       }
     }
-    const model = yield* resolveModel(options.models, input.model, input.operation)
+    const profile = yield* resolveProfile(options.models, input.profile, input.operation)
+    const model = profile.model
     const timestamp = yield* options.now
     const taskUuid = yield* options.randomUUID
     const turnUuid = yield* options.randomUUID
@@ -323,11 +323,12 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       audience: 'agent',
       parent: { threadId: input.parent.id, turnId: input.parentTurnId },
       role: input.role,
+      subagentProfile: profile.name,
       harness: input.parent.harness,
       harnessSession: null,
       workingDirectory: input.workingDirectory,
       model,
-      thinkingLevel: input.thinkingLevel ?? input.parent.thinkingLevel,
+      thinkingLevel: profile.thinkingLevel,
       conversationBinding: null,
       status: 'active',
       createdAt: timestamp,
@@ -432,8 +433,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       parentTurnId: request.parentTurnId,
       task: request.task,
       workingDirectory,
-      model: request.model,
-      thinkingLevel: request.thinkingLevel,
+      profile: request.profile,
       role: 'subagent',
       operation: 'start',
     })
@@ -485,8 +485,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       parentTurnId: request.parentTurnId,
       task: request.task,
       workingDirectory,
-      model: request.model,
-      thinkingLevel: request.thinkingLevel,
+      profile: request.profile,
       role: 'bootstrap',
       operation: 'bootstrap',
     })
@@ -648,7 +647,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         const first = yield* options.persistence.getFirstTurn(thread.id)
         const latest = yield* options.persistence.getLatestTurn(thread.id)
         if (Option.isNone(first) || Option.isNone(latest)) return null
-        return {
+        const base = {
           taskId: yield* decodeTaskId(thread.id).pipe(
             Effect.mapError(() =>
               taskError(
@@ -666,7 +665,10 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           thinkingLevel: thread.thinkingLevel,
           createdAt: thread.createdAt,
           completedAt: latest.value.completedAt,
-        } satisfies TaskSummary
+        }
+        return (
+          thread.subagentProfile === undefined ? base : { ...base, profile: thread.subagentProfile }
+        ) satisfies TaskSummary
       }),
     )
     const present = summaries.filter((summary): summary is TaskSummary => summary !== null)
