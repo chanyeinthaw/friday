@@ -22,6 +22,27 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   `
 
   yield* sql`
+    UPDATE threads
+    SET payload_json = json_set(
+      payload_json,
+      '$.channelContext',
+      json_object(
+        'name', json_extract(payload_json, '$.conversationBinding.channelId'),
+        'description', ''
+      )
+    )
+    WHERE audience = 'user'
+      AND json_extract(payload_json, '$.channelContext') IS NULL
+  `
+
+  yield* sql`
+    UPDATE threads
+    SET payload_json = json_set(payload_json, '$.role', 'subagent')
+    WHERE audience = 'agent'
+      AND json_extract(payload_json, '$.role') IS NULL
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS turns (
       turn_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,

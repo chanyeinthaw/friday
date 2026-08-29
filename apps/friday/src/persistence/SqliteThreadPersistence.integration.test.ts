@@ -30,6 +30,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-1',
   model: { provider: 'anthropic', modelId: 'claude-sonnet' },
   thinkingLevel: 'medium',
+  channelContext: { name: 'Friday test channel', description: '' },
   conversationBinding: {
     platform: 'discord',
     channelId: 'channel-1',
@@ -54,6 +55,7 @@ const agentThread = Schema.decodeSync(AgentThread)({
   workingDirectory: '/tmp/friday/agent-thread-1',
   model: { provider: 'anthropic', modelId: 'claude-sonnet' },
   thinkingLevel: 'high',
+  role: 'subagent',
   conversationBinding: null,
   status: 'active',
   createdAt: '2026-03-21T10:00:00.000Z',

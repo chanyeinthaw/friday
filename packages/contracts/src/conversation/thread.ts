@@ -18,6 +18,15 @@ export type ThreadAudience = typeof ThreadAudience.Type
 export const ThreadStatus = Schema.Literals(['active', 'closed'])
 export type ThreadStatus = typeof ThreadStatus.Type
 
+export const ChannelContext = Schema.Struct({
+  name: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  description: Schema.String,
+})
+export type ChannelContext = typeof ChannelContext.Type
+
+export const AgentRole = Schema.Literals(['subagent', 'bootstrap'])
+export type AgentRole = typeof AgentRole.Type
+
 export const ParentReference = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
@@ -41,6 +50,7 @@ export const ChannelThread = Schema.Struct({
   ...ThreadFields,
   audience: Schema.Literal('user'),
   parent: Schema.Null,
+  channelContext: ChannelContext,
   conversationBinding: ConversationBinding,
 })
 export type ChannelThread = typeof ChannelThread.Type
@@ -49,6 +59,7 @@ export const AgentThread = Schema.Struct({
   ...ThreadFields,
   audience: Schema.Literal('agent'),
   parent: ParentReference,
+  role: AgentRole,
   conversationBinding: Schema.Null,
 })
 export type AgentThread = typeof AgentThread.Type

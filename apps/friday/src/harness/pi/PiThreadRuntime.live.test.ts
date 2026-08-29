@@ -61,6 +61,7 @@ liveTest(
       workingDirectory: directory,
       model: { provider, modelId },
       thinkingLevel,
+      channelContext: { name: 'Friday live test', description: '' },
       conversationBinding: {
         platform: 'discord',
         channelId: 'live-channel',
@@ -170,6 +171,7 @@ liveCompactionTest(
       workingDirectory: directory,
       model: { provider, modelId },
       thinkingLevel,
+      channelContext: { name: 'Friday live test', description: '' },
       conversationBinding: {
         platform: 'discord',
         channelId: 'live-compaction-channel',

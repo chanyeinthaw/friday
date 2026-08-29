@@ -29,6 +29,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-pipeline',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
   thinkingLevel: 'max',
+  channelContext: { name: 'Friday test channel', description: '' },
   conversationBinding: {
     platform: 'discord',
     channelId: 'channel-pipeline',

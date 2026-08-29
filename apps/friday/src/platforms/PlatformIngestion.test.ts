@@ -47,6 +47,7 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
   workingDirectory: '/tmp/friday/thread-ingestion',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
   thinkingLevel: 'max',
+  channelContext: { name: 'Friday test channel', description: '' },
   conversationBinding: binding,
   status: 'active',
   createdAt: '2026-03-21T09:00:00.000Z',

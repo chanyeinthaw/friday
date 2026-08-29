@@ -5,7 +5,7 @@ Friday is a simple personal agent that operates through Discord and delegates wo
 ## Language
 
 **Channel workspace**:
-The directory associated with a Discord channel. It contains channel-specific agent context, including an `AGENTS.md` file.
+The directory associated with a channel thread. It is available to the channel agent and to bootstrap agents that prepare another working directory. Normal agent threads do not run there.
 _Avoid_: Project workspace
 
 **Thread**:
@@ -72,7 +72,16 @@ _Avoid_: Thinking token
 Agent-specific instructions shared across channels and stored in a global `AGENTS.md`.
 
 **Channel context**:
-Channel information and recent messages made available through the channel workspace's `AGENTS.md`.
+Platform channel information persisted on a channel thread and supplied to the channel agent's system prompt.
+
+**Channel-agent system prompt**:
+Friday's system prompt for the channel agent. Friday renders it from a Markdown template when opening the thread's harness session.
+
+**Bootstrap agent**:
+An agent thread that runs in the channel workspace only to identify or prepare a separate working directory. Its harness session receives Friday's bootstrap system prompt.
+
+**Subagent system prompt**:
+The harness's normal system prompt used by an ordinary agent thread. Friday does not replace Pi's system prompt for ordinary subagents.
 
 **Input source**:
 The origin of a turn's input or steering message: the user, an agent, or the system.

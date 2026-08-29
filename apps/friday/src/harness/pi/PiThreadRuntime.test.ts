@@ -101,6 +101,7 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
         workingDirectory: '/tmp/friday/thread-lifecycle',
         model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
         thinkingLevel: 'max',
+        channelContext: { name: 'Friday test channel', description: '' },
         conversationBinding: {
           platform: 'discord',
           channelId: 'channel-lifecycle',
@@ -208,6 +209,7 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
         workingDirectory: '/tmp/friday/thread-compaction',
         model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
         thinkingLevel: 'max',
+        channelContext: { name: 'Friday test channel', description: '' },
         conversationBinding: {
           platform: 'discord',
           channelId: 'channel-compaction',
@@ -309,6 +311,7 @@ it.effect('fails the active Turn without overtaking failed deferred steering', (
           workingDirectory: '/tmp/friday/thread-drain-failure',
           model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
           thinkingLevel: 'max',
+          channelContext: { name: 'Friday test channel', description: '' },
           conversationBinding: {
             platform: 'discord',
             channelId: 'channel-drain-failure',

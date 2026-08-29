@@ -8,22 +8,33 @@ import { FridayLive as FridayServiceLive } from './Friday.ts'
 import { makeThreadCoordinator } from './conversation/ThreadCoordinator.ts'
 import { ThreadRuntimePoolLive } from './conversation/ThreadRuntimePool.ts'
 import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
-import { AppConfigLive } from './config/AppConfigLive.ts'
+import { AppConfig, AppConfigLive } from './config/AppConfigLive.ts'
 import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { ThreadPersistenceLive } from './persistence/Live.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
 import { PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
+import {
+  SystemPromptTemplates,
+  SystemPromptTemplatesLive,
+} from './system-prompt/SystemPromptTemplates.ts'
 
 const ThreadRuntimesLive = Layer.effect(
   ThreadRuntimes,
   Effect.gen(function* () {
     const modelRuntime = yield* PiModelRuntime
     const crypto = yield* Crypto.Crypto
+    const configuration = yield* AppConfig
+    const systemPromptTemplates = yield* SystemPromptTemplates
 
     return ThreadRuntimes.of({
       open: (thread) =>
-        makePiThreadRuntime({ thread, modelRuntime }).pipe(
+        makePiThreadRuntime({
+          thread,
+          modelRuntime,
+          systemPromptTemplates,
+          availableAgentModels: configuration.models.subagents,
+        }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError(
             (cause) =>
@@ -58,6 +69,8 @@ const CoreLive = Layer.mergeAll(
   BunCrypto.layer,
   BunFileSystem.layer,
   PlatformRegistryLive,
+  AppConfigLive,
+  SystemPromptTemplatesLive,
 )
 
 const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
@@ -74,11 +87,4 @@ const IngestionLive = PlatformIngestionLive.pipe(
   Layer.provide(Layer.mergeAll(CoreLive, PoolLive, AgentLive)),
 )
 
-export const FridayLive = Layer.mergeAll(
-  CoreLive,
-  AppConfigLive,
-  RuntimeLive,
-  PoolLive,
-  AgentLive,
-  IngestionLive,
-)
+export const FridayLive = Layer.mergeAll(CoreLive, RuntimeLive, PoolLive, AgentLive, IngestionLive)

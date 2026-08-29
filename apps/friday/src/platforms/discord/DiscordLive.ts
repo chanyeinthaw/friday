@@ -53,7 +53,6 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   })
   const bootstrapOptions: DiscordThreadBootstrapOptions = {
     discord,
-    recentMessageCount: configuration.agent.recentMessageCount,
     model: configuration.models.primary,
     thinkingLevel: configuration.agent.thinkingLevel,
   }

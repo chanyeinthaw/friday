@@ -13,6 +13,8 @@ import {
 } from '@friday/contracts/conversation'
 import {
   createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
   SessionManager,
   type AgentSession,
   type AgentSessionEvent,
@@ -28,11 +30,13 @@ import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 
+import type { AppConfig } from '../../config/AppConfig.ts'
 import type {
   PromptRequest,
   ThreadRuntime,
   ThreadRuntimeEvent,
 } from '../../conversation/ThreadRuntime.ts'
+import type { SystemPromptTemplatesContract } from '../../system-prompt/SystemPromptTemplates.ts'
 
 const PiResumeCursor = Schema.Struct({
   sessionFile: Schema.String,
@@ -97,6 +101,8 @@ export interface MakePiThreadRuntimeOptions {
   readonly sessionFactory?: (
     thread: Thread,
   ) => Effect.Effect<PiAgentSessionContract, PiThreadRuntimeError>
+  readonly systemPromptTemplates?: SystemPromptTemplatesContract
+  readonly availableAgentModels?: AppConfig['models']['subagents']
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso)
@@ -314,6 +320,54 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
     onSome: ({ sessionFile }) =>
       SessionManager.open(sessionFile, undefined, options.thread.workingDirectory),
   })
+  const systemPrompt = options.systemPromptTemplates
+    ? options.thread.audience === 'user'
+      ? yield* options.systemPromptTemplates
+          .renderChannelAgent({
+            thread: options.thread,
+            availableAgentModels: options.availableAgentModels ?? [],
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new PiThreadRuntimeError({
+                  operation: 'create-session',
+                  detail: cause.detail,
+                  cause,
+                }),
+            ),
+          )
+      : options.thread.role === 'bootstrap'
+        ? yield* options.systemPromptTemplates.renderBootstrapAgent.pipe(
+            Effect.mapError(
+              (cause) =>
+                new PiThreadRuntimeError({
+                  operation: 'create-session',
+                  detail: cause.detail,
+                  cause,
+                }),
+            ),
+          )
+        : undefined
+    : undefined
+  const resourceLoader = systemPrompt
+    ? new DefaultResourceLoader({
+        cwd: options.thread.workingDirectory,
+        agentDir: getAgentDir(),
+        systemPromptOverride: () => systemPrompt,
+      })
+    : undefined
+  if (resourceLoader) {
+    yield* Effect.tryPromise({
+      try: () => resourceLoader.reload(),
+      catch: (cause) =>
+        new PiThreadRuntimeError({
+          operation: 'create-session',
+          detail: errorDetail(cause),
+          cause,
+        }),
+    })
+  }
   const sessionOptions: CreateAgentSessionOptions = {
     cwd: options.thread.workingDirectory,
     modelRuntime,
@@ -321,6 +375,7 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
     thinkingLevel: options.thread.thinkingLevel,
   }
   if (sessionManager) sessionOptions.sessionManager = sessionManager
+  if (resourceLoader) sessionOptions.resourceLoader = resourceLoader
   const created = yield* Effect.tryPromise({
     try: () => (options.createSession ?? createAgentSession)(sessionOptions),
     catch: (cause) =>

@@ -18,12 +18,7 @@ It is Discord-first and single-player at first. Its design is harness-neutral fo
 
 Each Discord channel gets its own workspace directory.
 
-The workspace contains an `AGENTS.md` file with:
-
-- Channel information, including its name and description.
-- The most recent N messages from before the current message.
-
-The workspace allows the conversation to continue with channel-specific context.
+Friday persists the channel name and description on the channel thread and supplies them through the channel agent's system prompt. The channel workspace remains available for channel-specific files and for bootstrap agents that prepare a separate project or task working directory.
 
 ## Agent instructions
 
@@ -31,17 +26,19 @@ Pi's normal context discovery remains active. Agent sessions receive layered ins
 
 A channel agent receives:
 
-1. Special channel-agent instructions supplied by Friday.
+1. Friday's channel-agent system prompt, rendered when the harness session opens.
 2. The global `AGENTS.md` discovered by Pi.
-3. The channel workspace's `AGENTS.md`, discovered from the channel agent's current working directory.
+3. Any applicable `AGENTS.md` files discovered from the channel workspace.
 
-A subagent receives:
+An ordinary subagent receives:
 
-1. Special subagent instructions supplied by Friday.
+1. Pi's normal system prompt.
 2. The global `AGENTS.md` discovered by Pi.
 3. The applicable `AGENTS.md` files discovered from the current working directory selected by the channel agent.
 
-The role-specific instructions are separate from `AGENTS.md`. They describe the role of the current agent session, while `AGENTS.md` provides global and working-directory context.
+A bootstrap agent receives Friday's bootstrap system prompt and may run in the channel workspace only to prepare another working directory.
+
+Friday's role-specific system prompts are separate from `AGENTS.md`. They describe the role of the current agent session, while `AGENTS.md` provides global and working-directory context.
 
 ## Agent and subagents
 
