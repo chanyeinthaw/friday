@@ -23,7 +23,6 @@ interface ChannelProgressState {
   readonly thread: ChannelThread
   readonly activeTools: Map<ToolCallId, ToolCategory>
   status: string
-  activeTasks: number
 }
 
 export interface ChannelProgressContract {
@@ -35,8 +34,6 @@ export interface ChannelProgressContract {
     threadId: ThreadId,
     event: ThreadRuntimeEvent,
   ) => Effect.Effect<void, ProgressError>
-  readonly taskStarted: (thread: ChannelThread) => Effect.Effect<void, ProgressError>
-  readonly taskFinished: (thread: ChannelThread) => Effect.Effect<void, ProgressError>
   readonly finalize: (thread: ChannelThread, text: string) => Effect.Effect<void, ProgressError>
 }
 
@@ -157,7 +154,6 @@ export const ChannelProgressLive = Layer.effect(
               thread,
               activeTools: new Map(),
               status: 'Thinking...',
-              activeTasks: 0,
             })
           }),
         ),
@@ -181,40 +177,9 @@ export const ChannelProgressLive = Layer.effect(
             }
           }),
         ),
-      taskStarted: (thread) =>
-        lock.withPermit(
-          Effect.gen(function* () {
-            const state = states.get(thread.id)
-            if (!state) return
-            state.activeTasks += 1
-            state.activeTools.clear()
-            yield* update(state, 'Task delegated, waiting...')
-          }),
-        ),
-      taskFinished: (thread) =>
-        lock.withPermit(
-          Effect.sync(() => {
-            const state = states.get(thread.id)
-            if (state) state.activeTasks = Math.max(0, state.activeTasks - 1)
-          }),
-        ),
       finalize: (thread, text) =>
         lock.withPermit(
           Effect.gen(function* () {
-            const state = states.get(thread.id)
-            if (state?.activeTasks) {
-              const waitingText = render('Task delegated, waiting...')
-              const published = yield* attempt(
-                'publish-while-working',
-                platforms.publishWhileWorking({
-                  binding: thread.conversationBinding,
-                  text,
-                  workingText: waitingText,
-                }),
-              )
-              if (published) state.status = 'Task delegated, waiting...'
-              return
-            }
             states.delete(thread.id)
             const finalized = yield* attempt(
               'finalize-working',

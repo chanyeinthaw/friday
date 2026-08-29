@@ -42,7 +42,6 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
     'acknowledge',
     'begin-working',
     'update-working',
-    'publish-while-working',
     'finalize-working',
   ]),
   cause: Schema.Defect(),

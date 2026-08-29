@@ -108,20 +108,6 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
             },
             catch: (cause) => publicationError('update-working', cause),
           }),
-        publishWhileWorking: (publication) =>
-          Effect.tryPromise({
-            try: async () => {
-              const key = String(publication.binding.conversationId)
-              const thread = threadFor(publication.binding)
-              const previous = working.get(key)
-              await thread.post(publication.text)
-              const next = await thread.post(publication.workingText).catch(() => undefined)
-              if (!next) return
-              working.set(key, next)
-              if (previous) await previous.delete().catch(() => undefined)
-            },
-            catch: (cause) => publicationError('publish-while-working', cause),
-          }),
         finalizeWorking: (message) =>
           Effect.tryPromise({
             try: async () => {

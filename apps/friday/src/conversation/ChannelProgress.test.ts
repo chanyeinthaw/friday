@@ -50,8 +50,6 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   acknowledge: () => Effect.sync(() => events.push('ack')),
   beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
   updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
-  publishWhileWorking: ({ text, workingText }) =>
-    Effect.sync(() => events.push(`publish-while-working:${text}:${workingText}`)),
   finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
   withTyping: (_binding, effect) => effect,
 })
@@ -107,84 +105,37 @@ it.effect('aggregates parallel tool categories into one working status', () =>
       })
       yield* progress.observe(thread.id, toolCall('read-call', 'read'))
       yield* progress.observe(thread.id, toolCall('bash-call', 'bash'))
-      yield* progress.taskStarted(thread)
 
       assert.deepStrictEqual(events, [
         'ack',
         'working:-# Thinking...',
         'update:-# Reading files...',
         'update:-# Reading files and running commands...',
-        'update:-# Task delegated, waiting...',
       ])
     }),
   ),
 )
 
-it.effect('keeps the delegated waiting status across a fast intervening turn', () =>
+it.effect('ends the progress lifecycle when a turn delegates work', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const events: Array<string> = []
       const progress = yield* makeProgress(makePlatform(events))
 
       yield* progress.accept(thread, userMessage('Inspect the repository.'))
-      yield* progress.taskStarted(thread)
-      // The delegation turn ends; the task keeps the placeholder alive.
-      yield* progress.finalize(thread, 'Started the inspection.')
+      yield* progress.finalize(thread, 'I delegated the inspection and will report back.')
 
-      // A second, faster conversation while the task is still running.
       yield* progress.accept(thread, userMessage('How does that work?'))
       yield* progress.observe(thread.id, turnStarted)
-      yield* progress.finalize(thread, 'It delegates to a background agent.')
+      yield* progress.finalize(thread, 'It runs in a background agent thread.')
 
       assert.deepStrictEqual(events, [
         'ack',
         'working:-# Thinking...',
-        'update:-# Task delegated, waiting...',
-        'publish-while-working:Started the inspection.:-# Task delegated, waiting...',
-        'ack',
-        'update:-# Thinking...',
-        'publish-while-working:It delegates to a background agent.:-# Task delegated, waiting...',
-      ])
-    }),
-  ),
-)
-
-it.effect('publishes a failed turn while a task is still outstanding', () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const events: Array<string> = []
-      const progress = yield* makeProgress(makePlatform(events))
-
-      yield* progress.accept(thread, userMessage('Do two things.'))
-      yield* progress.taskStarted(thread)
-      yield* progress.finalize(thread, 'Work failed: model overloaded.')
-
-      assert.deepStrictEqual(events, [
+        'finalize:I delegated the inspection and will report back.',
         'ack',
         'working:-# Thinking...',
-        'update:-# Task delegated, waiting...',
-        'publish-while-working:Work failed: model overloaded.:-# Task delegated, waiting...',
-      ])
-    }),
-  ),
-)
-
-it.effect('finalizes once the last outstanding task finishes', () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const events: Array<string> = []
-      const progress = yield* makeProgress(makePlatform(events))
-
-      yield* progress.accept(thread, userMessage('Inspect the repository.'))
-      yield* progress.taskStarted(thread)
-      yield* progress.taskFinished(thread)
-      yield* progress.finalize(thread, 'Inspection finished.')
-
-      assert.deepStrictEqual(events, [
-        'ack',
-        'working:-# Thinking...',
-        'update:-# Task delegated, waiting...',
-        'finalize:Inspection finished.',
+        'finalize:It runs in a background agent thread.',
       ])
     }),
   ),

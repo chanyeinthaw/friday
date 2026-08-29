@@ -29,7 +29,6 @@ export type TestPlatformEvent =
         | 'message-acknowledged'
         | 'working-started'
         | 'working-updated'
-        | 'published-while-working'
         | 'working-finalized'
       readonly binding: ConversationBinding
       readonly text?: string
@@ -72,8 +71,6 @@ export const TestPlatformLive = Layer.effect(
       acknowledge: ({ binding }) => record({ type: 'message-acknowledged', binding }),
       beginWorking: ({ binding, text }) => record({ type: 'working-started', binding, text }),
       updateWorking: ({ binding, text }) => record({ type: 'working-updated', binding, text }),
-      publishWhileWorking: ({ binding, text }) =>
-        record({ type: 'published-while-working', binding, text }),
       finalizeWorking: ({ binding, text }) => record({ type: 'working-finalized', binding, text }),
       withTyping: (binding, effect) =>
         Effect.acquireUseRelease(
