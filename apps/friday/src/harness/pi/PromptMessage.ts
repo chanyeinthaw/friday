@@ -1,19 +1,15 @@
 import type { InputMessage, MessageAuthor } from '@friday/contracts/conversation'
 
 const metadataValue = (value: string | null): string =>
-  value === null || value === '' ? '(none)' : value
+  value === null || value === '' ? '-' : value
 
-const renderAuthor = (author: MessageAuthor): string =>
-  [
-    '<channel-participant>',
-    `platform-user-id: ${author.platformUserId}`,
-    `username: ${metadataValue(author.username)}`,
-    `display-name: ${metadataValue(author.displayName)}`,
-    '</channel-participant>',
-  ].join('\n')
+const indentContinuationLines = (text: string): string => text.replaceAll('\n', '\n  ')
 
-/** Attributes channel input while leaving trusted internal agent/system messages unchanged. */
+const renderParticipant = (author: MessageAuthor): string =>
+  `p1 = ${author.platformUserId} | ${metadataValue(author.username)} | ${metadataValue(author.displayName)}`
+
+/** Attributes one triggering channel message while leaving internal messages unchanged. */
 export const renderPromptMessage = (message: InputMessage): string =>
   message.source === 'user' && message.author !== undefined
-    ? `${renderAuthor(message.author)}\n\n<message>\n${message.content.text}\n</message>`
+    ? `Participant:\n${renderParticipant(message.author)}\n\np1 [trigger]: ${indentContinuationLines(message.content.text)}`
     : message.content.text
