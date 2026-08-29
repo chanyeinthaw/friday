@@ -10,6 +10,7 @@ import { PlatformRegistry } from '../PlatformRegistry.ts'
 import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
 import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
+import { discordRespondToChannelIds } from './DiscordChannelAccess.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import {
   makeDiscordThreadBootstrap,
@@ -34,10 +35,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         applicationId: String(discordConfig.credentials.applicationId),
         publicKey: String(discordConfig.credentials.publicKey),
         mentionRoleIds: [...discordConfig.mentionRoleIds],
-        respondToChannelIds:
-          discordConfig.access.channels.mode === 'allow'
-            ? [...discordConfig.access.channels.ids]
-            : [],
+        respondToChannelIds: discordRespondToChannelIds(discordConfig.access.channels),
         respondToGlobalMentions: discordConfig.respondToGlobalMentions,
       }),
     catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
