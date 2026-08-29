@@ -65,6 +65,10 @@ const makePlatform = (
   kind,
   publish: ({ text }) =>
     Effect.sync(() => events.push(label === kind ? `${kind}:${text}` : `${label}:${kind}:${text}`)),
+  acknowledge: () => Effect.void,
+  beginWorking: () => Effect.void,
+  updateWorking: () => Effect.void,
+  finalizeWorking: () => Effect.void,
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push(`${kind}:typing`)).pipe(Effect.andThen(effect)),
 })

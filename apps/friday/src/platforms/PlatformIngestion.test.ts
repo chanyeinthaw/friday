@@ -14,6 +14,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { Friday, type FridayContract } from '../Friday.ts'
+import { ChannelProgressLive } from '../conversation/ChannelProgress.ts'
 import { ChannelTurnsLive } from '../conversation/ChannelTurns.ts'
 import {
   ThreadPersistence,
@@ -75,9 +76,12 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
         Layer.succeed(Crypto.Crypto, testCrypto),
         PlatformRegistryLive,
       )
-      const TurnsLive = ChannelTurnsLive.pipe(Layer.provide(dependencies))
+      const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
+      const TurnsLive = ChannelTurnsLive.pipe(
+        Layer.provide(Layer.merge(dependencies, ProgressLive)),
+      )
       const TestLive = Layer.merge(
-        Layer.merge(dependencies, TurnsLive),
+        Layer.mergeAll(dependencies, ProgressLive, TurnsLive),
         PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
       )
 
@@ -89,11 +93,11 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
       }).pipe(Effect.provide(TestLive))
 
       assert.deepStrictEqual(events, [
+        'acknowledge',
+        'working:-# Thinking...',
         'open-thread',
         'prompt',
-        'typing-started',
-        'publish:Friday is done.',
-        'typing-stopped',
+        'finalize:Friday is done.',
       ])
     }),
   ),
@@ -112,9 +116,12 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         Layer.succeed(Crypto.Crypto, testCrypto),
         PlatformRegistryLive,
       )
-      const TurnsLive = ChannelTurnsLive.pipe(Layer.provide(dependencies))
+      const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
+      const TurnsLive = ChannelTurnsLive.pipe(
+        Layer.provide(Layer.merge(dependencies, ProgressLive)),
+      )
       const TestLive = Layer.merge(
-        Layer.merge(dependencies, TurnsLive),
+        Layer.mergeAll(dependencies, ProgressLive, TurnsLive),
         PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
       )
 
@@ -125,7 +132,12 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         yield* ingestion.ingest(input, () => Effect.succeed(thread))
       }).pipe(Effect.provide(TestLive))
 
-      assert.deepStrictEqual(events, ['open-thread', 'steer'])
+      assert.deepStrictEqual(events, [
+        'acknowledge',
+        'working:-# Thinking...',
+        'open-thread',
+        'steer',
+      ])
     }),
   ),
 )
@@ -133,6 +145,10 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
 const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   kind: 'discord',
   publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
+  acknowledge: () => Effect.sync(() => events.push('acknowledge')),
+  beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
+  updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
+  finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push('typing-started')).pipe(
       Effect.andThen(effect),
@@ -167,6 +183,7 @@ const makeFriday = (
           ),
         steer: () => Effect.sync(() => events.push('steer')),
         cancel: () => Effect.void,
+        onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.void,
       } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>

@@ -67,6 +67,7 @@ it.effect('opens a Thread through the runtime service and returns its started co
           ),
         steer: () => Effect.void,
         cancel: () => Effect.void,
+        onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.void,
       }

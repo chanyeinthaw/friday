@@ -5,6 +5,7 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
 import { FridayLive as FridayServiceLive } from './Friday.ts'
+import { ChannelProgress, ChannelProgressLive } from './conversation/ChannelProgress.ts'
 import { ChannelTurnsLive } from './conversation/ChannelTurns.ts'
 import { makeThreadCoordinator } from './conversation/ThreadCoordinator.ts'
 import { ThreadRuntimePoolLive } from './conversation/ThreadRuntimePool.ts'
@@ -88,18 +89,23 @@ const CoreLive = Layer.mergeAll(
   TaskToolDispatcherLive,
 )
 
+const ChannelProgressConfiguredLive = ChannelProgressLive.pipe(Layer.provide(CoreLive))
 const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
 const PoolLive = ThreadRuntimePoolLive((thread) =>
   Effect.gen(function* () {
     const runtime = yield* ThreadRuntimes.use((runtimes) => runtimes.open(thread))
     const coordinator = yield* makeThreadCoordinator(runtime)
+    const progress = yield* ChannelProgress
     yield* coordinator.start
+    if (thread.audience === 'user') {
+      yield* coordinator.onEvent((event) => progress.observe(thread.id, event).pipe(Effect.ignore))
+    }
     return coordinator
   }),
-).pipe(Layer.provide(Layer.merge(CoreLive, RuntimeLive)))
+).pipe(Layer.provide(Layer.mergeAll(CoreLive, RuntimeLive, ChannelProgressConfiguredLive)))
 const AgentLive = FridayServiceLive.pipe(Layer.provide(PoolLive))
 const ChannelTurnsConfiguredLive = ChannelTurnsLive.pipe(
-  Layer.provide(Layer.mergeAll(CoreLive, AgentLive)),
+  Layer.provide(Layer.mergeAll(CoreLive, AgentLive, ChannelProgressConfiguredLive)),
 )
 const TaskModelsConfiguredLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -109,7 +115,13 @@ const TaskModelsConfiguredLive = Layer.unwrap(
 ).pipe(Layer.provide(CoreLive))
 const TasksConfiguredLive = TasksLive.pipe(
   Layer.provide(
-    Layer.mergeAll(CoreLive, AgentLive, ChannelTurnsConfiguredLive, TaskModelsConfiguredLive),
+    Layer.mergeAll(
+      CoreLive,
+      AgentLive,
+      ChannelProgressConfiguredLive,
+      ChannelTurnsConfiguredLive,
+      TaskModelsConfiguredLive,
+    ),
   ),
 )
 const TaskToolBindingLive = Layer.effectDiscard(
@@ -128,6 +140,7 @@ export const FridayLive = Layer.mergeAll(
   RuntimeLive,
   PoolLive,
   AgentLive,
+  ChannelProgressConfiguredLive,
   ChannelTurnsConfiguredLive,
   TaskModelsConfiguredLive,
   TasksConfiguredLive,

@@ -21,14 +21,11 @@ import * as PartitionedSemaphore from 'effect/PartitionedSemaphore'
 import * as Schema from 'effect/Schema'
 
 import { Friday } from '../Friday.ts'
+import { ChannelProgress } from './ChannelProgress.ts'
 import type { TerminalTurn } from './ThreadCoordinator.ts'
 import { ThreadPersistence, type ThreadPersistenceError } from './ThreadPersistence.ts'
 import type { ThreadRuntimeError } from './ThreadRuntimes.ts'
-import {
-  PlatformNotFoundError,
-  PlatformOperationError,
-  PlatformRegistry,
-} from '../platforms/PlatformRegistry.ts'
+import { PlatformNotFoundError, PlatformOperationError } from '../platforms/PlatformRegistry.ts'
 
 const decodeTurn = Schema.decodeUnknownSync(Turn)
 const decodeSteeringActivity = Schema.decodeUnknownSync(SteeringActivity)
@@ -83,11 +80,12 @@ export const ChannelTurnsLive = Layer.effect(
   Effect.gen(function* () {
     const friday = yield* Friday
     const persistence = yield* ThreadPersistence
-    const platforms = yield* PlatformRegistry
+    const progress = yield* ChannelProgress
     const crypto = yield* Crypto.Crypto
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
     const accept = Effect.fn('ChannelTurns.accept')(function* (request: AcceptChannelTurnRequest) {
+      yield* progress.accept(request.thread, request.message)
       const accepted = yield* semaphore.withPermit(request.thread.id)(
         Effect.gen(function* () {
           const coordinator = yield* friday.openThread(request.thread)
@@ -159,31 +157,27 @@ export const ChannelTurnsLive = Layer.effect(
 
       if (Option.isNone(accepted)) return
 
-      yield* platforms.withTyping(
-        request.thread.conversationBinding,
-        accepted.value.pipe(
-          Effect.tap((terminal) => logTerminal(request.thread, terminal)),
-          Effect.flatMap((terminal) =>
+      yield* accepted.value.pipe(
+        Effect.tap((terminal) => logTerminal(request.thread, terminal)),
+        Effect.flatMap((terminal) => {
+          const text =
             terminal.status === 'completed'
-              ? platforms
-                  .publish({
-                    binding: request.thread.conversationBinding,
-                    text: terminal.agentMessage,
-                  })
-                  .pipe(
-                    Effect.andThen(
-                      Effect.logInfo('publication.completed').pipe(
-                        Effect.annotateLogs({
-                          threadId: request.thread.id,
-                          turnId: terminal.turnId,
-                          responseLength: terminal.agentMessage.length,
-                        }),
-                      ),
-                    ),
-                  )
-              : Effect.void,
-          ),
-        ),
+              ? terminal.agentMessage
+              : terminal.status === 'interrupted'
+                ? (terminal.agentMessage ?? 'Work was interrupted before a response was ready.')
+                : `Work failed: ${terminal.errorMessage}`
+          return progress.finalize(request.thread, text).pipe(
+            Effect.andThen(
+              Effect.logInfo('publication.completed').pipe(
+                Effect.annotateLogs({
+                  threadId: request.thread.id,
+                  turnId: terminal.turnId,
+                  responseLength: text.length,
+                }),
+              ),
+            ),
+          )
+        }),
       )
     })
 

@@ -37,7 +37,13 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
   'ChatSdkPublicationError',
 )({
   _tag: Schema.tag('ChatSdkPublicationError'),
-  operation: Schema.Literals(['publish', 'start-typing']),
+  operation: Schema.Literals([
+    'publish',
+    'acknowledge',
+    'begin-working',
+    'update-working',
+    'finalize-working',
+  ]),
   cause: Schema.Defect(),
 }) {
   override get message(): string {

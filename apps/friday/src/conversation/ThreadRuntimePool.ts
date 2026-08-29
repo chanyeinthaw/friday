@@ -159,6 +159,7 @@ export const ThreadRuntimePoolLive = <R>(
                     return handle
                   }),
                 cancel: coordinator.cancel,
+                onEvent: coordinator.onEvent,
                 steer: (turnId, activity) =>
                   Clock.currentTimeMillis.pipe(
                     Effect.tap((steeredAt) =>

@@ -31,6 +31,7 @@ import * as Semaphore from 'effect/Semaphore'
 import { isAbsolute } from 'node:path'
 
 import { Friday, type FridayContract } from '../Friday.ts'
+import { ChannelProgress, type ChannelProgressContract } from '../conversation/ChannelProgress.ts'
 import { ChannelTurns, type ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
 import type { TerminalTurn, ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
 import {
@@ -89,6 +90,7 @@ export interface MakeTasksOptions {
   readonly friday: FridayContract
   readonly models: TaskModelsContract
   readonly channelTurns: ChannelTurnsContract
+  readonly channelProgress?: ChannelProgressContract
   readonly fileSystem: FileSystem.FileSystem
   readonly randomUUID: Effect.Effect<string, TaskError>
   readonly now: Effect.Effect<IsoDateTime>
@@ -396,6 +398,9 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       handle.awaitTerminal.pipe(
         Effect.flatMap((terminal) =>
           Effect.gen(function* () {
+            if (options.channelProgress) {
+              yield* options.channelProgress.taskFinished(input.parent).pipe(Effect.ignore)
+            }
             yield* options.persistence.closeThread({
               threadId: thread.id,
               closedAt: yield* options.now,
@@ -417,6 +422,9 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       ),
     )
 
+    if (options.channelProgress) {
+      yield* options.channelProgress.taskStarted(input.parent).pipe(Effect.ignore)
+    }
     return { taskId, status: 'pending' as const }
   })
   const launchTask = (input: LaunchTaskInput) => launchLock.withPermit(launchTaskUnlocked(input))
@@ -759,6 +767,7 @@ export const TasksLive = Layer.effect(
     const friday = yield* Friday
     const models = yield* TaskModels
     const channelTurns = yield* ChannelTurns
+    const channelProgress = yield* ChannelProgress
     const fileSystem = yield* FileSystem.FileSystem
     const crypto = yield* Crypto.Crypto
 
@@ -767,6 +776,7 @@ export const TasksLive = Layer.effect(
       friday,
       models,
       channelTurns,
+      channelProgress,
       fileSystem,
       randomUUID: crypto.randomUUIDv4.pipe(
         Effect.mapError((cause) =>

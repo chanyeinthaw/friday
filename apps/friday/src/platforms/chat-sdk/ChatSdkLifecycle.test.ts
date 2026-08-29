@@ -173,6 +173,8 @@ it.effect(
         },
         thread: (threadId) => ({
           post: () => Promise.resolve({}),
+          messages: { [Symbol.asyncIterator]: async function* () {} },
+          createSentMessageFromMessage: () => ({}),
           startTyping: () => {
             typingCalls.push(threadId)
             return Promise.resolve()
@@ -236,9 +238,8 @@ it.effect(
               Effect.andThen(elapseRefreshIntervals(2)),
               Effect.andThen(
                 Effect.sync(() => {
-                  // Two refresh intervals elapse while ingestion is in flight
-                  // (the immediate typing indicator plus two refreshes).
-                  assert.deepStrictEqual(typingCalls, ['thread-1', 'thread-1', 'thread-1'])
+                  // Durable working messages replaced transient typing refreshes.
+                  assert.deepStrictEqual(typingCalls, [])
                   return callbackOutcomeFiber
                 }),
               ),
@@ -264,8 +265,8 @@ it.effect(
       assert(Exit.isSuccess(outcome))
       assert(Exit.isFailure(outcome.value))
 
-      // No typing refresh fires after scope closure.
+      // No typing refresh is used before or after scope closure.
       yield* elapseRefreshIntervals(5)
-      assert.strictEqual(typingCalls.length, 3)
+      assert.strictEqual(typingCalls.length, 0)
     }).pipe(Effect.provide(TestClock.layer())),
 )

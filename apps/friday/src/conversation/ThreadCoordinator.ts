@@ -45,6 +45,9 @@ export interface ThreadCoordinatorContract<PromptError, EventError> {
     activity: SteeringActivity,
   ) => Effect.Effect<void, PromptError | ThreadPersistenceError>
   readonly cancel: (turnId: TurnId) => Effect.Effect<void, PromptError>
+  readonly onEvent: (
+    listener: (event: ThreadRuntimeEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<void, never, Scope.Scope>
   readonly start: Effect.Effect<void, never, Scope.Scope>
   readonly drain: Effect.Effect<void, EventError | ThreadPersistenceError>
 }
@@ -104,6 +107,7 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
 >(runtime: ThreadRuntime<PromptError, EventError>) {
   const persistence = yield* ThreadPersistence
   const coordinatorScope = yield* Effect.scope
+  const eventListeners = new Set<(event: ThreadRuntimeEvent) => Effect.Effect<void>>()
   const terminalSignals = new Map<
     TurnId,
     Deferred.Deferred<TerminalTurn, EventError | ThreadPersistenceError>
@@ -117,6 +121,7 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
     event: ThreadRuntimeEvent,
   ) {
     yield* persistRuntimeEvent(persistence, event)
+    yield* Effect.forEach(eventListeners, (listener) => listener(event), { discard: true })
     const terminal = terminalTurnFromEvent(event)
     if (terminal === null) return
     const signal = terminalSignals.get(event.turnId)
@@ -189,6 +194,11 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
         }
       }),
     cancel: runtime.cancel,
+    onEvent: (listener) =>
+      Effect.acquireRelease(
+        Effect.sync(() => void eventListeners.add(listener)),
+        () => Effect.sync(() => void eventListeners.delete(listener)),
+      ).pipe(Effect.asVoid),
     steer: (turnId, activity) => {
       const request: PromptRequest = {
         turnId,

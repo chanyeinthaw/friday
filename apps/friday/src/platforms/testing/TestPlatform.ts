@@ -24,6 +24,15 @@ export type TestPlatformEvent =
       readonly type: 'message-published'
       readonly publication: PlatformPublication
     }
+  | {
+      readonly type:
+        | 'message-acknowledged'
+        | 'working-started'
+        | 'working-updated'
+        | 'working-finalized'
+      readonly binding: ConversationBinding
+      readonly text?: string
+    }
 
 export interface TestPlatformContract extends PlatformAdapter<never> {
   readonly connect: (
@@ -59,6 +68,10 @@ export const TestPlatformLive = Layer.effect(
         )
       },
       publish: (publication) => record({ type: 'message-published', publication }),
+      acknowledge: ({ binding }) => record({ type: 'message-acknowledged', binding }),
+      beginWorking: ({ binding, text }) => record({ type: 'working-started', binding, text }),
+      updateWorking: ({ binding, text }) => record({ type: 'working-updated', binding, text }),
+      finalizeWorking: ({ binding, text }) => record({ type: 'working-finalized', binding, text }),
       withTyping: (binding, effect) =>
         Effect.acquireUseRelease(
           record({ type: 'typing-started', binding }),

@@ -5,30 +5,40 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
-import type { PlatformAdapter, PlatformPublication } from './PlatformAdapter.ts'
+import type {
+  PlatformAdapter,
+  PlatformMessageTarget,
+  PlatformPublication,
+  PlatformWorkingMessage,
+} from './PlatformAdapter.ts'
 
 export class PlatformNotFoundError extends Schema.Error<PlatformNotFoundError>(
   'PlatformNotFoundError',
-)({
-  _tag: Schema.tag('PlatformNotFoundError'),
-  kind: Schema.String,
-}) {}
+)({ _tag: Schema.tag('PlatformNotFoundError'), kind: Schema.String }) {}
 
 export class PlatformOperationError extends Schema.Error<PlatformOperationError>(
   'PlatformOperationError',
-)({
-  _tag: Schema.tag('PlatformOperationError'),
-  kind: Schema.String,
-  cause: Schema.Defect(),
-}) {}
+)({ _tag: Schema.tag('PlatformOperationError'), kind: Schema.String, cause: Schema.Defect() }) {}
 
-const isPlatformNotFoundError = Schema.is(PlatformNotFoundError)
 const isPlatformOperationError = Schema.is(PlatformOperationError)
+type RegistryError = PlatformNotFoundError | PlatformOperationError
 
 export interface RegisteredPlatform {
   readonly kind: ConversationBinding['platform']
   readonly publish: (
     publication: PlatformPublication,
+  ) => Effect.Effect<void, PlatformOperationError>
+  readonly acknowledge: (
+    target: PlatformMessageTarget,
+  ) => Effect.Effect<void, PlatformOperationError>
+  readonly beginWorking: (
+    message: PlatformWorkingMessage,
+  ) => Effect.Effect<void, PlatformOperationError>
+  readonly updateWorking: (
+    message: PlatformWorkingMessage,
+  ) => Effect.Effect<void, PlatformOperationError>
+  readonly finalizeWorking: (
+    message: PlatformWorkingMessage,
   ) => Effect.Effect<void, PlatformOperationError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
@@ -38,13 +48,15 @@ export interface RegisteredPlatform {
 
 export interface PlatformRegistryContract {
   readonly register: <E>(platform: PlatformAdapter<E>) => Effect.Effect<void, never, Scope.Scope>
-  readonly publish: (
-    publication: PlatformPublication,
-  ) => Effect.Effect<void, PlatformNotFoundError | PlatformOperationError>
+  readonly publish: (publication: PlatformPublication) => Effect.Effect<void, RegistryError>
+  readonly acknowledge: (target: PlatformMessageTarget) => Effect.Effect<void, RegistryError>
+  readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
+  readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
+  readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | PlatformNotFoundError | PlatformOperationError, R>
+  ) => Effect.Effect<A, E | RegistryError, R>
 }
 
 export class PlatformRegistry extends Context.Service<PlatformRegistry, PlatformRegistryContract>()(
@@ -55,41 +67,39 @@ export const PlatformRegistryLive = Layer.effect(
   PlatformRegistry,
   Effect.sync(() => {
     const platforms = new Map<ConversationBinding['platform'], RegisteredPlatform>()
-
-    const find = (
-      kind: ConversationBinding['platform'],
-    ): Effect.Effect<RegisteredPlatform, PlatformNotFoundError> => {
+    const find = (kind: ConversationBinding['platform']) => {
       const platform = platforms.get(kind)
       return platform ? Effect.succeed(platform) : Effect.fail(new PlatformNotFoundError({ kind }))
     }
+    const operationError = (kind: ConversationBinding['platform'], cause: unknown) =>
+      new PlatformOperationError({ kind, cause })
+    const invoke = <A, E, R>(
+      kind: ConversationBinding['platform'],
+      operation: (platform: RegisteredPlatform) => Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E | PlatformNotFoundError, R> => find(kind).pipe(Effect.flatMap(operation))
 
     return PlatformRegistry.of({
       register: <E>(platform: PlatformAdapter<E>) => {
+        const wrap = <A>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(Effect.mapError((cause) => operationError(platform.kind, cause)))
         const registered: RegisteredPlatform = {
           kind: platform.kind,
-          publish: (publication) =>
-            platform
-              .publish(publication)
-              .pipe(
-                Effect.mapError(
-                  (cause) => new PlatformOperationError({ kind: platform.kind, cause }),
-                ),
-              ),
+          publish: (publication) => wrap(platform.publish(publication)),
+          acknowledge: (target) => wrap(platform.acknowledge(target)),
+          beginWorking: (message) => wrap(platform.beginWorking(message)),
+          updateWorking: (message) => wrap(platform.updateWorking(message)),
+          finalizeWorking: (message) => wrap(platform.finalizeWorking(message)),
           withTyping: (binding, effect) =>
             platform
               .withTyping(binding, effect)
               .pipe(
                 Effect.mapError((cause) =>
-                  isPlatformOperationError(cause)
-                    ? cause
-                    : new PlatformOperationError({ kind: platform.kind, cause }),
+                  isPlatformOperationError(cause) ? cause : operationError(platform.kind, cause),
                 ),
               ),
         }
         return Effect.acquireRelease(
-          Effect.sync(() => {
-            platforms.set(platform.kind, registered)
-          }),
+          Effect.sync(() => void platforms.set(platform.kind, registered)),
           () =>
             Effect.sync(() => {
               if (platforms.get(platform.kind) === registered) platforms.delete(platform.kind)
@@ -97,26 +107,17 @@ export const PlatformRegistryLive = Layer.effect(
         )
       },
       publish: (publication) =>
-        find(publication.binding.platform).pipe(
-          Effect.flatMap((platform) => platform.publish(publication)),
-          Effect.mapError((cause) =>
-            isPlatformNotFoundError(cause)
-              ? cause
-              : new PlatformOperationError({
-                  kind: publication.binding.platform,
-                  cause,
-                }),
-          ),
-        ),
+        invoke(publication.binding.platform, (platform) => platform.publish(publication)),
+      acknowledge: (target) =>
+        invoke(target.binding.platform, (platform) => platform.acknowledge(target)),
+      beginWorking: (message) =>
+        invoke(message.binding.platform, (platform) => platform.beginWorking(message)),
+      updateWorking: (message) =>
+        invoke(message.binding.platform, (platform) => platform.updateWorking(message)),
+      finalizeWorking: (message) =>
+        invoke(message.binding.platform, (platform) => platform.finalizeWorking(message)),
       withTyping: (binding, effect) =>
-        find(binding.platform).pipe(
-          Effect.flatMap((platform) => platform.withTyping(binding, effect)),
-          Effect.mapError((cause) =>
-            isPlatformNotFoundError(cause)
-              ? cause
-              : new PlatformOperationError({ kind: binding.platform, cause }),
-          ),
-        ),
+        invoke(binding.platform, (platform) => platform.withTyping(binding, effect)),
     })
   }),
 )
