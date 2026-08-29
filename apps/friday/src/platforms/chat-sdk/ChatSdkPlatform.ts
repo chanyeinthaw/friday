@@ -31,7 +31,44 @@ export interface ChatSdkPublicationSource {
   }
 }
 
-export interface ChatSdkPlatformOptions {}
+export interface ChatSdkPlatformOptions {
+  readonly maxMessageLength?: number
+  /** Retained for lifecycle compatibility; durable working messages do not refresh typing. */
+  readonly typingRefreshInterval?: unknown
+}
+
+const DiscordMessageLimit = 2_000
+
+/** Splits at paragraph, line, or word boundaries before falling back to a hard limit. */
+export const splitMessage = (text: string, maxLength: number): ReadonlyArray<string> => {
+  if (text.length <= maxLength) return [text]
+  const chunks: Array<string> = []
+  let remaining = text
+  while (remaining.length > maxLength) {
+    const window = remaining.slice(0, maxLength)
+    const minimumSoftBreak = Math.floor(maxLength / 2)
+    const paragraph = window.lastIndexOf('\n\n')
+    const line = window.lastIndexOf('\n')
+    const word = window.lastIndexOf(' ')
+    let boundary =
+      paragraph >= minimumSoftBreak
+        ? paragraph + 2
+        : line >= minimumSoftBreak
+          ? line + 1
+          : word >= minimumSoftBreak
+            ? word + 1
+            : maxLength
+    const previous = remaining.charCodeAt(boundary - 1)
+    const next = remaining.charCodeAt(boundary)
+    if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      boundary -= 1
+    }
+    chunks.push(remaining.slice(0, boundary))
+    remaining = remaining.slice(boundary)
+  }
+  if (remaining.length > 0) chunks.push(remaining)
+  return chunks
+}
 
 const publicationError = (operation: ChatSdkPublicationError['operation'], cause: unknown) =>
   new ChatSdkPublicationError({ operation, cause })
@@ -40,10 +77,12 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
   (
     kind: ConversationBinding['platform'],
     chat: ChatSdkPublicationSource,
-    _options: ChatSdkPlatformOptions = {},
+    options: ChatSdkPlatformOptions = {},
   ): Effect.Effect<PlatformAdapter<ChatSdkPublicationError>> =>
     Effect.sync(() => {
       const working = new Map<string, ChatSdkSentMessageSource>()
+      const maxMessageLength =
+        options.maxMessageLength ?? (kind === 'discord' ? DiscordMessageLimit : undefined)
       const threadSource = (key: string): ChatSdkThreadSource => {
         const thread = chat.thread(key)
         return {
@@ -59,14 +98,19 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
         for await (const message of thread.messages) return message.id
         return undefined
       }
+      const chunksFor = (text: string): ReadonlyArray<string> =>
+        maxMessageLength === undefined ? [text] : splitMessage(text, maxMessageLength)
+      const postAll = async (thread: ChatSdkThreadSource, text: string): Promise<void> => {
+        for (const chunk of chunksFor(text)) await thread.post(chunk)
+      }
 
       return {
         kind,
         publish: (publication: PlatformPublication) =>
           Effect.tryPromise({
-            try: () => threadFor(publication.binding).post(publication.text),
+            try: () => postAll(threadFor(publication.binding), publication.text),
             catch: (cause) => publicationError('publish', cause),
-          }).pipe(Effect.asVoid),
+          }),
         acknowledge: (target) =>
           Effect.tryPromise({
             try: async () => {
@@ -115,16 +159,19 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
               const thread = threadFor(message.binding)
               const sent = working.get(key)
               working.delete(key)
+              const chunks = chunksFor(message.text)
+              const first = chunks[0] ?? ''
               if (!sent) {
-                await thread.post(message.text)
+                await postAll(thread, message.text)
                 return
               }
               if ((await latestMessageId(thread)) === sent.id) {
-                await sent.edit(message.text)
+                await sent.edit(first)
+                for (const chunk of chunks.slice(1)) await thread.post(chunk)
                 return
               }
               await sent.delete()
-              await thread.post(message.text)
+              await postAll(thread, message.text)
             },
             catch: (cause) => publicationError('finalize-working', cause),
           }),

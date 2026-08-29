@@ -9,6 +9,7 @@ import * as Schema from 'effect/Schema'
 
 import {
   makeChatSdkPlatform,
+  splitMessage,
   type ChatSdkMessageSource,
   type ChatSdkPublicationSource,
   type ChatSdkSentMessageSource,
@@ -96,6 +97,23 @@ const makeSource = () => {
   }
 }
 
+it('splits messages at readable boundaries without exceeding the limit', () => {
+  const text = `${'a'.repeat(12)}\n\n${'b'.repeat(12)} ${'c'.repeat(12)}`
+  const chunks = splitMessage(text, 20)
+
+  assert.deepStrictEqual(chunks, [`${'a'.repeat(12)}\n\n`, `${'b'.repeat(12)} `, 'c'.repeat(12)])
+  assert(chunks.every((chunk) => chunk.length <= 20))
+  assert.strictEqual(chunks.join(''), text)
+})
+
+it('does not split a Unicode surrogate pair at the hard boundary', () => {
+  const text = `${'a'.repeat(9)}😀b`
+  const chunks = splitMessage(text, 10)
+
+  assert.deepStrictEqual(chunks, ['a'.repeat(9), '😀b'])
+  assert.strictEqual(chunks.join(''), text)
+})
+
 it.effect('acknowledges an accepted user message', () =>
   Effect.gen(function* () {
     const test = makeSource()
@@ -136,6 +154,46 @@ it.effect('edits the working message when it remains latest', () =>
       'post:bot-1:-# Thinking...',
       'edit:bot-1:-# Reading files...',
       'edit:bot-1:Final answer.',
+    ])
+  }),
+)
+
+it.effect('splits a long final answer after editing the latest working message', () =>
+  Effect.gen(function* () {
+    const test = makeSource()
+    const platform = yield* makeChatSdkPlatform('discord', test.source, {
+      maxMessageLength: 10,
+    })
+
+    yield* platform.beginWorking({ binding, text: 'Thinking' })
+    yield* platform.finalizeWorking({ binding, text: '1234567890abcdefghijXYZ' })
+
+    assert.deepStrictEqual(test.events, [
+      'post:bot-1:Thinking',
+      'edit:bot-1:1234567890',
+      'post:bot-2:abcdefghij',
+      'post:bot-3:XYZ',
+    ])
+  }),
+)
+
+it.effect('splits a long final answer after deleting a stale working message', () =>
+  Effect.gen(function* () {
+    const test = makeSource()
+    const platform = yield* makeChatSdkPlatform('discord', test.source, {
+      maxMessageLength: 10,
+    })
+
+    yield* platform.beginWorking({ binding, text: 'Thinking' })
+    test.addUser('steering-message')
+    yield* platform.finalizeWorking({ binding, text: '1234567890abcdefghijXYZ' })
+
+    assert.deepStrictEqual(test.events, [
+      'post:bot-1:Thinking',
+      'delete:bot-1',
+      'post:bot-2:1234567890',
+      'post:bot-3:abcdefghij',
+      'post:bot-4:XYZ',
     ])
   }),
 )
