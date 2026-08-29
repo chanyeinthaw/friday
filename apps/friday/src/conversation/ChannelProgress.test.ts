@@ -50,6 +50,8 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   acknowledge: () => Effect.sync(() => events.push('ack')),
   beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
   updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
+  publishWhileWorking: ({ text, workingText }) =>
+    Effect.sync(() => events.push(`publish-while-working:${text}:${workingText}`)),
   finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
   withTyping: (_binding, effect) => effect,
 })
@@ -138,9 +140,10 @@ it.effect('keeps the delegated waiting status across a fast intervening turn', (
         'ack',
         'working:-# Thinking...',
         'update:-# Task delegated, waiting...',
+        'publish-while-working:Started the inspection.:-# Task delegated, waiting...',
         'ack',
         'update:-# Thinking...',
-        'update:-# Task delegated, waiting...',
+        'publish-while-working:It delegates to a background agent.:-# Task delegated, waiting...',
       ])
     }),
   ),
@@ -160,6 +163,7 @@ it.effect('publishes a failed turn while a task is still outstanding', () =>
         'ack',
         'working:-# Thinking...',
         'update:-# Task delegated, waiting...',
+        'publish-while-working:Work failed: model overloaded.:-# Task delegated, waiting...',
       ])
     }),
   ),

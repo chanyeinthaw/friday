@@ -20,6 +20,10 @@ export interface PlatformWorkingMessage {
   readonly text: string
 }
 
+export interface PlatformPublicationWhileWorking extends PlatformPublication {
+  readonly workingText: string
+}
+
 export interface PlatformPublication {
   readonly binding: ConversationBinding
   readonly text: string
@@ -31,6 +35,9 @@ export interface PlatformAdapter<PlatformError> {
   readonly acknowledge: (target: PlatformMessageTarget) => Effect.Effect<void, PlatformError>
   readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
   readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
+  readonly publishWhileWorking: (
+    publication: PlatformPublicationWhileWorking,
+  ) => Effect.Effect<void, PlatformError>
   readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,

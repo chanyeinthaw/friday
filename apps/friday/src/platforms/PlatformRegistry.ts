@@ -9,6 +9,7 @@ import type {
   PlatformAdapter,
   PlatformMessageTarget,
   PlatformPublication,
+  PlatformPublicationWhileWorking,
   PlatformWorkingMessage,
 } from './PlatformAdapter.ts'
 
@@ -37,6 +38,9 @@ export interface RegisteredPlatform {
   readonly updateWorking: (
     message: PlatformWorkingMessage,
   ) => Effect.Effect<void, PlatformOperationError>
+  readonly publishWhileWorking: (
+    publication: PlatformPublicationWhileWorking,
+  ) => Effect.Effect<void, PlatformOperationError>
   readonly finalizeWorking: (
     message: PlatformWorkingMessage,
   ) => Effect.Effect<void, PlatformOperationError>
@@ -52,6 +56,9 @@ export interface PlatformRegistryContract {
   readonly acknowledge: (target: PlatformMessageTarget) => Effect.Effect<void, RegistryError>
   readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
   readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
+  readonly publishWhileWorking: (
+    publication: PlatformPublicationWhileWorking,
+  ) => Effect.Effect<void, RegistryError>
   readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
@@ -88,6 +95,7 @@ export const PlatformRegistryLive = Layer.effect(
           acknowledge: (target) => wrap(platform.acknowledge(target)),
           beginWorking: (message) => wrap(platform.beginWorking(message)),
           updateWorking: (message) => wrap(platform.updateWorking(message)),
+          publishWhileWorking: (publication) => wrap(platform.publishWhileWorking(publication)),
           finalizeWorking: (message) => wrap(platform.finalizeWorking(message)),
           withTyping: (binding, effect) =>
             platform
@@ -114,6 +122,10 @@ export const PlatformRegistryLive = Layer.effect(
         invoke(message.binding.platform, (platform) => platform.beginWorking(message)),
       updateWorking: (message) =>
         invoke(message.binding.platform, (platform) => platform.updateWorking(message)),
+      publishWhileWorking: (publication) =>
+        invoke(publication.binding.platform, (platform) =>
+          platform.publishWhileWorking(publication),
+        ),
       finalizeWorking: (message) =>
         invoke(message.binding.platform, (platform) => platform.finalizeWorking(message)),
       withTyping: (binding, effect) =>

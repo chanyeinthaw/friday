@@ -1,6 +1,7 @@
 import { assert, it } from '@effect/vitest'
 import {
   ConversationBinding,
+  PlatformMessageId,
   type ConversationBinding as ConversationBindingType,
 } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
@@ -19,6 +20,7 @@ const binding: ConversationBindingType = Schema.decodeSync(ConversationBinding)(
   sourceMessageId: 'message-1',
   conversationId: 'discord:channel-1:message-1',
 })
+const platformMessageId = Schema.decodeSync(PlatformMessageId)
 
 interface TestMessage extends ChatSdkSentMessageSource {
   text: string
@@ -97,12 +99,12 @@ const makeSource = () => {
 it.effect('acknowledges an accepted user message', () =>
   Effect.gen(function* () {
     const test = makeSource()
-    test.addUser('message-1')
+    test.addUser('message-2')
     const platform = yield* makeChatSdkPlatform('discord', test.source)
 
-    yield* platform.acknowledge({ binding, messageId: binding.sourceMessageId })
+    yield* platform.acknowledge({ binding, messageId: platformMessageId('message-2') })
 
-    assert.include(test.events, 'react:message-1')
+    assert.include(test.events, 'react:message-2')
   }),
 )
 

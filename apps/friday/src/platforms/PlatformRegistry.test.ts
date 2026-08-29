@@ -68,6 +68,7 @@ const makePlatform = (
   acknowledge: () => Effect.void,
   beginWorking: () => Effect.void,
   updateWorking: () => Effect.void,
+  publishWhileWorking: () => Effect.void,
   finalizeWorking: () => Effect.void,
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push(`${kind}:typing`)).pipe(Effect.andThen(effect)),

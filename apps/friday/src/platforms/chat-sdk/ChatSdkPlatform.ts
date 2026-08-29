@@ -70,23 +70,23 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
         acknowledge: (target) =>
           Effect.tryPromise({
             try: async () => {
-              // Discord rejects reactions on a thread's synthetic starter copy,
-              // so fall back to the parent channel where the starter lives.
               const react = async (key: string): Promise<boolean> => {
                 const candidate = threadSource(key)
                 for await (const message of candidate.messages) {
                   if (message.id !== target.messageId) continue
-                  try {
-                    await candidate.createSentMessageFromMessage(message).addReaction(emoji.check)
-                    return true
-                  } catch {
-                    return false
-                  }
+                  await candidate.createSentMessageFromMessage(message).addReaction(emoji.check)
+                  return true
                 }
                 return false
               }
-              if (await react(String(target.binding.conversationId))) return
-              if (await react(String(target.binding.channelId))) return
+              const isThreadStarter = String(target.binding.conversationId).endsWith(
+                `:${target.messageId}`,
+              )
+              if (isThreadStarter) {
+                if (await react(String(target.binding.channelId))) return
+              } else if (await react(String(target.binding.conversationId))) {
+                return
+              }
               throw new Error(`Message '${target.messageId}' was not found for acknowledgement.`)
             },
             catch: (cause) => publicationError('acknowledge', cause),
@@ -107,6 +107,20 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
               working.set(String(message.binding.conversationId), await sent.edit(message.text))
             },
             catch: (cause) => publicationError('update-working', cause),
+          }),
+        publishWhileWorking: (publication) =>
+          Effect.tryPromise({
+            try: async () => {
+              const key = String(publication.binding.conversationId)
+              const thread = threadFor(publication.binding)
+              const previous = working.get(key)
+              await thread.post(publication.text)
+              const next = await thread.post(publication.workingText).catch(() => undefined)
+              if (!next) return
+              working.set(key, next)
+              if (previous) await previous.delete().catch(() => undefined)
+            },
+            catch: (cause) => publicationError('publish-while-working', cause),
           }),
         finalizeWorking: (message) =>
           Effect.tryPromise({

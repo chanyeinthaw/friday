@@ -105,17 +105,18 @@ export const ChannelProgressLive = Layer.effect(
     // Working-message decoration is best-effort; it must never fail the turn.
     const attempt = (operation: string, effect: Effect.Effect<void, ProgressError>) =>
       effect.pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning('progress.operation-failed').pipe(
-            Effect.annotateLogs({ operation, cause: String(cause) }),
-          ),
-        ),
+        Effect.matchEffect({
+          onFailure: (cause) =>
+            Effect.logWarning('progress.operation-failed').pipe(
+              Effect.annotateLogs({ operation, cause: String(cause) }),
+              Effect.as(false),
+            ),
+          onSuccess: () => Effect.succeed(true),
+        }),
       )
 
     const update = (state: ChannelProgressState, status: string) => {
       if (state.status === status) return Effect.void
-      const previous = state.status
-      state.status = status
       return attempt(
         'update-working',
         platforms.updateWorking({
@@ -123,11 +124,10 @@ export const ChannelProgressLive = Layer.effect(
           text: render(status),
         }),
       ).pipe(
-        Effect.catchCause(() =>
-          Effect.sync(() => {
-            state.status = previous
-          }),
+        Effect.tap((published) =>
+          published ? Effect.sync(() => void (state.status = status)) : Effect.void,
         ),
+        Effect.asVoid,
       )
     }
 
@@ -203,20 +203,29 @@ export const ChannelProgressLive = Layer.effect(
           Effect.gen(function* () {
             const state = states.get(thread.id)
             if (state?.activeTasks) {
-              yield* update(state, 'Task delegated, waiting...')
+              const waitingText = render('Task delegated, waiting...')
+              const published = yield* attempt(
+                'publish-while-working',
+                platforms.publishWhileWorking({
+                  binding: thread.conversationBinding,
+                  text,
+                  workingText: waitingText,
+                }),
+              )
+              if (published) state.status = 'Task delegated, waiting...'
               return
             }
             states.delete(thread.id)
-            yield* platforms
-              .finalizeWorking({ binding: thread.conversationBinding, text })
-              .pipe(
-                Effect.catchCause(() =>
-                  attempt(
-                    'publish-fallback',
-                    platforms.publish({ binding: thread.conversationBinding, text }),
-                  ),
-                ),
+            const finalized = yield* attempt(
+              'finalize-working',
+              platforms.finalizeWorking({ binding: thread.conversationBinding, text }),
+            )
+            if (!finalized) {
+              yield* attempt(
+                'publish-fallback',
+                platforms.publish({ binding: thread.conversationBinding, text }),
               )
+            }
           }),
         ),
     })
