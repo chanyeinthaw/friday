@@ -11,8 +11,12 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 
 import { ChannelProgress, ChannelProgressLive } from './ChannelProgress.ts'
-import { PlatformRegistry, PlatformRegistryLive } from '../platforms/PlatformRegistry.ts'
 import type { PlatformAdapter } from '../platforms/PlatformAdapter.ts'
+import {
+  PlatformOperationError,
+  PlatformRegistry,
+  PlatformRegistryLive,
+} from '../platforms/PlatformRegistry.ts'
 
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-progress',
@@ -40,27 +44,49 @@ const activityId = Schema.decodeSync(ActivityId)
 const callId = Schema.decodeSync(ToolCallId)
 const messageId = Schema.decodeSync(PlatformMessageId)('message-progress')
 
+const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
+  kind: 'test',
+  publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
+  acknowledge: () => Effect.sync(() => events.push('ack')),
+  beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
+  updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
+  finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
+  withTyping: (_binding, effect) => effect,
+})
+
+const makeProgress = (platform: PlatformAdapter<PlatformOperationError>) =>
+  Effect.gen(function* () {
+    const registry = yield* PlatformRegistry
+    yield* registry.register(platform)
+    return yield* ChannelProgress
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        PlatformRegistryLive,
+        ChannelProgressLive.pipe(Layer.provide(PlatformRegistryLive)),
+      ),
+    ),
+  )
+
+const userMessage = (text: string) => ({
+  source: 'user' as const,
+  content: { text, images: [] },
+  platformMessageId: messageId,
+})
+
+const turnStarted = {
+  type: 'turn-started' as const,
+  turnId,
+  harnessTurnId: null,
+  startedAt: '2026-03-21T09:00:00.000Z' as const,
+}
+
 it.effect('aggregates parallel tool categories into one working status', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const events: Array<string> = []
-      const platform: PlatformAdapter<never> = {
-        kind: 'test',
-        publish: () => Effect.void,
-        acknowledge: () => Effect.sync(() => events.push('ack')),
-        beginWorking: ({ text }) => Effect.sync(() => events.push(text)),
-        updateWorking: ({ text }) => Effect.sync(() => events.push(text)),
-        finalizeWorking: ({ text }) => Effect.sync(() => events.push(text)),
-        withTyping: (_binding, effect) => effect,
-      }
-      const registry = yield* PlatformRegistry
-      yield* registry.register(platform)
-      const progress = yield* ChannelProgress
-      yield* progress.accept(thread, {
-        source: 'user',
-        content: { text: 'Do work.', images: [] },
-        platformMessageId: messageId,
-      })
+      const progress = yield* makeProgress(makePlatform(events))
+      yield* progress.accept(thread, userMessage('Do work.'))
       const toolCall = (id: string, toolName: string) => ({
         type: 'activity-completed' as const,
         turnId,
@@ -83,18 +109,117 @@ it.effect('aggregates parallel tool categories into one working status', () =>
 
       assert.deepStrictEqual(events, [
         'ack',
-        '-# Thinking...',
-        '-# Reading files...',
-        '-# Reading files and running commands...',
-        '-# Task delegated, waiting...',
+        'working:-# Thinking...',
+        'update:-# Reading files...',
+        'update:-# Reading files and running commands...',
+        'update:-# Task delegated, waiting...',
       ])
-    }).pipe(
-      Effect.provide(
-        Layer.merge(
-          PlatformRegistryLive,
-          ChannelProgressLive.pipe(Layer.provide(PlatformRegistryLive)),
-        ),
-      ),
-    ),
+    }),
+  ),
+)
+
+it.effect('keeps the delegated waiting status across a fast intervening turn', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const progress = yield* makeProgress(makePlatform(events))
+
+      yield* progress.accept(thread, userMessage('Inspect the repository.'))
+      yield* progress.taskStarted(thread)
+      // The delegation turn ends; the task keeps the placeholder alive.
+      yield* progress.finalize(thread, 'Started the inspection.')
+
+      // A second, faster conversation while the task is still running.
+      yield* progress.accept(thread, userMessage('How does that work?'))
+      yield* progress.observe(thread.id, turnStarted)
+      yield* progress.finalize(thread, 'It delegates to a background agent.')
+
+      assert.deepStrictEqual(events, [
+        'ack',
+        'working:-# Thinking...',
+        'update:-# Task delegated, waiting...',
+        'ack',
+        'update:-# Thinking...',
+        'update:-# Task delegated, waiting...',
+      ])
+    }),
+  ),
+)
+
+it.effect('publishes a failed turn while a task is still outstanding', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const progress = yield* makeProgress(makePlatform(events))
+
+      yield* progress.accept(thread, userMessage('Do two things.'))
+      yield* progress.taskStarted(thread)
+      yield* progress.finalize(thread, 'Work failed: model overloaded.')
+
+      assert.deepStrictEqual(events, [
+        'ack',
+        'working:-# Thinking...',
+        'update:-# Task delegated, waiting...',
+      ])
+    }),
+  ),
+)
+
+it.effect('finalizes once the last outstanding task finishes', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const progress = yield* makeProgress(makePlatform(events))
+
+      yield* progress.accept(thread, userMessage('Inspect the repository.'))
+      yield* progress.taskStarted(thread)
+      yield* progress.taskFinished(thread)
+      yield* progress.finalize(thread, 'Inspection finished.')
+
+      assert.deepStrictEqual(events, [
+        'ack',
+        'working:-# Thinking...',
+        'update:-# Task delegated, waiting...',
+        'finalize:Inspection finished.',
+      ])
+    }),
+  ),
+)
+
+it.effect('continues the lifecycle when acknowledgement fails', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const platform = {
+        ...makePlatform(events),
+        acknowledge: () =>
+          Effect.fail(new PlatformOperationError({ kind: 'test', cause: 'discord 404' })),
+      }
+      const progress = yield* makeProgress(platform)
+
+      yield* progress.accept(thread, userMessage('Do work.'))
+      yield* progress.finalize(thread, 'Done.')
+
+      assert.deepStrictEqual(events, ['working:-# Thinking...', 'finalize:Done.'])
+    }),
+  ),
+)
+
+it.effect('falls back to publishing when finalization fails', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const platform = {
+        ...makePlatform(events),
+        finalizeWorking: () =>
+          Effect.fail(new PlatformOperationError({ kind: 'test', cause: 'edit conflict' })),
+      }
+      const progress = yield* makeProgress(platform)
+
+      yield* progress.accept(thread, userMessage('Do work.'))
+      yield* progress.finalize(thread, 'Done.')
+
+      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'publish:Done.'])
+    }),
   ),
 )

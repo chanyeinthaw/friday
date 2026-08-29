@@ -44,8 +44,8 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
   ): Effect.Effect<PlatformAdapter<ChatSdkPublicationError>> =>
     Effect.sync(() => {
       const working = new Map<string, ChatSdkSentMessageSource>()
-      const threadFor = (binding: ConversationBinding): ChatSdkThreadSource => {
-        const thread = chat.thread(String(binding.conversationId))
+      const threadSource = (key: string): ChatSdkThreadSource => {
+        const thread = chat.thread(key)
         return {
           post: async (text) => (await thread.post(text)) as ChatSdkSentMessageSource,
           messages: thread.messages,
@@ -53,6 +53,8 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
             thread.createSentMessageFromMessage(message as never) as ChatSdkSentMessageSource,
         }
       }
+      const threadFor = (binding: ConversationBinding): ChatSdkThreadSource =>
+        threadSource(String(binding.conversationId))
       const latestMessageId = async (thread: ChatSdkThreadSource): Promise<string | undefined> => {
         for await (const message of thread.messages) return message.id
         return undefined
@@ -68,13 +70,24 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
         acknowledge: (target) =>
           Effect.tryPromise({
             try: async () => {
-              const thread = threadFor(target.binding)
-              for await (const message of thread.messages) {
-                if (message.id !== target.messageId) continue
-                await thread.createSentMessageFromMessage(message).addReaction(emoji.check)
-                return
+              // Discord rejects reactions on a thread's synthetic starter copy,
+              // so fall back to the parent channel where the starter lives.
+              const react = async (key: string): Promise<boolean> => {
+                const candidate = threadSource(key)
+                for await (const message of candidate.messages) {
+                  if (message.id !== target.messageId) continue
+                  try {
+                    await candidate.createSentMessageFromMessage(message).addReaction(emoji.check)
+                    return true
+                  } catch {
+                    return false
+                  }
+                }
+                return false
               }
-              throw new Error(`Message '${target.messageId}' was not found in the thread.`)
+              if (await react(String(target.binding.conversationId))) return
+              if (await react(String(target.binding.channelId))) return
+              throw new Error(`Message '${target.messageId}' was not found for acknowledgement.`)
             },
             catch: (cause) => publicationError('acknowledge', cause),
           }),

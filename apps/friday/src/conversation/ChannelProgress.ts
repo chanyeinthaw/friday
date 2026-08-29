@@ -102,13 +102,33 @@ export const ChannelProgressLive = Layer.effect(
     const lock = yield* Semaphore.make(1)
     const states = new Map<ThreadId, ChannelProgressState>()
 
+    // Working-message decoration is best-effort; it must never fail the turn.
+    const attempt = (operation: string, effect: Effect.Effect<void, ProgressError>) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning('progress.operation-failed').pipe(
+            Effect.annotateLogs({ operation, cause: String(cause) }),
+          ),
+        ),
+      )
+
     const update = (state: ChannelProgressState, status: string) => {
       if (state.status === status) return Effect.void
+      const previous = state.status
       state.status = status
-      return platforms.updateWorking({
-        binding: state.thread.conversationBinding,
-        text: render(status),
-      })
+      return attempt(
+        'update-working',
+        platforms.updateWorking({
+          binding: state.thread.conversationBinding,
+          text: render(status),
+        }),
+      ).pipe(
+        Effect.catchCause(() =>
+          Effect.sync(() => {
+            state.status = previous
+          }),
+        ),
+      )
     }
 
     return ChannelProgress.of({
@@ -116,17 +136,23 @@ export const ChannelProgressLive = Layer.effect(
         lock.withPermit(
           Effect.gen(function* () {
             if (message.platformMessageId !== undefined) {
-              yield* platforms.acknowledge({
-                binding: thread.conversationBinding,
-                messageId: message.platformMessageId,
-              })
+              yield* attempt(
+                'acknowledge',
+                platforms.acknowledge({
+                  binding: thread.conversationBinding,
+                  messageId: message.platformMessageId,
+                }),
+              )
             }
             const existing = states.get(thread.id)
             if (existing) return
-            yield* platforms.beginWorking({
-              binding: thread.conversationBinding,
-              text: render('Thinking...'),
-            })
+            yield* attempt(
+              'begin-working',
+              platforms.beginWorking({
+                binding: thread.conversationBinding,
+                text: render('Thinking...'),
+              }),
+            )
             states.set(thread.id, {
               thread,
               activeTools: new Map(),
@@ -180,8 +206,17 @@ export const ChannelProgressLive = Layer.effect(
               yield* update(state, 'Task delegated, waiting...')
               return
             }
-            yield* platforms.finalizeWorking({ binding: thread.conversationBinding, text })
             states.delete(thread.id)
+            yield* platforms
+              .finalizeWorking({ binding: thread.conversationBinding, text })
+              .pipe(
+                Effect.catchCause(() =>
+                  attempt(
+                    'publish-fallback',
+                    platforms.publish({ binding: thread.conversationBinding, text }),
+                  ),
+                ),
+              )
           }),
         ),
     })

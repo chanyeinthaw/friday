@@ -25,17 +25,22 @@ interface TestMessage extends ChatSdkSentMessageSource {
 }
 
 const makeSource = () => {
-  const messages: Array<TestMessage> = []
+  const threadMessages: Array<TestMessage> = []
+  const parentMessages: Array<TestMessage> = []
   const events: Array<string> = []
-  const sent = (id: string, text: string): TestMessage => {
+  const sent = (
+    id: string,
+    text: string,
+    addReaction: () => Promise<void> = async () => void events.push(`react:${id}`),
+  ): TestMessage => {
     const message: TestMessage = {
       id,
       text,
-      addReaction: async () => void events.push(`react:${id}`),
+      addReaction,
       delete: async () => {
         events.push(`delete:${id}`)
-        const index = messages.indexOf(message)
-        if (index >= 0) messages.splice(index, 1)
+        const index = threadMessages.indexOf(message)
+        if (index >= 0) threadMessages.splice(index, 1)
       },
       edit: async (next) => {
         events.push(`edit:${id}:${next}`)
@@ -45,33 +50,69 @@ const makeSource = () => {
     }
     return message
   }
+
   const source: ChatSdkPublicationSource = {
-    thread: () => ({
-      post: async (text) => {
-        const message = sent(`bot-${messages.length + 1}`, text)
-        messages.push(message)
-        events.push(`post:${message.id}:${text}`)
-        return message
-      },
-      messages: {
-        [Symbol.asyncIterator]: async function* () {
-          for (const message of messages.toReversed()) yield message
+    thread: (key) => {
+      // The parent channel is addressed by its own key; reactions to a
+      // thread starter must be resolved there.
+      const list = key === 'discord:channel-1' ? parentMessages : threadMessages
+      return {
+        post: async (text) => {
+          const message = sent(`bot-${threadMessages.length + 1}`, text)
+          threadMessages.push(message)
+          events.push(`post:${message.id}:${text}`)
+          return message
         },
-      },
-      createSentMessageFromMessage: (message: never) => {
-        // SAFETY: The production boundary passes only objects with the required message id.
-        const source = message as ChatSdkMessageSource
-        return messages.find(({ id }) => id === source.id) ?? sent(source.id, '')
-      },
-    }),
+        messages: {
+          [Symbol.asyncIterator]: async function* () {
+            for (const message of list.toReversed()) yield message
+          },
+        },
+        createSentMessageFromMessage: (message: never) => {
+          // SAFETY: The production boundary passes only objects with the required message id.
+          const source = message as ChatSdkMessageSource
+          return list.find(({ id }) => id === source.id) ?? sent(source.id, '')
+        },
+      }
+    },
   }
-  return { source, messages, events, addUser: (id: string) => messages.push(sent(id, 'user')) }
+  return {
+    source,
+    messages: threadMessages,
+    parentMessages,
+    events,
+    addUser: (id: string, addReaction?: () => Promise<void>) => {
+      const message = sent(id, 'user', addReaction)
+      threadMessages.push(message)
+      return message
+    },
+    addParent: (id: string) => {
+      const message = sent(id, 'user')
+      parentMessages.push(message)
+      return message
+    },
+  }
 }
 
 it.effect('acknowledges an accepted user message', () =>
   Effect.gen(function* () {
     const test = makeSource()
     test.addUser('message-1')
+    const platform = yield* makeChatSdkPlatform('discord', test.source)
+
+    yield* platform.acknowledge({ binding, messageId: binding.sourceMessageId })
+
+    assert.include(test.events, 'react:message-1')
+  }),
+)
+
+it.effect('acknowledges a thread starter through the parent channel', () =>
+  Effect.gen(function* () {
+    const test = makeSource()
+    test.addParent('message-1')
+    test.addUser('message-1', async () => {
+      throw new Error('Discord API error: 404 Unknown Message')
+    })
     const platform = yield* makeChatSdkPlatform('discord', test.source)
 
     yield* platform.acknowledge({ binding, messageId: binding.sourceMessageId })
