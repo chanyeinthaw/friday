@@ -68,6 +68,7 @@ const makePlatform = (
   acknowledge: () => Effect.void,
   beginWorking: () => Effect.void,
   updateWorking: () => Effect.void,
+  setAgentActivity: () => Effect.void,
   setConversationTitle: () => Effect.void,
   finalizeWorking: () => Effect.void,
   withTyping: (_binding, effect) =>

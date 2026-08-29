@@ -7,6 +7,7 @@ import type * as Scope from 'effect/Scope'
 
 import type {
   PlatformAdapter,
+  PlatformAgentActivity,
   PlatformConversationTitle,
   PlatformMessageTarget,
   PlatformPublication,
@@ -44,6 +45,9 @@ export interface RegisteredPlatform {
   readonly setConversationTitle: (
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, PlatformOperationError>
+  readonly setAgentActivity: (
+    activity: PlatformAgentActivity,
+  ) => Effect.Effect<void, PlatformOperationError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -60,6 +64,7 @@ export interface PlatformRegistryContract {
   readonly setConversationTitle: (
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, RegistryError>
+  readonly setAgentActivity: (activity: PlatformAgentActivity) => Effect.Effect<void, RegistryError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -97,6 +102,7 @@ export const PlatformRegistryLive = Layer.effect(
           updateWorking: (message) => wrap(platform.updateWorking(message)),
           finalizeWorking: (message) => wrap(platform.finalizeWorking(message)),
           setConversationTitle: (title) => wrap(platform.setConversationTitle(title)),
+          setAgentActivity: (activity) => wrap(platform.setAgentActivity(activity)),
           withTyping: (binding, effect) =>
             platform
               .withTyping(binding, effect)
@@ -126,6 +132,8 @@ export const PlatformRegistryLive = Layer.effect(
         invoke(message.binding.platform, (platform) => platform.finalizeWorking(message)),
       setConversationTitle: (title) =>
         invoke(title.binding.platform, (platform) => platform.setConversationTitle(title)),
+      setAgentActivity: (activity) =>
+        invoke(activity.binding.platform, (platform) => platform.setAgentActivity(activity)),
       withTyping: (binding, effect) =>
         invoke(binding.platform, (platform) => platform.withTyping(binding, effect)),
     })

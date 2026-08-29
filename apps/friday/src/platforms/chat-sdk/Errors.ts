@@ -44,6 +44,7 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
     'update-working',
     'finalize-working',
     'set-conversation-title',
+    'set-agent-activity',
   ]),
   cause: Schema.Defect(),
 }) {

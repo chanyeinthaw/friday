@@ -30,6 +30,11 @@ export interface PlatformConversationTitle {
   readonly title: string
 }
 
+export interface PlatformAgentActivity {
+  readonly binding: ConversationBinding
+  readonly activeTaskCount: number
+}
+
 export interface PlatformAdapter<PlatformError> {
   readonly kind: ConversationBinding['platform']
   readonly publish: (publication: PlatformPublication) => Effect.Effect<void, PlatformError>
@@ -40,6 +45,7 @@ export interface PlatformAdapter<PlatformError> {
   readonly setConversationTitle: (
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, PlatformError>
+  readonly setAgentActivity: (activity: PlatformAgentActivity) => Effect.Effect<void, PlatformError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,

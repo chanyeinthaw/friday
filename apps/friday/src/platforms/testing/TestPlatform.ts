@@ -73,6 +73,7 @@ export const TestPlatformLive = Layer.effect(
       updateWorking: ({ binding, text }) => record({ type: 'working-updated', binding, text }),
       finalizeWorking: ({ binding, text }) => record({ type: 'working-finalized', binding, text }),
       setConversationTitle: () => Effect.void,
+      setAgentActivity: () => Effect.void,
       withTyping: (binding, effect) =>
         Effect.acquireUseRelease(
           record({ type: 'typing-started', binding }),

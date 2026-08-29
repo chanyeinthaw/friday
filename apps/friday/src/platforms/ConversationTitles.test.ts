@@ -30,10 +30,11 @@ const thread = Schema.decodeSync(ChannelThread)({
   closedAt: null,
 })
 
-it.effect('appends and removes counted background task suffixes', () =>
+it.effect('keeps generated titles unchanged and reports platform-wide task counts', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const titles: Array<string> = []
+      const counts: Array<number> = []
       const platform: PlatformAdapter<never> = {
         kind: 'test',
         publish: () => Effect.void,
@@ -42,24 +43,21 @@ it.effect('appends and removes counted background task suffixes', () =>
         updateWorking: () => Effect.void,
         finalizeWorking: () => Effect.void,
         setConversationTitle: ({ title }) => Effect.sync(() => titles.push(title)),
+        setAgentActivity: ({ activeTaskCount }) => Effect.sync(() => counts.push(activeTaskCount)),
         withTyping: (_binding, effect) => effect,
       }
       const registry = yield* PlatformRegistry
       yield* registry.register(platform)
       const conversationTitles = yield* ConversationTitles
 
-      yield* conversationTitles.taskStarted(thread)
       yield* conversationTitles.generated(thread, 'Repository Inspection')
+      yield* conversationTitles.taskStarted(thread)
       yield* conversationTitles.taskStarted(thread)
       yield* conversationTitles.taskFinished(thread)
       yield* conversationTitles.taskFinished(thread)
 
-      assert.deepStrictEqual(titles, [
-        'Repository Inspection ⚡️',
-        'Repository Inspection ⚡️x2',
-        'Repository Inspection ⚡️',
-        'Repository Inspection',
-      ])
+      assert.deepStrictEqual(titles, ['Repository Inspection'])
+      assert.deepStrictEqual(counts, [1, 2, 1, 0])
     }).pipe(
       Effect.provide(
         Layer.merge(

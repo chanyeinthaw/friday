@@ -192,6 +192,7 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   acknowledge: () => Effect.sync(() => events.push('acknowledge')),
   beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
   updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
+  setAgentActivity: () => Effect.void,
   setConversationTitle: () => Effect.void,
   finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
   withTyping: (_binding, effect) =>
