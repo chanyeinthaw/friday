@@ -11,6 +11,7 @@ it('attributes a channel participant in the Pi prompt', () => {
     source: 'user',
     author: {
       platformUserId: 'user-1',
+      mention: '<@user-1>',
       username: 'chan',
       displayName: 'Chan',
     },
@@ -19,7 +20,7 @@ it('attributes a channel participant in the Pi prompt', () => {
 
   assert.strictEqual(
     renderPromptMessage(message),
-    'Participant:\np1 = user-1 | chan | Chan\n\np1 [trigger]: Hello Friday',
+    'Participant:\np1 = <@user-1> | chan | Chan\n\np1 [trigger]: Hello Friday',
   )
 })
 
@@ -28,6 +29,7 @@ it('indents multiline participant messages', () => {
     source: 'user',
     author: {
       platformUserId: 'user-1',
+      mention: '<@user-1>',
       username: null,
       displayName: 'Chan',
     },
@@ -36,7 +38,7 @@ it('indents multiline participant messages', () => {
 
   assert.strictEqual(
     renderPromptMessage(message),
-    'Participant:\np1 = user-1 | - | Chan\n\np1 [trigger]: Requirements:\n  - inspect deployment\n  - check config',
+    'Participant:\np1 = <@user-1> | - | Chan\n\np1 [trigger]: Requirements:\n  - inspect deployment\n  - check config',
   )
 })
 

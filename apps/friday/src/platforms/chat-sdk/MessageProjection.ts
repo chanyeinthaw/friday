@@ -38,6 +38,10 @@ export const projectChatSdkMessage = (
     source: 'user',
     author: decodeAuthor({
       platformUserId: message.author.userId,
+      mention:
+        binding.platform === 'discord'
+          ? `<@${message.author.userId}>`
+          : message.author.userName || null,
       username: message.author.userName || null,
       displayName: message.author.fullName || null,
     }),

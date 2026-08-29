@@ -39,6 +39,7 @@ export const MessageAuthor = Schema.Struct({
     Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()),
     Schema.brand('PlatformUserId'),
   ),
+  mention: Schema.NullOr(Schema.String),
   username: Schema.NullOr(Schema.String),
   displayName: Schema.NullOr(Schema.String),
 })

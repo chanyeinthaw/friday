@@ -28,6 +28,7 @@ it('projects Chat SDK identifiers and text into Friday contracts', () => {
   assert.strictEqual(String(inbound.binding.conversationId), 'discord-thread-1')
   assert.strictEqual(inbound.message.source, 'user')
   assert.strictEqual(String(inbound.message.author?.platformUserId), 'user-1')
+  assert.strictEqual(inbound.message.author?.mention, '<@user-1>')
   assert.strictEqual(inbound.message.author?.username, 'user')
   assert.strictEqual(inbound.message.author?.displayName, 'User')
   assert.strictEqual(inbound.message.content.text, 'Hello Friday')

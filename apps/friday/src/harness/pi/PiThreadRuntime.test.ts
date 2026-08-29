@@ -140,6 +140,7 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
         source: 'user',
         author: decodeAuthor({
           platformUserId: 'user-1',
+          mention: '<@user-1>',
           username: 'chan',
           displayName: 'Chan',
         }),
@@ -154,7 +155,7 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
     const delivered = yield* Fiber.join(events)
     assert.deepStrictEqual(prompts, [
       {
-        text: 'Participant:\np1 = user-1 | chan | Chan\n\np1 [trigger]: start',
+        text: 'Participant:\np1 = <@user-1> | chan | Chan\n\np1 [trigger]: start',
         behavior: undefined,
       },
       { text: 'steer', behavior: 'steer' },
