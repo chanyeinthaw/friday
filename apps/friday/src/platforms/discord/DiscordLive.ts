@@ -3,7 +3,7 @@ import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 
 import { PlatformIngestion } from '../PlatformIngestion.ts'
-import { isAllowedByIds } from '../chat-sdk/Allowlist.ts'
+import { isAllowedByAccess, isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import { AppConfig } from '../../config/AppConfigLive.ts'
 import { ChatSdkCallbackError, ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
 import { PlatformRegistry } from '../PlatformRegistry.ts'
@@ -34,7 +34,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         applicationId: String(discordConfig.credentials.applicationId),
         publicKey: String(discordConfig.credentials.publicKey),
         mentionRoleIds: [...discordConfig.mentionRoleIds],
-        respondToChannelIds: [...discordConfig.allowlist.channelIds],
+        respondToChannelIds:
+          discordConfig.access.channels.mode === 'allow'
+            ? [...discordConfig.access.channels.ids]
+            : [],
         respondToGlobalMentions: discordConfig.respondToGlobalMentions,
       }),
     catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
@@ -65,16 +68,15 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
       Effect.try({
         try: () => {
           const location = discord.decodeThreadId(thread.id)
-          const guildAllowed =
-            discordConfig.allowlist.guildIds.length === 0 ||
-            discordConfig.allowlist.guildIds.includes(location.guildId)
+          const guildAllowed = isAllowedByPolicy(location.guildId, discordConfig.access.guilds)
           return {
             allowed:
               guildAllowed &&
-              isAllowedByIds({
+              isAllowedByAccess({
                 userId: message.author.userId,
                 channelId: location.channelId,
-                allowlist: discordConfig.allowlist,
+                userPolicy: discordConfig.access.users,
+                channelPolicy: discordConfig.access.channels,
               }),
             location,
           }
@@ -101,9 +103,12 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   yield* Effect.logInfo('discord.started').pipe(
     Effect.annotateLogs({
       component: 'discord',
-      allowedGuildCount: discordConfig.allowlist.guildIds.length,
-      allowedChannelCount: discordConfig.allowlist.channelIds.length,
-      allowedUserCount: discordConfig.allowlist.userIds.length,
+      guildAccessMode: discordConfig.access.guilds.mode,
+      guildAccessCount: discordConfig.access.guilds.ids.length,
+      channelAccessMode: discordConfig.access.channels.mode,
+      channelAccessCount: discordConfig.access.channels.ids.length,
+      userAccessMode: discordConfig.access.users.mode,
+      userAccessCount: discordConfig.access.users.ids.length,
     }),
   )
   return { platform }

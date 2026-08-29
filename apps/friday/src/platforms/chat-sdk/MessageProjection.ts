@@ -3,6 +3,7 @@ import {
   PlatformMessageId,
   PlatformKind,
   PlatformConversationId,
+  MessageAuthor,
   type ConversationBinding,
   type InputMessage,
 } from '@friday/contracts/conversation'
@@ -15,6 +16,7 @@ const decodePlatform = Schema.decodeUnknownSync(PlatformKind)
 const decodeChannelId = Schema.decodeUnknownSync(PlatformChannelId)
 const decodeMessageId = Schema.decodeUnknownSync(PlatformMessageId)
 const decodeThreadId = Schema.decodeUnknownSync(PlatformConversationId)
+const decodeAuthor = Schema.decodeUnknownSync(MessageAuthor)
 
 export interface ChatSdkThreadProjectionSource extends Pick<Thread, 'channelId' | 'id'> {
   readonly adapter: Pick<Thread['adapter'], 'name'>
@@ -34,6 +36,11 @@ export const projectChatSdkMessage = (
   }
   const inputMessage: InputMessage = {
     source: 'user',
+    author: decodeAuthor({
+      platformUserId: message.author.userId,
+      username: message.author.userName || null,
+      displayName: message.author.fullName || null,
+    }),
     content: {
       text: message.text,
       images: [],

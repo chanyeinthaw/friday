@@ -2,7 +2,13 @@
 
 import { assert, it } from '@effect/vitest'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
-import { ActivityId, ChannelThread, HarnessSession, TurnId } from '@friday/contracts/conversation'
+import {
+  ActivityId,
+  ChannelThread,
+  HarnessSession,
+  MessageAuthor,
+  TurnId,
+} from '@friday/contracts/conversation'
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -24,6 +30,7 @@ const decodeActivityId = Schema.decodeSync(ActivityId)
 const decodeTurnId = Schema.decodeSync(TurnId)
 const decodeThread = Schema.decodeSync(ChannelThread)
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
+const decodeAuthor = Schema.decodeSync(MessageAuthor)
 
 const piEvent = (event: AgentSessionEvent): AgentSessionEvent => event
 
@@ -129,7 +136,15 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
     const turnId = decodeTurnId('turn-lifecycle')
     yield* runtime.prompt({
       turnId,
-      message: { source: 'user', content: { text: 'start', images: [] } },
+      message: {
+        source: 'user',
+        author: decodeAuthor({
+          platformUserId: 'user-1',
+          username: 'chan',
+          displayName: 'Chan',
+        }),
+        content: { text: 'start', images: [] },
+      },
       mode: 'turn',
     })
     yield* runtime.prompt({
@@ -138,7 +153,10 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
     })
     const delivered = yield* Fiber.join(events)
     assert.deepStrictEqual(prompts, [
-      { text: 'start', behavior: undefined },
+      {
+        text: '<channel-participant>\nplatform-user-id: user-1\nusername: chan\ndisplay-name: Chan\n</channel-participant>\n\n<message>\nstart\n</message>',
+        behavior: undefined,
+      },
       { text: 'steer', behavior: 'steer' },
     ])
     assert.deepStrictEqual(

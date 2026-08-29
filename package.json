@@ -11,6 +11,7 @@
     "lint": "effect-tsgo patch --no-typescript --oxlint && oxlint .",
     "mutation:system-prompt": "stryker run stryker.config.json --inPlace",
     "mutation:tasks": "stryker run stryker.tasks.config.json --inPlace",
+    "mutation:access": "stryker run stryker.access.config.json --inPlace",
     "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts' --exclude '**/*.live.test.ts' && pnpm --filter @friday/friday test:integration",
     "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test"
   },

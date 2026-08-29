@@ -8,6 +8,18 @@ import * as Schema from 'effect/Schema'
 
 const Identifier = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
 const IdentifierArray = Schema.Array(Identifier)
+const NonEmptyIdentifierArray = IdentifierArray.pipe(Schema.check(Schema.isNonEmpty()))
+
+const AccessPolicyFile = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal('all') }),
+  Schema.Struct({ mode: Schema.Literals(['allow', 'deny']), ids: NonEmptyIdentifierArray }),
+])
+
+const AccessPolicy = Schema.Struct({
+  mode: Schema.Literals(['all', 'allow', 'deny']),
+  ids: IdentifierArray,
+})
+export type AccessPolicy = typeof AccessPolicy.Type
 
 export const SecretValue = Identifier.pipe(Schema.brand('SecretValue'))
 export type SecretValue = typeof SecretValue.Type
@@ -20,15 +32,15 @@ const DiscordCredentials = Schema.Struct({
   publicKey: SecretReference,
 })
 
-const DiscordAllowlist = Schema.Struct({
-  userIds: Schema.optionalKey(IdentifierArray),
-  channelIds: Schema.optionalKey(IdentifierArray),
-  guildIds: Schema.optionalKey(IdentifierArray),
+const DiscordAccess = Schema.Struct({
+  users: AccessPolicyFile,
+  channels: AccessPolicyFile,
+  guilds: AccessPolicyFile,
 })
 
 const DiscordPlatform = Schema.Struct({
   credentials: DiscordCredentials,
-  allowlist: Schema.optionalKey(DiscordAllowlist),
+  access: DiscordAccess,
   respondToGlobalMentions: Schema.optionalKey(Schema.Boolean),
   mentionRoleIds: Schema.optionalKey(IdentifierArray),
 })
@@ -44,22 +56,22 @@ const SlackWebhookCredentials = Schema.Struct({
   signingSecret: SecretReference,
 })
 
-const SlackAllowlist = Schema.Struct({
-  userIds: Schema.optionalKey(IdentifierArray),
-  channelIds: Schema.optionalKey(IdentifierArray),
-  workspaceIds: Schema.optionalKey(IdentifierArray),
+const SlackAccess = Schema.Struct({
+  users: AccessPolicyFile,
+  channels: AccessPolicyFile,
+  workspaces: AccessPolicyFile,
 })
 
 const SlackPlatform = Schema.Union([
   Schema.Struct({
     mode: Schema.Literal('socket'),
     credentials: SlackSocketCredentials,
-    allowlist: Schema.optionalKey(SlackAllowlist),
+    access: SlackAccess,
   }),
   Schema.Struct({
     mode: Schema.Literal('webhook'),
     credentials: SlackWebhookCredentials,
-    allowlist: Schema.optionalKey(SlackAllowlist),
+    access: SlackAccess,
   }),
 ])
 
@@ -102,10 +114,10 @@ const DiscordPlatformConfigSchema = Schema.Struct({
     applicationId: SecretValue,
     publicKey: SecretValue,
   }),
-  allowlist: Schema.Struct({
-    userIds: IdentifierArray,
-    channelIds: IdentifierArray,
-    guildIds: IdentifierArray,
+  access: Schema.Struct({
+    users: AccessPolicy,
+    channels: AccessPolicy,
+    guilds: AccessPolicy,
   }),
   respondToGlobalMentions: Schema.Boolean,
   mentionRoleIds: IdentifierArray,
@@ -119,10 +131,10 @@ const SlackPlatformConfigSchema = Schema.Union([
       appToken: SecretValue,
       signingSecret: Schema.optionalKey(SecretValue),
     }),
-    allowlist: Schema.Struct({
-      userIds: IdentifierArray,
-      channelIds: IdentifierArray,
-      workspaceIds: IdentifierArray,
+    access: Schema.Struct({
+      users: AccessPolicy,
+      channels: AccessPolicy,
+      workspaces: AccessPolicy,
     }),
   }),
   Schema.Struct({
@@ -131,10 +143,10 @@ const SlackPlatformConfigSchema = Schema.Union([
       botToken: SecretValue,
       signingSecret: SecretValue,
     }),
-    allowlist: Schema.Struct({
-      userIds: IdentifierArray,
-      channelIds: IdentifierArray,
-      workspaceIds: IdentifierArray,
+    access: Schema.Struct({
+      users: AccessPolicy,
+      channels: AccessPolicy,
+      workspaces: AccessPolicy,
     }),
   }),
 ])
@@ -251,6 +263,9 @@ const resolveOptionalSecret = (
 ): Effect.Effect<SecretValue | undefined, AppConfigError> =>
   value === undefined ? Effect.as(Effect.void, undefined) : resolveSecret(value, path, environment)
 
+const normalizeAccessPolicy = (policy: typeof AccessPolicyFile.Type): AccessPolicy =>
+  policy.mode === 'all' ? { mode: 'all', ids: [] } : { mode: policy.mode, ids: policy.ids }
+
 const decodeConfig = (
   file: AppConfigFile,
   environment: Readonly<Record<string, string | undefined>>,
@@ -279,10 +294,10 @@ const decodeConfig = (
       )
       resolvedDiscord = {
         credentials: { ...credentials, publicKey },
-        allowlist: {
-          userIds: discord.allowlist?.userIds ?? [],
-          channelIds: discord.allowlist?.channelIds ?? [],
-          guildIds: discord.allowlist?.guildIds ?? [],
+        access: {
+          users: normalizeAccessPolicy(discord.access.users),
+          channels: normalizeAccessPolicy(discord.access.channels),
+          guilds: normalizeAccessPolicy(discord.access.guilds),
         },
         respondToGlobalMentions: discord.respondToGlobalMentions ?? false,
         mentionRoleIds: discord.mentionRoleIds ?? [],
@@ -311,10 +326,10 @@ const decodeConfig = (
           signingSecret === undefined
             ? { botToken, appToken }
             : { botToken, appToken, signingSecret },
-        allowlist: {
-          userIds: slack.allowlist?.userIds ?? [],
-          channelIds: slack.allowlist?.channelIds ?? [],
-          workspaceIds: slack.allowlist?.workspaceIds ?? [],
+        access: {
+          users: normalizeAccessPolicy(slack.access.users),
+          channels: normalizeAccessPolicy(slack.access.channels),
+          workspaces: normalizeAccessPolicy(slack.access.workspaces),
         },
       }
     } else if (slack?.mode === 'webhook') {
@@ -331,10 +346,10 @@ const decodeConfig = (
       resolvedSlack = {
         mode: 'webhook',
         credentials: { botToken, signingSecret },
-        allowlist: {
-          userIds: slack.allowlist?.userIds ?? [],
-          channelIds: slack.allowlist?.channelIds ?? [],
-          workspaceIds: slack.allowlist?.workspaceIds ?? [],
+        access: {
+          users: normalizeAccessPolicy(slack.access.users),
+          channels: normalizeAccessPolicy(slack.access.channels),
+          workspaces: normalizeAccessPolicy(slack.access.workspaces),
         },
       }
     }

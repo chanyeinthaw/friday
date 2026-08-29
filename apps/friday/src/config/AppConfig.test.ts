@@ -34,10 +34,10 @@ const configJson = `{
         "applicationId": "literal-application-id",
         "publicKey": "$DISCORD_PUBLIC_KEY"
       },
-      "allowlist": {
-        "channelIds": ["channel-1"],
-        "guildIds": ["guild-1"],
-        "userIds": ["user-1"]
+      "access": {
+        "channels": { "mode": "allow", "ids": ["channel-1"] },
+        "guilds": { "mode": "allow", "ids": ["guild-1"] },
+        "users": { "mode": "allow", "ids": ["user-1"] }
       }
     },
     "slack": {
@@ -46,10 +46,10 @@ const configJson = `{
         "botToken": "literal-slack-token",
         "appToken": "env:SLACK_APP_TOKEN"
       },
-      "allowlist": {
-        "channelIds": ["C123"],
-        "workspaceIds": ["T123"],
-        "userIds": ["U123"]
+      "access": {
+        "channels": { "mode": "allow", "ids": ["C123"] },
+        "workspaces": { "mode": "allow", "ids": ["T123"] },
+        "users": { "mode": "deny", "ids": ["U123"] }
       }
     }
   },
@@ -106,18 +106,63 @@ it.effect('loads literal and environment-backed secrets and preserves model pool
     assert.strictEqual(discord.credentials.botToken, 'discord-token')
     assert.strictEqual(discord.credentials.applicationId, 'literal-application-id')
     assert.strictEqual(discord.credentials.publicKey, 'discord-public-key')
-    assert.deepStrictEqual(discord.allowlist, {
-      channelIds: ['channel-1'],
-      guildIds: ['guild-1'],
-      userIds: ['user-1'],
+    assert.deepStrictEqual(discord.access, {
+      channels: { mode: 'allow', ids: ['channel-1'] },
+      guilds: { mode: 'allow', ids: ['guild-1'] },
+      users: { mode: 'allow', ids: ['user-1'] },
     })
     const slack = config.platforms.slack
     assert(slack !== undefined)
     assert.strictEqual(slack.mode, 'socket')
     if (slack.mode !== 'socket') return
     assert.strictEqual(slack.credentials.appToken, 'slack-app-token')
+    assert.deepStrictEqual(slack.access.users, { mode: 'deny', ids: ['U123'] })
     assert.strictEqual(config.agent.thinkingLevel, 'high')
     assert.strictEqual(config.agent.recentMessageCount, 5)
+  }),
+)
+
+it.effect('normalizes explicit all access policies', () =>
+  Effect.gen(function* () {
+    const config = yield* load(
+      configJson
+        .replace('{ "mode": "allow", "ids": ["channel-1"] }', '{ "mode": "all" }')
+        .replace('{ "mode": "allow", "ids": ["guild-1"] }', '{ "mode": "all" }')
+        .replace('{ "mode": "allow", "ids": ["user-1"] }', '{ "mode": "all" }'),
+      {
+        DISCORD_BOT_TOKEN: 'discord-token',
+        DISCORD_PUBLIC_KEY: 'discord-public-key',
+        SLACK_APP_TOKEN: 'slack-app-token',
+      },
+    )
+
+    const discord = config.platforms.discord
+    assert(discord !== undefined)
+    assert.deepStrictEqual(discord.access, {
+      channels: { mode: 'all', ids: [] },
+      guilds: { mode: 'all', ids: [] },
+      users: { mode: 'all', ids: [] },
+    })
+  }),
+)
+
+it.effect('rejects allow and deny policies without identifiers', () =>
+  Effect.gen(function* () {
+    const invalid = configJson.replace(
+      '{ "mode": "allow", "ids": ["channel-1"] }',
+      '{ "mode": "allow", "ids": [] }',
+    )
+    const exit = yield* load(invalid, {
+      DISCORD_BOT_TOKEN: 'discord-token',
+      DISCORD_PUBLIC_KEY: 'discord-public-key',
+      SLACK_APP_TOKEN: 'slack-app-token',
+    }).pipe(Effect.exit)
+
+    assert(Exit.isFailure(exit))
+    if (!Exit.isFailure(exit)) return
+    const error = Cause.squash(exit.cause)
+    assert(isAppConfigError(error))
+    assert.strictEqual(error.operation, 'decode')
   }),
 )
 

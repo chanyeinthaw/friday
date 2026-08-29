@@ -69,6 +69,8 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, 'Model: `anthropic/claude-sonnet`')
     assert.include(prompt, 'Thinking: `max`')
     assert.include(prompt, '`fast`: Quick investigations.')
+    assert.include(prompt, 'Messages may come from different people')
+    assert.include(prompt, 'Do not assume that a new message was written by the same person')
     assert.include(prompt, 'Background tasks are private implementation details')
     assert.include(prompt, 'Say "I\'m still working on it,"')
     assert.include(prompt, 'Do not mention subagents, background agents, agent threads')

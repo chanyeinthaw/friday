@@ -37,6 +37,7 @@ import type {
   ThreadRuntimeEvent,
 } from '../../conversation/ThreadRuntime.ts'
 import type { SystemPromptTemplatesContract } from '../../system-prompt/SystemPromptTemplates.ts'
+import { renderPromptMessage } from './PromptMessage.ts'
 import { makePiTaskTool, type PiTaskOperations } from '../../tasks/PiTaskTool.ts'
 
 const PiResumeCursor = Schema.Struct({
@@ -454,7 +455,8 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   const emit = (event: ThreadRuntimeEvent) => Queue.offer(eventsQueue, event).pipe(Effect.asVoid)
   const sendSteering = (request: PromptRequest) =>
     Effect.tryPromise({
-      try: () => session.prompt(request.message.content.text, { streamingBehavior: 'steer' }),
+      try: () =>
+        session.prompt(renderPromptMessage(request.message), { streamingBehavior: 'steer' }),
       catch: (cause) =>
         new PiThreadRuntimeError({
           operation: 'steer',
@@ -569,7 +571,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
         detail: 'Pi image attachment loading is not implemented yet.',
       })
     }
-    const text = request.message.content.text
+    const text = renderPromptMessage(request.message)
     const mode = request.mode ?? 'steer'
     if (mode === 'steer') {
       const disposition = yield* sessionLock.withPermit(

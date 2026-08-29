@@ -34,8 +34,19 @@ export const MessageContent = Schema.Struct({
 )
 export type MessageContent = typeof MessageContent.Type
 
+export const MessageAuthor = Schema.Struct({
+  platformUserId: Schema.String.pipe(
+    Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()),
+    Schema.brand('PlatformUserId'),
+  ),
+  username: Schema.NullOr(Schema.String),
+  displayName: Schema.NullOr(Schema.String),
+})
+export type MessageAuthor = typeof MessageAuthor.Type
+
 export const InputMessage = Schema.Struct({
   source: InputSource,
+  author: Schema.optionalKey(MessageAuthor),
   content: MessageContent,
   platformMessageId: Schema.optionalKey(PlatformMessageId),
 })
