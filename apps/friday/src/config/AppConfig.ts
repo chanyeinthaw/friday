@@ -85,6 +85,7 @@ export type SubagentProfile = typeof SubagentProfile.Type
 
 const Models = Schema.Struct({
   primary: ModelSelection,
+  utility: Schema.optionalKey(ModelSelection),
   subagents: Schema.Array(SubagentProfile),
 })
 
@@ -356,6 +357,7 @@ const decodeConfig = (
     return {
       models: {
         primary: file.models.primary,
+        utility: file.models.utility ?? file.models.primary,
         subagents: file.models.subagents,
       },
       platforms: makeConfiguredPlatforms(resolvedDiscord, resolvedSlack),

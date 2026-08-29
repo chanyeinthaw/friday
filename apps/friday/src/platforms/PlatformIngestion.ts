@@ -11,12 +11,18 @@ import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
 import { ChannelTurns, type ChannelTurnError } from '../conversation/ChannelTurns.ts'
+import { AppConfig } from '../config/AppConfigLive.ts'
+import { TextGeneration } from '../harness/TextGeneration.ts'
 import {
   ThreadPersistence,
   type ThreadPersistenceError,
 } from '../conversation/ThreadPersistence.ts'
 import type { PlatformInput } from './PlatformAdapter.ts'
-import { PlatformNotFoundError, PlatformOperationError } from './PlatformRegistry.ts'
+import {
+  PlatformNotFoundError,
+  PlatformOperationError,
+  PlatformRegistry,
+} from './PlatformRegistry.ts'
 
 export class PlatformThreadNotFoundError extends Schema.Error<PlatformThreadNotFoundError>(
   'PlatformThreadNotFoundError',
@@ -56,6 +62,9 @@ export const PlatformIngestionLive = Layer.effect(
   Effect.gen(function* () {
     const persistence = yield* ThreadPersistence
     const channelTurns = yield* ChannelTurns
+    const textGeneration = yield* TextGeneration
+    const platforms = yield* PlatformRegistry
+    const configuration = yield* AppConfig
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
     return PlatformIngestion.of({
@@ -77,6 +86,7 @@ export const PlatformIngestionLive = Layer.effect(
                 platform: input.binding.platform,
                 conversationId: input.binding.conversationId,
               })
+              const created = Option.isNone(foundThread)
               const found = Option.isSome(foundThread)
                 ? foundThread.value
                 : yield* createThread(input).pipe(
@@ -93,6 +103,32 @@ export const PlatformIngestionLive = Layer.effect(
                 )
               }
               if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
+              if (created) {
+                yield* textGeneration
+                  .generateThreadTitle({
+                    message: input.message.content.text,
+                    workingDirectory: found.workingDirectory,
+                    model: configuration.models.utility ?? configuration.models.primary,
+                    thinkingLevel: 'low',
+                  })
+                  .pipe(
+                    Effect.flatMap((title) =>
+                      platforms.setConversationTitle({
+                        binding: found.conversationBinding,
+                        title,
+                      }),
+                    ),
+                    Effect.matchEffect({
+                      onFailure: (cause) =>
+                        Effect.logWarning('conversation.title.failed').pipe(
+                          Effect.annotateLogs({ threadId: found.id, cause: String(cause) }),
+                        ),
+                      onSuccess: () => Effect.void,
+                    }),
+                    Effect.forkDetach,
+                    Effect.asVoid,
+                  )
+              }
               yield* channelTurns.accept({ thread: found, message: input.message })
             }),
           )

@@ -3,6 +3,7 @@ import {
   ChannelThread,
   ConversationBinding,
   InputMessage,
+  ModelSelection,
   TurnId,
   type Thread as ThreadType,
   type Turn as TurnType,
@@ -14,6 +15,8 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { Friday, type FridayContract } from '../Friday.ts'
+import { AppConfig } from '../config/AppConfigLive.ts'
+import { TextGeneration } from '../harness/TextGeneration.ts'
 import { ChannelProgressLive } from '../conversation/ChannelProgress.ts'
 import { ChannelTurnsLive } from '../conversation/ChannelTurns.ts'
 import {
@@ -58,6 +61,20 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
 })
 const decodeTurnId = Schema.decodeSync(TurnId)
 
+const testModel = Schema.decodeSync(ModelSelection)({
+  provider: 'opencode-go',
+  modelId: 'deepseek-v4-flash',
+})
+const testConfig = {
+  models: {
+    primary: testModel,
+    utility: testModel,
+    subagents: [],
+  },
+  platforms: {},
+  agent: { thinkingLevel: 'max', recentMessageCount: 20 },
+} as const
+
 const testCrypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
   digest: (_algorithm, data) => Effect.succeed(data),
@@ -74,6 +91,11 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
         Layer.succeed(ThreadPersistence, persistence),
         Layer.succeed(Friday, friday),
         Layer.succeed(Crypto.Crypto, testCrypto),
+        Layer.succeed(AppConfig, testConfig),
+        Layer.succeed(
+          TextGeneration,
+          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+        ),
         PlatformRegistryLive,
       )
       const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
@@ -114,6 +136,11 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         Layer.succeed(ThreadPersistence, persistence),
         Layer.succeed(Friday, friday),
         Layer.succeed(Crypto.Crypto, testCrypto),
+        Layer.succeed(AppConfig, testConfig),
+        Layer.succeed(
+          TextGeneration,
+          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+        ),
         PlatformRegistryLive,
       )
       const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
@@ -148,6 +175,7 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   acknowledge: () => Effect.sync(() => events.push('acknowledge')),
   beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
   updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
+  setConversationTitle: () => Effect.void,
   finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push('typing-started')).pipe(

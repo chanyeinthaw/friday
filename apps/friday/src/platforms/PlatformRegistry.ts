@@ -7,6 +7,7 @@ import type * as Scope from 'effect/Scope'
 
 import type {
   PlatformAdapter,
+  PlatformConversationTitle,
   PlatformMessageTarget,
   PlatformPublication,
   PlatformWorkingMessage,
@@ -40,6 +41,9 @@ export interface RegisteredPlatform {
   readonly finalizeWorking: (
     message: PlatformWorkingMessage,
   ) => Effect.Effect<void, PlatformOperationError>
+  readonly setConversationTitle: (
+    title: PlatformConversationTitle,
+  ) => Effect.Effect<void, PlatformOperationError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -53,6 +57,9 @@ export interface PlatformRegistryContract {
   readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
   readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
   readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
+  readonly setConversationTitle: (
+    title: PlatformConversationTitle,
+  ) => Effect.Effect<void, RegistryError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -89,6 +96,7 @@ export const PlatformRegistryLive = Layer.effect(
           beginWorking: (message) => wrap(platform.beginWorking(message)),
           updateWorking: (message) => wrap(platform.updateWorking(message)),
           finalizeWorking: (message) => wrap(platform.finalizeWorking(message)),
+          setConversationTitle: (title) => wrap(platform.setConversationTitle(title)),
           withTyping: (binding, effect) =>
             platform
               .withTyping(binding, effect)
@@ -116,6 +124,8 @@ export const PlatformRegistryLive = Layer.effect(
         invoke(message.binding.platform, (platform) => platform.updateWorking(message)),
       finalizeWorking: (message) =>
         invoke(message.binding.platform, (platform) => platform.finalizeWorking(message)),
+      setConversationTitle: (title) =>
+        invoke(title.binding.platform, (platform) => platform.setConversationTitle(title)),
       withTyping: (binding, effect) =>
         invoke(binding.platform, (platform) => platform.withTyping(binding, effect)),
     })

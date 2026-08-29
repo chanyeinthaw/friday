@@ -25,6 +25,11 @@ export interface PlatformPublication {
   readonly text: string
 }
 
+export interface PlatformConversationTitle {
+  readonly binding: ConversationBinding
+  readonly title: string
+}
+
 export interface PlatformAdapter<PlatformError> {
   readonly kind: ConversationBinding['platform']
   readonly publish: (publication: PlatformPublication) => Effect.Effect<void, PlatformError>
@@ -32,6 +37,9 @@ export interface PlatformAdapter<PlatformError> {
   readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
   readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
   readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
+  readonly setConversationTitle: (
+    title: PlatformConversationTitle,
+  ) => Effect.Effect<void, PlatformError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,

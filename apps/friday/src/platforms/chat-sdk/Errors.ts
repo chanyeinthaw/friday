@@ -43,6 +43,7 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
     'begin-working',
     'update-working',
     'finalize-working',
+    'set-conversation-title',
   ]),
   cause: Schema.Defect(),
 }) {

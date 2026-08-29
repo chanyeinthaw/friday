@@ -11,6 +11,7 @@ import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
 import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
 import { discordRespondToChannelIds } from './DiscordChannelAccess.ts'
+import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import {
   makeDiscordThreadBootstrap,
@@ -58,7 +59,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
     thinkingLevel: configuration.agent.thinkingLevel,
   }
   const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
-  const platform = yield* makeChatSdkPlatform('discord', chat)
+  const platform = yield* makeChatSdkPlatform('discord', chat, {
+    setConversationTitle: (title) =>
+      setDiscordConversationTitle(discord, String(discordConfig.credentials.botToken), title),
+  })
   yield* platforms.register(platform)
   yield* startChatSdkLifecycle({
     chat,
