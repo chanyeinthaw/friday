@@ -11,6 +11,7 @@ export const makeDiscordAgentActivity = (
   botToken: string,
 ): ((input: PlatformAgentActivity) => Effect.Effect<void, ChatSdkPublicationError>) => {
   const baseNames = new Map<string, string>()
+  const activeTaskIds = new Map<string, Set<string>>()
 
   return (input) =>
     Effect.tryPromise({
@@ -34,12 +35,12 @@ export const makeDiscordAgentActivity = (
           baseName = (member.nick ?? member.user?.username ?? 'Friday').replace(activitySuffix, '')
           baseNames.set(location.guildId, baseName)
         }
-        const suffix =
-          input.activeTaskCount === 0
-            ? ''
-            : input.activeTaskCount === 1
-              ? ' ⚡️'
-              : ` ⚡️x${input.activeTaskCount}`
+        const tasks = activeTaskIds.get(location.guildId) ?? new Set<string>()
+        if (input.active) tasks.add(input.taskId)
+        else tasks.delete(input.taskId)
+        activeTaskIds.set(location.guildId, tasks)
+        const count = tasks.size
+        const suffix = count === 0 ? '' : count === 1 ? ' ⚡️' : ` ⚡️x${count}`
         const nickname = `${baseName}${suffix}`.slice(0, 32)
         const response = await fetch(
           `https://discord.com/api/v10/guilds/${location.guildId}/members/@me`,

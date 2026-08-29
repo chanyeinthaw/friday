@@ -1,4 +1,4 @@
-import type { ChannelThread } from '@friday/contracts/conversation'
+import type { ChannelThread, TaskId } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -8,8 +8,8 @@ import { PlatformRegistry } from './PlatformRegistry.ts'
 
 export interface ConversationTitlesContract {
   readonly generated: (thread: ChannelThread, title: string) => Effect.Effect<void>
-  readonly taskStarted: (thread: ChannelThread) => Effect.Effect<void>
-  readonly taskFinished: (thread: ChannelThread) => Effect.Effect<void>
+  readonly taskStarted: (thread: ChannelThread, taskId: TaskId) => Effect.Effect<void>
+  readonly taskFinished: (thread: ChannelThread, taskId: TaskId) => Effect.Effect<void>
 }
 
 export class ConversationTitles extends Context.Service<
@@ -22,18 +22,11 @@ export const ConversationTitlesLive = Layer.effect(
   Effect.gen(function* () {
     const platforms = yield* PlatformRegistry
     const lock = yield* Semaphore.make(1)
-    const activeTasks = new Map<string, number>()
-
-    const updateActivity = (thread: ChannelThread, delta: 1 | -1) =>
+    const updateActivity = (thread: ChannelThread, taskId: TaskId, active: boolean) =>
       lock.withPermit(
-        Effect.gen(function* () {
-          const platform = thread.conversationBinding.platform
-          const count = Math.max(0, (activeTasks.get(platform) ?? 0) + delta)
-          activeTasks.set(platform, count)
-          yield* platforms
-            .setAgentActivity({ binding: thread.conversationBinding, activeTaskCount: count })
-            .pipe(Effect.ignore)
-        }),
+        platforms
+          .setAgentActivity({ binding: thread.conversationBinding, taskId, active })
+          .pipe(Effect.ignore),
       )
 
     return ConversationTitles.of({
@@ -41,8 +34,8 @@ export const ConversationTitlesLive = Layer.effect(
         platforms
           .setConversationTitle({ binding: thread.conversationBinding, title })
           .pipe(Effect.ignore),
-      taskStarted: (thread) => updateActivity(thread, 1),
-      taskFinished: (thread) => updateActivity(thread, -1),
+      taskStarted: (thread, taskId) => updateActivity(thread, taskId, true),
+      taskFinished: (thread, taskId) => updateActivity(thread, taskId, false),
     })
   }),
 )

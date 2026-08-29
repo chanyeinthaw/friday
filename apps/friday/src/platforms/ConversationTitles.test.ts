@@ -1,5 +1,5 @@
 import { assert, it } from '@effect/vitest'
-import { ChannelThread } from '@friday/contracts/conversation'
+import { ChannelThread, TaskId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -8,6 +8,7 @@ import { ConversationTitles, ConversationTitlesLive } from './ConversationTitles
 import type { PlatformAdapter } from './PlatformAdapter.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
+const taskId = Schema.decodeSync(TaskId)('task-title')
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-title',
   audience: 'user',
@@ -34,7 +35,7 @@ it.effect('keeps generated titles unchanged and reports platform-wide task count
   Effect.scoped(
     Effect.gen(function* () {
       const titles: Array<string> = []
-      const counts: Array<number> = []
+      const activity: Array<{ taskId: string; active: boolean }> = []
       const platform: PlatformAdapter<never> = {
         kind: 'test',
         publish: () => Effect.void,
@@ -43,7 +44,8 @@ it.effect('keeps generated titles unchanged and reports platform-wide task count
         updateWorking: () => Effect.void,
         finalizeWorking: () => Effect.void,
         setConversationTitle: ({ title }) => Effect.sync(() => titles.push(title)),
-        setAgentActivity: ({ activeTaskCount }) => Effect.sync(() => counts.push(activeTaskCount)),
+        setAgentActivity: ({ taskId, active }) =>
+          Effect.sync(() => activity.push({ taskId, active })),
         withTyping: (_binding, effect) => effect,
       }
       const registry = yield* PlatformRegistry
@@ -51,13 +53,18 @@ it.effect('keeps generated titles unchanged and reports platform-wide task count
       const conversationTitles = yield* ConversationTitles
 
       yield* conversationTitles.generated(thread, 'Repository Inspection')
-      yield* conversationTitles.taskStarted(thread)
-      yield* conversationTitles.taskStarted(thread)
-      yield* conversationTitles.taskFinished(thread)
-      yield* conversationTitles.taskFinished(thread)
+      yield* conversationTitles.taskStarted(thread, taskId)
+      yield* conversationTitles.taskStarted(thread, taskId)
+      yield* conversationTitles.taskFinished(thread, taskId)
+      yield* conversationTitles.taskFinished(thread, taskId)
 
       assert.deepStrictEqual(titles, ['Repository Inspection'])
-      assert.deepStrictEqual(counts, [1, 2, 1, 0])
+      assert.deepStrictEqual(activity, [
+        { taskId, active: true },
+        { taskId, active: true },
+        { taskId, active: false },
+        { taskId, active: false },
+      ])
     }).pipe(
       Effect.provide(
         Layer.merge(

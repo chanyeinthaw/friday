@@ -412,7 +412,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         Effect.flatMap((terminal) =>
           Effect.gen(function* () {
             if (options.conversationTitles) {
-              yield* options.conversationTitles.taskFinished(input.parent)
+              yield* options.conversationTitles.taskFinished(input.parent, taskId)
             }
             yield* options.persistence.closeThread({
               threadId: thread.id,
@@ -436,7 +436,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
     )
 
     if (options.conversationTitles) {
-      yield* options.conversationTitles.taskStarted(input.parent)
+      yield* options.conversationTitles.taskStarted(input.parent, taskId)
     }
     return { taskId, status: 'pending' as const }
   })
@@ -742,6 +742,9 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         ),
       )
     const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    if (options.conversationTitles) {
+      yield* options.conversationTitles.taskFinished(parent, request.taskId)
+    }
     yield* options.channelTurns
       .accept({
         thread: parent,

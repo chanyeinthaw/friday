@@ -32,7 +32,8 @@ export interface PlatformConversationTitle {
 
 export interface PlatformAgentActivity {
   readonly binding: ConversationBinding
-  readonly activeTaskCount: number
+  readonly taskId: string
+  readonly active: boolean
 }
 
 export interface PlatformAdapter<PlatformError> {

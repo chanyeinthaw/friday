@@ -510,6 +510,7 @@ test('cancels only an active owned task', async () => {
   const active = taskTurn(thread, 'turn-active', 1, 'running', 'Original task')
   const cancelled: Array<string> = []
   const delivered: Array<string> = []
+  const finishedActivity: Array<string> = []
   const tasks = makeTasks({
     persistence: taskPersistence(parent, thread, active, active),
     friday: {
@@ -527,6 +528,11 @@ test('cancels only an active owned task', async () => {
     channelTurns: {
       accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
     },
+    conversationTitles: {
+      generated: () => Effect.void,
+      taskStarted: () => Effect.void,
+      taskFinished: (_parent, taskId) => Effect.sync(() => finishedActivity.push(String(taskId))),
+    },
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
@@ -541,6 +547,7 @@ test('cancels only an active owned task', async () => {
     }),
   )
   expect(cancelled).toEqual([active.id])
+  expect(finishedActivity).toEqual([thread.id])
   expect(delivered).toEqual([
     'Task task-owned cancellation was requested.\n\nReason:\nNo longer needed.',
   ])
