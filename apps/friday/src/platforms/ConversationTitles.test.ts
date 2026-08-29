@@ -42,6 +42,7 @@ it.effect('keeps generated titles unchanged and reports platform-wide task count
         acknowledge: () => Effect.void,
         beginWorking: () => Effect.void,
         updateWorking: () => Effect.void,
+        discardWorking: () => Effect.void,
         finalizeWorking: () => Effect.void,
         setConversationTitle: ({ title }) => Effect.sync(() => titles.push(title)),
         setAgentActivity: ({ taskId, active }) =>

@@ -548,9 +548,7 @@ test('cancels only an active owned task', async () => {
   )
   expect(cancelled).toEqual([active.id])
   expect(finishedActivity).toEqual([thread.id])
-  expect(delivered).toEqual([
-    'Task task-owned cancellation was requested.\n\nReason:\nNo longer needed.',
-  ])
+  expect(delivered).toEqual([])
 })
 
 test('rejects task operations from another channel', async () => {

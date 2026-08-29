@@ -43,6 +43,7 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
     'begin-working',
     'update-working',
     'finalize-working',
+    'discard-working',
     'set-conversation-title',
     'set-agent-activity',
   ]),

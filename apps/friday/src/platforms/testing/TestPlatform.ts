@@ -72,6 +72,7 @@ export const TestPlatformLive = Layer.effect(
       beginWorking: ({ binding, text }) => record({ type: 'working-started', binding, text }),
       updateWorking: ({ binding, text }) => record({ type: 'working-updated', binding, text }),
       finalizeWorking: ({ binding, text }) => record({ type: 'working-finalized', binding, text }),
+      discardWorking: () => Effect.void,
       setConversationTitle: () => Effect.void,
       setAgentActivity: () => Effect.void,
       withTyping: (binding, effect) =>

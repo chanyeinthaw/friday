@@ -52,6 +52,7 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
   setAgentActivity: () => Effect.void,
   setConversationTitle: () => Effect.void,
+  discardWorking: () => Effect.void,
   finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
   withTyping: (_binding, effect) => effect,
 })
@@ -82,6 +83,24 @@ const turnStarted = {
   harnessTurnId: null,
   startedAt: '2026-03-21T09:00:00.000Z' as const,
 }
+
+it.effect('discards the working placeholder for an empty response', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const platform = makePlatform(events)
+      const progress = yield* makeProgress({
+        ...platform,
+        discardWorking: () => Effect.sync(() => events.push('discard')),
+      })
+
+      yield* progress.accept(thread, userMessage('Stop.'))
+      yield* progress.finalize(thread, '')
+
+      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'discard'])
+    }),
+  ),
+)
 
 it.effect('aggregates parallel tool categories into one working status', () =>
   Effect.scoped(

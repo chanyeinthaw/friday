@@ -177,6 +177,15 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
             },
             catch: (cause) => publicationError('finalize-working', cause),
           }),
+        discardWorking: (binding) =>
+          Effect.tryPromise({
+            try: async () => {
+              const sent = working.get(String(binding.conversationId))
+              working.delete(String(binding.conversationId))
+              if (sent) await sent.delete()
+            },
+            catch: (cause) => publicationError('discard-working', cause),
+          }),
         setConversationTitle: options.setConversationTitle ?? (() => Effect.void),
         setAgentActivity: options.setAgentActivity ?? (() => Effect.void),
         withTyping: (_binding, effect) => effect,

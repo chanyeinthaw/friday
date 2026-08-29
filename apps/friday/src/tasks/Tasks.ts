@@ -285,6 +285,8 @@ interface LaunchTaskInput {
 
 export const makeTasks = (options: MakeTasksOptions): TasksContract => {
   const launchLock = Semaphore.makeUnsafe(1)
+  const explicitlyCancelled = new Set<TaskId>()
+
   const launchTaskUnlocked = Effect.fn('Tasks.launchTask')(function* (input: LaunchTaskInput) {
     const existingTasks = yield* options.persistence.listAgentThreads({
       parentThreadId: input.parent.id,
@@ -418,6 +420,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
               threadId: thread.id,
               closedAt: yield* options.now,
             })
+            if (explicitlyCancelled.delete(taskId)) return
             yield* options.channelTurns.accept({
               thread: input.parent,
               message: {
@@ -730,41 +733,21 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           ),
         ),
       )
-    yield* coordinator
-      .cancel(turn.id)
-      .pipe(
-        Effect.mapError((cause) =>
-          taskError(
-            'start-failed',
-            `Failed to cancel task '${request.taskId}': ${String(cause)}`,
-            'cancel',
-          ),
+    explicitlyCancelled.add(request.taskId)
+    yield* coordinator.cancel(turn.id).pipe(
+      Effect.tapError(() => Effect.sync(() => explicitlyCancelled.delete(request.taskId))),
+      Effect.mapError((cause) =>
+        taskError(
+          'start-failed',
+          `Failed to cancel task '${request.taskId}': ${String(cause)}`,
+          'cancel',
         ),
-      )
+      ),
+    )
     const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
     if (options.conversationTitles) {
       yield* options.conversationTitles.taskFinished(parent, request.taskId)
     }
-    yield* options.channelTurns
-      .accept({
-        thread: parent,
-        message: {
-          source: 'agent',
-          content: {
-            text: `Task ${request.taskId} cancellation was requested.\n\nReason:\n${request.reason}`,
-            images: [],
-          },
-        },
-      })
-      .pipe(
-        Effect.mapError((cause) =>
-          taskError(
-            'start-failed',
-            `Failed to notify the channel about task '${request.taskId}' cancellation: ${String(cause)}`,
-            'cancel',
-          ),
-        ),
-      )
   })
 
   return Tasks.of({

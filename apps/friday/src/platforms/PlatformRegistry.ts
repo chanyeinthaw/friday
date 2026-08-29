@@ -42,6 +42,9 @@ export interface RegisteredPlatform {
   readonly finalizeWorking: (
     message: PlatformWorkingMessage,
   ) => Effect.Effect<void, PlatformOperationError>
+  readonly discardWorking: (
+    binding: ConversationBinding,
+  ) => Effect.Effect<void, PlatformOperationError>
   readonly setConversationTitle: (
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, PlatformOperationError>
@@ -61,6 +64,7 @@ export interface PlatformRegistryContract {
   readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
   readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
   readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, RegistryError>
+  readonly discardWorking: (binding: ConversationBinding) => Effect.Effect<void, RegistryError>
   readonly setConversationTitle: (
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, RegistryError>
@@ -101,6 +105,7 @@ export const PlatformRegistryLive = Layer.effect(
           beginWorking: (message) => wrap(platform.beginWorking(message)),
           updateWorking: (message) => wrap(platform.updateWorking(message)),
           finalizeWorking: (message) => wrap(platform.finalizeWorking(message)),
+          discardWorking: (binding) => wrap(platform.discardWorking(binding)),
           setConversationTitle: (title) => wrap(platform.setConversationTitle(title)),
           setAgentActivity: (activity) => wrap(platform.setAgentActivity(activity)),
           withTyping: (binding, effect) =>
@@ -130,6 +135,8 @@ export const PlatformRegistryLive = Layer.effect(
         invoke(message.binding.platform, (platform) => platform.updateWorking(message)),
       finalizeWorking: (message) =>
         invoke(message.binding.platform, (platform) => platform.finalizeWorking(message)),
+      discardWorking: (binding) =>
+        invoke(binding.platform, (platform) => platform.discardWorking(binding)),
       setConversationTitle: (title) =>
         invoke(title.binding.platform, (platform) => platform.setConversationTitle(title)),
       setAgentActivity: (activity) =>

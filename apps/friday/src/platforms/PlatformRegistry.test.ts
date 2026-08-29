@@ -70,6 +70,7 @@ const makePlatform = (
   updateWorking: () => Effect.void,
   setAgentActivity: () => Effect.void,
   setConversationTitle: () => Effect.void,
+  discardWorking: () => Effect.void,
   finalizeWorking: () => Effect.void,
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push(`${kind}:typing`)).pipe(Effect.andThen(effect)),

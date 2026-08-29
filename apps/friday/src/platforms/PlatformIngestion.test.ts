@@ -194,6 +194,7 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
   setAgentActivity: () => Effect.void,
   setConversationTitle: () => Effect.void,
+  discardWorking: () => Effect.void,
   finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push('typing-started')).pipe(

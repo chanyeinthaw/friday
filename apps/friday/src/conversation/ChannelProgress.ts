@@ -181,6 +181,13 @@ export const ChannelProgressLive = Layer.effect(
         lock.withPermit(
           Effect.gen(function* () {
             states.delete(thread.id)
+            if (text.trim().length === 0) {
+              yield* attempt(
+                'discard-working',
+                platforms.discardWorking(thread.conversationBinding),
+              )
+              return
+            }
             const finalized = yield* attempt(
               'finalize-working',
               platforms.finalizeWorking({ binding: thread.conversationBinding, text }),

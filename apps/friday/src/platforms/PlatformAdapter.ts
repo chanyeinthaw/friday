@@ -43,6 +43,7 @@ export interface PlatformAdapter<PlatformError> {
   readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
   readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
   readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
+  readonly discardWorking: (binding: ConversationBinding) => Effect.Effect<void, PlatformError>
   readonly setConversationTitle: (
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, PlatformError>
