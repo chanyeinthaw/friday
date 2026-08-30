@@ -110,8 +110,8 @@ export const PlatformIngestionLive = Layer.effect(
                   .generateThreadTitle({
                     message: input.message.content.text,
                     workingDirectory: found.workingDirectory,
-                    model: configuration.models.utility ?? configuration.models.primary,
-                    thinkingLevel: 'low',
+                    model: configuration.models.utility,
+                    thinkingLevel: configuration.models.utility.thinkingLevel,
                   })
                   .pipe(
                     Effect.flatMap((title) => conversationTitles.generated(found, title)),

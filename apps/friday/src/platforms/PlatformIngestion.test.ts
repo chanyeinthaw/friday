@@ -68,12 +68,12 @@ const testModel = Schema.decodeSync(ModelSelection)({
 })
 const testConfig = {
   models: {
-    primary: testModel,
-    utility: testModel,
+    primary: { ...testModel, thinkingLevel: 'max' as const },
+    utility: { ...testModel, thinkingLevel: 'low' as const },
     subagents: [],
   },
   platforms: {},
-  agent: { thinkingLevel: 'max', recentMessageCount: 20 },
+  agent: { recentMessageCount: 20 },
 } as const
 
 const testCrypto = Crypto.make({

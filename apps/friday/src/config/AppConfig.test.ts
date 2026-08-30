@@ -13,7 +13,13 @@ const configJson = `{
   "models": {
     "primary": {
       "provider": "opencode-go",
-      "modelId": "deepseek-v4-flash"
+      "modelId": "deepseek-v4-flash",
+      "thinkingLevel": "medium"
+    },
+    "utility": {
+      "provider": "opencode-go",
+      "modelId": "deepseek-v4-flash",
+      "thinkingLevel": "low"
     },
     "subagents": [
       {
@@ -54,7 +60,6 @@ const configJson = `{
     }
   },
   "agent": {
-    "thinkingLevel": "high",
     "recentMessageCount": 5
   }
 }`
@@ -95,6 +100,8 @@ it.effect('loads literal and environment-backed secrets and preserves model pool
 
     assert.strictEqual(config.models.primary.provider, 'opencode-go')
     assert.strictEqual(config.models.primary.modelId, 'deepseek-v4-flash')
+    assert.strictEqual(config.models.primary.thinkingLevel, 'medium')
+    assert.strictEqual(config.models.utility.thinkingLevel, 'low')
     const discord = config.platforms.discord
     assert(discord !== undefined)
     assert.strictEqual(config.models.subagents.length, 1)
@@ -117,7 +124,6 @@ it.effect('loads literal and environment-backed secrets and preserves model pool
     if (slack.mode !== 'socket') return
     assert.strictEqual(slack.credentials.appToken, 'slack-app-token')
     assert.deepStrictEqual(slack.access.users, { mode: 'deny', ids: ['U123'] })
-    assert.strictEqual(config.agent.thinkingLevel, 'high')
     assert.strictEqual(config.agent.recentMessageCount, 5)
   }),
 )
@@ -169,10 +175,7 @@ it.effect('rejects allow and deny policies without identifiers', () =>
 it.effect('uses safe defaults for optional agent settings', () =>
   Effect.gen(function* () {
     const config = yield* load(
-      configJson.replace(
-        ',\n  "agent": {\n    "thinkingLevel": "high",\n    "recentMessageCount": 5\n  }',
-        '',
-      ),
+      configJson.replace(',\n  "agent": {\n    "recentMessageCount": 5\n  }', ''),
       {
         DISCORD_BOT_TOKEN: 'discord-token',
         DISCORD_PUBLIC_KEY: 'discord-public-key',
@@ -180,7 +183,6 @@ it.effect('uses safe defaults for optional agent settings', () =>
       },
     )
 
-    assert.strictEqual(config.agent.thinkingLevel, 'max')
     assert.strictEqual(config.agent.recentMessageCount, 20)
   }),
 )

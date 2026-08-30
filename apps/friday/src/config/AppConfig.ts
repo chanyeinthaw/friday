@@ -83,14 +83,18 @@ export const SubagentProfile = Schema.Struct({
 })
 export type SubagentProfile = typeof SubagentProfile.Type
 
+const ConfiguredModel = Schema.Struct({
+  ...ModelSelection.fields,
+  thinkingLevel: ThinkingLevel,
+})
+
 const Models = Schema.Struct({
-  primary: ModelSelection,
-  utility: Schema.optionalKey(ModelSelection),
+  primary: ConfiguredModel,
+  utility: ConfiguredModel,
   subagents: Schema.Array(SubagentProfile),
 })
 
 const Agent = Schema.Struct({
-  thinkingLevel: Schema.optionalKey(ThinkingLevel),
   recentMessageCount: Schema.optionalKey(
     Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 }))),
   ),
@@ -159,7 +163,6 @@ const AppConfigSchema = Schema.Struct({
     slack: Schema.optionalKey(SlackPlatformConfigSchema),
   }),
   agent: Schema.Struct({
-    thinkingLevel: ThinkingLevel,
     recentMessageCount: Schema.Int.pipe(
       Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
     ),
@@ -188,7 +191,6 @@ const AppConfigFileJson = Schema.fromJsonString(AppConfigFileSchema)
 const decodeAppConfigJson = Schema.decodeUnknownEffect(AppConfigFileJson)
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
 
-const defaultThinkingLevel = 'max'
 const defaultRecentMessageCount = 20
 
 const makeConfiguredPlatforms = (
@@ -357,12 +359,11 @@ const decodeConfig = (
     return {
       models: {
         primary: file.models.primary,
-        utility: file.models.utility ?? file.models.primary,
+        utility: file.models.utility,
         subagents: file.models.subagents,
       },
       platforms: makeConfiguredPlatforms(resolvedDiscord, resolvedSlack),
       agent: {
-        thinkingLevel: file.agent?.thinkingLevel ?? defaultThinkingLevel,
         recentMessageCount: file.agent?.recentMessageCount ?? defaultRecentMessageCount,
       },
     }

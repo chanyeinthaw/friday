@@ -60,7 +60,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   const bootstrapOptions: DiscordThreadBootstrapOptions = {
     discord,
     model: configuration.models.primary,
-    thinkingLevel: configuration.agent.thinkingLevel,
+    thinkingLevel: configuration.models.primary.thinkingLevel,
   }
   const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
   const botToken = String(discordConfig.credentials.botToken)
