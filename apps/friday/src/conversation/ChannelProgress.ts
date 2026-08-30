@@ -5,6 +5,7 @@ import type {
   ToolCallId,
 } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Semaphore from 'effect/Semaphore'
@@ -40,6 +41,10 @@ export interface ChannelProgressContract {
 export class ChannelProgress extends Context.Service<ChannelProgress, ChannelProgressContract>()(
   'friday/conversation/ChannelProgress',
 ) {}
+
+export interface ChannelProgressOptions {
+  readonly operationTimeout?: Duration.Input
+}
 
 const categoryFor = (toolName: string): ToolCategory => {
   switch (toolName) {
@@ -92,114 +97,133 @@ const combinedText = (categories: ReadonlySet<ToolCategory>): string => {
 
 const render = (status: string): string => `-# ${status}`
 
-export const ChannelProgressLive = Layer.effect(
-  ChannelProgress,
-  Effect.gen(function* () {
-    const platforms = yield* PlatformRegistry
-    const lock = yield* Semaphore.make(1)
-    const states = new Map<ThreadId, ChannelProgressState>()
+export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
+  Layer.effect(
+    ChannelProgress,
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry
+      const locks = new Map<ThreadId, Semaphore.Semaphore>()
+      const lockFor = (threadId: ThreadId) => {
+        const existing = locks.get(threadId)
+        if (existing) return existing
+        const created = Semaphore.makeUnsafe(1)
+        locks.set(threadId, created)
+        return created
+      }
+      const states = new Map<ThreadId, ChannelProgressState>()
+      const operationTimeout = options.operationTimeout ?? '5 seconds'
 
-    // Working-message decoration is best-effort; it must never fail the turn.
-    const attempt = (operation: string, effect: Effect.Effect<void, ProgressError>) =>
-      effect.pipe(
-        Effect.matchEffect({
-          onFailure: (cause) =>
-            Effect.logWarning('progress.operation-failed').pipe(
-              Effect.annotateLogs({ operation, cause: String(cause) }),
-              Effect.as(false),
-            ),
-          onSuccess: () => Effect.succeed(true),
-        }),
-      )
+      // Working-message decoration is best-effort and bounded; it must never block a turn.
+      const attempt = (operation: string, effect: Effect.Effect<void, ProgressError>) =>
+        effect.pipe(
+          Effect.timeoutOrElse({
+            duration: operationTimeout,
+            orElse: () =>
+              Effect.logWarning('progress.operation-timed-out').pipe(
+                Effect.annotateLogs({ operation }),
+                Effect.as(false),
+              ),
+          }),
+          Effect.matchEffect({
+            onFailure: (cause) =>
+              Effect.logWarning('progress.operation-failed').pipe(
+                Effect.annotateLogs({ operation, cause: String(cause) }),
+                Effect.as(false),
+              ),
+            onSuccess: Effect.succeed,
+          }),
+        )
 
-    const update = (state: ChannelProgressState, status: string) => {
-      if (state.status === status) return Effect.void
-      return attempt(
-        'update-working',
-        platforms.updateWorking({
-          binding: state.thread.conversationBinding,
-          text: render(status),
-        }),
-      ).pipe(
-        Effect.tap((published) =>
-          published ? Effect.sync(() => void (state.status = status)) : Effect.void,
-        ),
-        Effect.asVoid,
-      )
-    }
+      const update = (state: ChannelProgressState, status: string) => {
+        if (state.status === status) return Effect.void
+        return attempt(
+          'update-working',
+          platforms.updateWorking({
+            binding: state.thread.conversationBinding,
+            text: render(status),
+          }),
+        ).pipe(
+          Effect.tap((published) =>
+            published ? Effect.sync(() => void (state.status = status)) : Effect.void,
+          ),
+          Effect.asVoid,
+        )
+      }
 
-    return ChannelProgress.of({
-      accept: (thread, message) =>
-        lock.withPermit(
-          Effect.gen(function* () {
-            if (message.platformMessageId !== undefined) {
+      return ChannelProgress.of({
+        accept: (thread, message) =>
+          lockFor(thread.id).withPermit(
+            Effect.gen(function* () {
+              if (message.platformMessageId !== undefined) {
+                yield* attempt(
+                  'acknowledge',
+                  platforms.acknowledge({
+                    binding: thread.conversationBinding,
+                    messageId: message.platformMessageId,
+                  }),
+                )
+              }
+              const existing = states.get(thread.id)
+              if (existing) return
               yield* attempt(
-                'acknowledge',
-                platforms.acknowledge({
+                'begin-working',
+                platforms.beginWorking({
                   binding: thread.conversationBinding,
-                  messageId: message.platformMessageId,
+                  text: render('Thinking...'),
                 }),
               )
-            }
-            const existing = states.get(thread.id)
-            if (existing) return
-            yield* attempt(
-              'begin-working',
-              platforms.beginWorking({
-                binding: thread.conversationBinding,
-                text: render('Thinking...'),
-              }),
-            )
-            states.set(thread.id, {
-              thread,
-              activeTools: new Map(),
-              status: 'Thinking...',
-            })
-          }),
-        ),
-      observe: (threadId, event) =>
-        lock.withPermit(
-          Effect.gen(function* () {
-            const state = states.get(threadId)
-            if (!state) return
-            if (event.type === 'turn-started') {
-              yield* update(state, 'Thinking...')
-              return
-            }
-            if (event.type === 'activity-completed' && event.activity.type === 'tool-call') {
-              state.activeTools.set(event.activity.callId, categoryFor(event.activity.toolName))
-              yield* update(state, combinedText(new Set(state.activeTools.values())))
-              return
-            }
-            if (event.type === 'activity-completed' && event.activity.type === 'tool-result') {
-              state.activeTools.delete(event.activity.callId)
-              yield* update(state, combinedText(new Set(state.activeTools.values())))
-            }
-          }),
-        ),
-      finalize: (thread, text) =>
-        lock.withPermit(
-          Effect.gen(function* () {
-            states.delete(thread.id)
-            if (text.trim().length === 0) {
-              yield* attempt(
-                'discard-working',
-                platforms.discardWorking(thread.conversationBinding),
+              states.set(thread.id, {
+                thread,
+                activeTools: new Map(),
+                status: 'Thinking...',
+              })
+            }),
+          ),
+        observe: (threadId, event) =>
+          lockFor(threadId).withPermit(
+            Effect.gen(function* () {
+              const state = states.get(threadId)
+              if (!state) return
+              if (event.type === 'turn-started') {
+                yield* update(state, 'Thinking...')
+                return
+              }
+              if (event.type === 'activity-completed' && event.activity.type === 'tool-call') {
+                state.activeTools.set(event.activity.callId, categoryFor(event.activity.toolName))
+                yield* update(state, combinedText(new Set(state.activeTools.values())))
+                return
+              }
+              if (event.type === 'activity-completed' && event.activity.type === 'tool-result') {
+                state.activeTools.delete(event.activity.callId)
+                yield* update(state, combinedText(new Set(state.activeTools.values())))
+              }
+            }),
+          ),
+        finalize: (thread, text) =>
+          lockFor(thread.id).withPermit(
+            Effect.gen(function* () {
+              states.delete(thread.id)
+              if (text.trim().length === 0) {
+                yield* attempt(
+                  'discard-working',
+                  platforms.discardWorking(thread.conversationBinding),
+                )
+                return
+              }
+              const finalized = yield* attempt(
+                'finalize-working',
+                platforms.finalizeWorking({ binding: thread.conversationBinding, text }),
               )
-              return
-            }
-            const finalized = yield* attempt(
-              'finalize-working',
-              platforms.finalizeWorking({ binding: thread.conversationBinding, text }),
-            )
-            if (!finalized) {
-              yield* attempt(
-                'publish-fallback',
-                platforms.publish({ binding: thread.conversationBinding, text }),
-              )
-            }
-          }),
-        ),
-    })
-  }),
-)
+              if (!finalized) {
+                yield* attempt(
+                  'publish-fallback',
+                  platforms.publish({ binding: thread.conversationBinding, text }),
+                )
+              }
+            }),
+          ),
+      })
+    }),
+  )
+
+export const ChannelProgressLive = makeChannelProgressLive()

@@ -6,11 +6,14 @@ import {
   ToolCallId,
   TurnId,
 } from '@friday/contracts/conversation'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
+import { TestClock } from 'effect/testing'
 import * as Schema from 'effect/Schema'
 
-import { ChannelProgress, ChannelProgressLive } from './ChannelProgress.ts'
+import { ChannelProgress, ChannelProgressLive, makeChannelProgressLive } from './ChannelProgress.ts'
 import type { PlatformAdapter } from '../platforms/PlatformAdapter.ts'
 import {
   PlatformOperationError,
@@ -18,7 +21,8 @@ import {
   PlatformRegistryLive,
 } from '../platforms/PlatformRegistry.ts'
 
-const thread = Schema.decodeSync(ChannelThread)({
+const decodeChannelThread = Schema.decodeSync(ChannelThread)
+const thread = decodeChannelThread({
   id: 'thread-progress',
   audience: 'user',
   parent: null,
@@ -42,7 +46,9 @@ const thread = Schema.decodeSync(ChannelThread)({
 const turnId = Schema.decodeSync(TurnId)('turn-progress')
 const activityId = Schema.decodeSync(ActivityId)
 const callId = Schema.decodeSync(ToolCallId)
-const messageId = Schema.decodeSync(PlatformMessageId)('message-progress')
+const decodePlatformMessageId = Schema.decodeSync(PlatformMessageId)
+const messageId = decodePlatformMessageId('message-progress')
+const otherMessageId = decodePlatformMessageId('message-progress-other')
 
 const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   kind: 'test',
@@ -57,17 +63,17 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   withTyping: (_binding, effect) => effect,
 })
 
-const makeProgress = (platform: PlatformAdapter<PlatformOperationError>) =>
+const makeProgress = (
+  platform: PlatformAdapter<PlatformOperationError>,
+  progressLayer = ChannelProgressLive,
+) =>
   Effect.gen(function* () {
     const registry = yield* PlatformRegistry
     yield* registry.register(platform)
     return yield* ChannelProgress
   }).pipe(
     Effect.provide(
-      Layer.merge(
-        PlatformRegistryLive,
-        ChannelProgressLive.pipe(Layer.provide(PlatformRegistryLive)),
-      ),
+      Layer.merge(PlatformRegistryLive, progressLayer.pipe(Layer.provide(PlatformRegistryLive))),
     ),
   )
 
@@ -177,6 +183,71 @@ it.effect('continues the lifecycle when acknowledgement fails', () =>
       yield* progress.finalize(thread, 'Done.')
 
       assert.deepStrictEqual(events, ['working:-# Thinking...', 'finalize:Done.'])
+    }),
+  ),
+)
+
+it.effect('times out a hung acknowledgement and continues the lifecycle', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const acknowledgementStarted = yield* Deferred.make<void>()
+      const platform = {
+        ...makePlatform(events),
+        acknowledge: () =>
+          Deferred.succeed(acknowledgementStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      }
+      const progress = yield* makeProgress(
+        platform,
+        makeChannelProgressLive({ operationTimeout: '1 second' }),
+      )
+
+      const fiber = yield* progress.accept(thread, userMessage('Do work.')).pipe(Effect.forkChild)
+      yield* Deferred.await(acknowledgementStarted)
+      yield* TestClock.adjust('1 second')
+      yield* Fiber.join(fiber)
+      yield* progress.finalize(thread, 'Done.')
+
+      assert.deepStrictEqual(events, ['working:-# Thinking...', 'finalize:Done.'])
+    }),
+  ),
+)
+
+it.effect('does not let a hung channel block progress in another channel', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const acknowledgementStarted = yield* Deferred.make<void>()
+      const platform = {
+        ...makePlatform(events),
+        acknowledge: ({ binding }: { binding: ChannelThread['conversationBinding'] }) =>
+          binding.conversationId === thread.conversationBinding.conversationId
+            ? Deferred.succeed(acknowledgementStarted, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.sync(() => events.push('ack-other')),
+      }
+      const progress = yield* makeProgress(
+        platform,
+        makeChannelProgressLive({ operationTimeout: '1 second' }),
+      )
+      const otherThread = decodeChannelThread({
+        ...thread,
+        id: 'thread-progress-other',
+        conversationBinding: {
+          ...thread.conversationBinding,
+          sourceMessageId: 'message-progress-other',
+          conversationId: 'conversation-progress-other',
+        },
+      })
+
+      const hung = yield* progress.accept(thread, userMessage('Do work.')).pipe(Effect.forkChild)
+      yield* Deferred.await(acknowledgementStarted)
+      yield* progress.accept(otherThread, {
+        ...userMessage('Other work.'),
+        platformMessageId: otherMessageId,
+      })
+
+      assert.deepStrictEqual(events, ['ack-other', 'working:-# Thinking...'])
+      yield* Fiber.interrupt(hung)
     }),
   ),
 )
