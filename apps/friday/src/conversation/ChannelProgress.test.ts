@@ -34,6 +34,7 @@ const thread = decodeChannelThread({
   channelContext: { name: 'progress', description: '' },
   conversationBinding: {
     platform: 'test',
+    connectionId: 'test',
     channelId: 'channel-progress',
     sourceMessageId: 'message-progress',
     conversationId: 'conversation-progress',
@@ -51,6 +52,7 @@ const messageId = decodePlatformMessageId('message-progress')
 const otherMessageId = decodePlatformMessageId('message-progress-other')
 
 const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
+  connectionId: thread.conversationBinding.connectionId,
   kind: 'test',
   publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
   acknowledge: () => Effect.sync(() => events.push('ack')),

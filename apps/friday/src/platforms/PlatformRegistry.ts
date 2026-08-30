@@ -18,7 +18,11 @@ import type {
 
 export class PlatformNotFoundError extends Schema.Error<PlatformNotFoundError>(
   'PlatformNotFoundError',
-)({ _tag: Schema.tag('PlatformNotFoundError'), kind: Schema.String }) {}
+)({
+  _tag: Schema.tag('PlatformNotFoundError'),
+  connectionId: Schema.String,
+  kind: Schema.String,
+}) {}
 
 export class PlatformOperationError extends Schema.Error<PlatformOperationError>(
   'PlatformOperationError',
@@ -28,6 +32,7 @@ const isPlatformOperationError = Schema.is(PlatformOperationError)
 type RegistryError = PlatformNotFoundError | PlatformOperationError
 
 export interface RegisteredPlatform {
+  readonly connectionId: ConversationBinding['connectionId']
   readonly kind: ConversationBinding['platform']
   readonly publish: (
     publication: PlatformPublication,
@@ -90,23 +95,32 @@ export class PlatformRegistry extends Context.Service<PlatformRegistry, Platform
 export const PlatformRegistryLive = Layer.effect(
   PlatformRegistry,
   Effect.sync(() => {
-    const platforms = new Map<ConversationBinding['platform'], RegisteredPlatform>()
-    const find = (kind: ConversationBinding['platform']) => {
-      const platform = platforms.get(kind)
-      return platform ? Effect.succeed(platform) : Effect.fail(new PlatformNotFoundError({ kind }))
+    const platforms = new Map<ConversationBinding['connectionId'], RegisteredPlatform>()
+    const find = (binding: ConversationBinding) => {
+      const platform = platforms.get(binding.connectionId)
+      return platform && platform.kind === binding.platform
+        ? Effect.succeed(platform)
+        : Effect.fail(
+            new PlatformNotFoundError({
+              connectionId: binding.connectionId,
+              kind: binding.platform,
+            }),
+          )
     }
     const operationError = (kind: ConversationBinding['platform'], cause: unknown) =>
       new PlatformOperationError({ kind, cause })
     const invoke = <A, E, R>(
-      kind: ConversationBinding['platform'],
+      binding: ConversationBinding,
       operation: (platform: RegisteredPlatform) => Effect.Effect<A, E, R>,
-    ): Effect.Effect<A, E | PlatformNotFoundError, R> => find(kind).pipe(Effect.flatMap(operation))
+    ): Effect.Effect<A, E | PlatformNotFoundError, R> =>
+      find(binding).pipe(Effect.flatMap(operation))
 
     return PlatformRegistry.of({
       register: <E>(platform: PlatformAdapter<E>) => {
         const wrap = <A>(effect: Effect.Effect<A, E>) =>
           effect.pipe(Effect.mapError((cause) => operationError(platform.kind, cause)))
         const registered: RegisteredPlatform = {
+          connectionId: platform.connectionId,
           kind: platform.kind,
           publish: (publication) => wrap(platform.publish(publication)),
           acknowledge: (target) => wrap(platform.acknowledge(target)),
@@ -127,33 +141,33 @@ export const PlatformRegistryLive = Layer.effect(
               ),
         }
         return Effect.acquireRelease(
-          Effect.sync(() => void platforms.set(platform.kind, registered)),
+          Effect.sync(() => void platforms.set(platform.connectionId, registered)),
           () =>
             Effect.sync(() => {
-              if (platforms.get(platform.kind) === registered) platforms.delete(platform.kind)
+              if (platforms.get(platform.connectionId) === registered) {
+                platforms.delete(platform.connectionId)
+              }
             }),
         )
       },
       publish: (publication) =>
-        invoke(publication.binding.platform, (platform) => platform.publish(publication)),
-      acknowledge: (target) =>
-        invoke(target.binding.platform, (platform) => platform.acknowledge(target)),
+        invoke(publication.binding, (platform) => platform.publish(publication)),
+      acknowledge: (target) => invoke(target.binding, (platform) => platform.acknowledge(target)),
       beginWorking: (message) =>
-        invoke(message.binding.platform, (platform) => platform.beginWorking(message)),
+        invoke(message.binding, (platform) => platform.beginWorking(message)),
       updateWorking: (message) =>
-        invoke(message.binding.platform, (platform) => platform.updateWorking(message)),
+        invoke(message.binding, (platform) => platform.updateWorking(message)),
       finalizeWorking: (message) =>
-        invoke(message.binding.platform, (platform) => platform.finalizeWorking(message)),
-      discardWorking: (binding) =>
-        invoke(binding.platform, (platform) => platform.discardWorking(binding)),
+        invoke(message.binding, (platform) => platform.finalizeWorking(message)),
+      discardWorking: (binding) => invoke(binding, (platform) => platform.discardWorking(binding)),
       setConversationTitle: (title) =>
-        invoke(title.binding.platform, (platform) => platform.setConversationTitle(title)),
+        invoke(title.binding, (platform) => platform.setConversationTitle(title)),
       setAgentActivity: (activity) =>
-        invoke(activity.binding.platform, (platform) => platform.setAgentActivity(activity)),
+        invoke(activity.binding, (platform) => platform.setAgentActivity(activity)),
       searchMessages: (query) =>
-        invoke(query.binding.platform, (platform) => platform.searchMessages(query)),
+        invoke(query.binding, (platform) => platform.searchMessages(query)),
       withTyping: (binding, effect) =>
-        invoke(binding.platform, (platform) => platform.withTyping(binding, effect)),
+        invoke(binding, (platform) => platform.withTyping(binding, effect)),
     })
   }),
 )

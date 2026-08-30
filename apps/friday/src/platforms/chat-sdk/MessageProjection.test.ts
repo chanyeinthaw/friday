@@ -4,6 +4,7 @@ import { projectChatSdkContextMessage, projectChatSdkMessage } from './MessagePr
 
 it('projects Chat SDK identifiers and text into Friday contracts', () => {
   const inbound = projectChatSdkMessage(
+    'discord',
     {
       adapter: { name: 'discord' },
       channelId: 'discord-channel-1',

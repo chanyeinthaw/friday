@@ -32,6 +32,7 @@ import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
 const binding = Schema.decodeSync(ConversationBinding)({
   platform: 'discord',
+  connectionId: 'discord',
   channelId: 'discord:channel-1',
   sourceMessageId: 'message-1',
   conversationId: 'discord:channel-1:message-1',
@@ -72,7 +73,7 @@ const testConfig = {
     utility: { ...testModel, thinkingLevel: 'low' as const },
     subagents: [],
   },
-  platforms: {},
+  platforms: { discord: [], slack: [] },
   agent: { recentMessageCount: 20 },
 } as const
 
@@ -242,6 +243,7 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
 )
 
 const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
+  connectionId: binding.connectionId,
   kind: 'discord',
   publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
   acknowledge: () => Effect.sync(() => events.push('acknowledge')),

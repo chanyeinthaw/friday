@@ -1,4 +1,9 @@
-import type { ConversationBinding, InputMessage } from '@friday/contracts/conversation'
+import {
+  PlatformConnectionId,
+  type ConversationBinding,
+  type InputMessage,
+} from '@friday/contracts/conversation'
+import * as Schema from 'effect/Schema'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -47,6 +52,8 @@ export class TestPlatform extends Context.Service<TestPlatform, TestPlatformCont
   'friday/platforms/testing/TestPlatform',
 ) {}
 
+const testConnectionId = Schema.decodeSync(PlatformConnectionId)('test')
+
 export const TestPlatformLive = Layer.effect(
   TestPlatform,
   Effect.gen(function* () {
@@ -58,6 +65,7 @@ export const TestPlatformLive = Layer.effect(
       Ref.update(events, (current) => [...current, event])
 
     return TestPlatform.of({
+      connectionId: testConnectionId,
       kind: 'test',
       connect: (handler) => Deferred.succeed(inboundHandler, handler),
       send: (binding, message) => {

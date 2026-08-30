@@ -24,6 +24,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   channelContext: { name: 'Friday test channel', description: '' },
   conversationBinding: {
     platform: 'discord',
+    connectionId: 'discord',
     channelId: 'channel-runtime-pool',
     sourceMessageId: 'message-runtime-pool',
     conversationId: 'platform-conversation-runtime-pool',

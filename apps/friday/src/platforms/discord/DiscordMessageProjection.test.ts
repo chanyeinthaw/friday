@@ -24,6 +24,7 @@ const thread = {
 it.effect('repairs a pre-existing Discord thread starter projected as its parent channel', () =>
   Effect.gen(function* () {
     const input = yield* projectDiscordMessage(
+      'discord',
       {
         decodeThreadId: () => ({ guildId: 'guild-1', channelId: 'channel-1' }),
         encodeThreadId: ({ guildId, channelId, threadId }) =>
@@ -49,6 +50,7 @@ it.effect('repairs a pre-existing Discord thread starter projected as its parent
 it.effect('keeps an ordinary channel message in the parent channel', () =>
   Effect.gen(function* () {
     const input = yield* projectDiscordMessage(
+      'discord',
       {
         decodeThreadId: () => ({ guildId: 'guild-1', channelId: 'channel-1' }),
         encodeThreadId: () => 'unused',
@@ -66,6 +68,7 @@ it.effect('preserves messages already projected inside a Discord thread', () =>
   Effect.gen(function* () {
     let fetched = false
     const input = yield* projectDiscordMessage(
+      'discord',
       {
         decodeThreadId: () => ({
           guildId: 'guild-1',

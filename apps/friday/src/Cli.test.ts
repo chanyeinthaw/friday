@@ -6,9 +6,11 @@ import * as Schema from 'effect/Schema'
 
 import { FridayCliError, parseFridayCli } from './Cli.ts'
 import { RepositoryUrl } from './repositories/RepositoryWorktrees.ts'
+import { WorkspaceCleanupProposalId } from './workspaces/WorkspaceCleanup.ts'
 
 const isFridayCliError = Schema.is(FridayCliError)
 const decodeRepositoryUrl = Schema.decodeSync(RepositoryUrl)
+const decodeCleanupProposalId = Schema.decodeSync(WorkspaceCleanupProposalId)
 
 it.effect('uses start as the default command', () =>
   Effect.gen(function* () {
@@ -50,6 +52,19 @@ it.effect('parses managed worktree options', () =>
         url,
         workspace: '/tmp/channel',
         ref: 'main',
+        json: true,
+      },
+    )
+  }),
+)
+
+it.effect('parses an approved workspace cleanup proposal', () =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['workspace', 'cleanup', 'apply', 'cleanup-123', '--json']),
+      {
+        type: 'workspace-cleanup-apply',
+        proposalId: decodeCleanupProposalId('cleanup-123'),
         json: true,
       },
     )

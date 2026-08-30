@@ -111,6 +111,7 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
         channelContext: { name: 'Friday test channel', description: '' },
         conversationBinding: {
           platform: 'discord',
+          connectionId: 'discord',
           channelId: 'channel-lifecycle',
           sourceMessageId: 'message-lifecycle',
           conversationId: 'platform-conversation-lifecycle',
@@ -231,6 +232,7 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
         channelContext: { name: 'Friday test channel', description: '' },
         conversationBinding: {
           platform: 'discord',
+          connectionId: 'discord',
           channelId: 'channel-compaction',
           sourceMessageId: 'message-compaction',
           conversationId: 'platform-conversation-compaction',
@@ -333,6 +335,7 @@ it.effect('fails the active Turn without overtaking failed deferred steering', (
           channelContext: { name: 'Friday test channel', description: '' },
           conversationBinding: {
             platform: 'discord',
+            connectionId: 'discord',
             channelId: 'channel-drain-failure',
             sourceMessageId: 'message-drain-failure',
             conversationId: 'platform-conversation-drain-failure',

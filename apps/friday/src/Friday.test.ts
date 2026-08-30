@@ -20,6 +20,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   channelContext: { name: 'Friday test channel', description: '' },
   conversationBinding: {
     platform: 'discord',
+    connectionId: 'discord',
     channelId: 'channel-application',
     sourceMessageId: 'message-application',
     conversationId: 'platform-conversation-application',

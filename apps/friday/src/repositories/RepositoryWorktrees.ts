@@ -21,11 +21,29 @@ export const ManagedWorktree = Schema.Struct({
 })
 export type ManagedWorktree = typeof ManagedWorktree.Type
 
+export const RepositoryWorktreeSnapshot = Schema.Struct({
+  path: Schema.String,
+  branch: Schema.String,
+  head: Schema.String,
+  commonDirectory: Schema.String,
+  status: Schema.String,
+  sizeBytes: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+})
+export type RepositoryWorktreeSnapshot = typeof RepositoryWorktreeSnapshot.Type
+
 export class RepositoryWorktreeError extends Schema.Error<RepositoryWorktreeError>(
   'RepositoryWorktreeError',
 )({
   _tag: Schema.tag('RepositoryWorktreeError'),
-  operation: Schema.Literals(['inspect', 'clone', 'fetch', 'resolve-ref', 'create', 'validate']),
+  operation: Schema.Literals([
+    'inspect',
+    'clone',
+    'fetch',
+    'resolve-ref',
+    'create',
+    'validate',
+    'remove',
+  ]),
   detail: Schema.String,
   cause: Schema.optionalKey(Schema.Defect()),
 }) {
@@ -78,6 +96,105 @@ const requireGit = Effect.fn('RepositoryWorktrees.requireGit')(function* (
     })
   }
   return result.stdout
+})
+
+const directorySize = Effect.fn('RepositoryWorktrees.directorySize')(function* (directory: string) {
+  const result = yield* Effect.tryPromise({
+    try: async () => {
+      const process = Bun.spawn(['du', '-sk', directory], {
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(process.stdout).text(),
+        new Response(process.stderr).text(),
+        process.exited,
+      ])
+      return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode }
+    },
+    catch: (cause) =>
+      new RepositoryWorktreeError({
+        operation: 'inspect',
+        detail: `Failed to measure worktree '${directory}'.`,
+        cause,
+      }),
+  })
+  if (result.exitCode !== 0) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'inspect',
+      detail: result.stderr || `Could not measure worktree '${directory}'.`,
+    })
+  }
+  const kibibytes = Number.parseInt(result.stdout.split(/\s+/u)[0] ?? '', 10)
+  if (!Number.isFinite(kibibytes) || kibibytes < 0) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'inspect',
+      detail: `Could not decode the size of worktree '${directory}'.`,
+    })
+  }
+  return kibibytes * 1_024
+})
+
+export const inspectRepositoryWorktree = Effect.fn('RepositoryWorktrees.inspectManaged')(function* (
+  directory: string,
+) {
+  const path = resolve(directory)
+  const inside = yield* runGit(['-C', path, 'rev-parse', '--is-inside-work-tree'])
+  if (inside.exitCode !== 0 || inside.stdout !== 'true') return null
+  const [branch, head, commonDirectory, status, sizeBytes] = yield* Effect.all([
+    requireGit('inspect', ['-C', path, 'branch', '--show-current']),
+    requireGit('inspect', ['-C', path, 'rev-parse', 'HEAD']),
+    requireGit('inspect', ['-C', path, 'rev-parse', '--git-common-dir']).pipe(
+      Effect.map((value) => resolve(path, value)),
+    ),
+    requireGit('inspect', ['-C', path, 'status', '--porcelain=v1', '--untracked-files=all']),
+    directorySize(path),
+  ])
+  return RepositoryWorktreeSnapshot.make({
+    path,
+    branch,
+    head,
+    commonDirectory,
+    status,
+    sizeBytes,
+  })
+})
+
+export const removeRepositoryWorktree = Effect.fn('RepositoryWorktrees.removeManaged')(function* (
+  snapshot: RepositoryWorktreeSnapshot,
+) {
+  const current = yield* inspectRepositoryWorktree(snapshot.path)
+  if (
+    current === null ||
+    current.head !== snapshot.head ||
+    current.branch !== snapshot.branch ||
+    current.status !== snapshot.status ||
+    current.commonDirectory !== snapshot.commonDirectory
+  ) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'validate',
+      detail: `Worktree '${snapshot.path}' changed after cleanup approval was requested.`,
+    })
+  }
+  yield* requireGit('remove', [
+    '--git-dir',
+    snapshot.commonDirectory,
+    'worktree',
+    'remove',
+    '--force',
+    snapshot.path,
+  ])
+  if (snapshot.branch.startsWith('friday/task/')) {
+    yield* requireGit('remove', [
+      '--git-dir',
+      snapshot.commonDirectory,
+      'branch',
+      '-D',
+      snapshot.branch,
+    ])
+  }
+  yield* requireGit('remove', ['--git-dir', snapshot.commonDirectory, 'worktree', 'prune'])
 })
 
 interface RepositoryLocation {

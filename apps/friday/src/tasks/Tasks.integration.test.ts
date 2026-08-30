@@ -54,6 +54,7 @@ const parentThread = (workingDirectory: string) =>
     channelContext: { name: 'task-test', description: '' },
     conversationBinding: {
       platform: 'discord',
+      connectionId: 'discord',
       channelId: 'channel-task-test',
       sourceMessageId: 'message-task-test',
       conversationId: 'conversation-task-test',

@@ -23,6 +23,7 @@ export interface DiscordMessageProjectionAdapter extends Pick<
 
 /** Repairs Chat SDK's parent-channel fallback when a message already owns a Discord thread. */
 export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function* (
+  connectionId: string,
   discord: DiscordMessageProjectionAdapter,
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
@@ -32,7 +33,7 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
   })
   if (location.threadId !== undefined || location.guildId === '@me') {
-    return projectChatSdkMessage(thread, message)
+    return projectChatSdkMessage(connectionId, thread, message)
   }
 
   const existingThread = yield* Effect.promise(() =>
@@ -46,7 +47,7 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
     existingThread._tag === 'None' ||
     existingThread.value.parent_id !== location.channelId
   ) {
-    return projectChatSdkMessage(thread, message)
+    return projectChatSdkMessage(connectionId, thread, message)
   }
 
   const repairedThread = {
@@ -64,5 +65,5 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
       messageId: message.id,
     }),
   )
-  return projectChatSdkMessage(repairedThread, message)
+  return projectChatSdkMessage(connectionId, repairedThread, message)
 })

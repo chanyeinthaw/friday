@@ -1,9 +1,9 @@
-import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
-import { FRIDAY_CONFIG_PATH } from '../FridayHome.ts'
 import { loadAppConfig, type AppConfig as AppConfigData } from './AppConfig.ts'
+import { runMigrations } from '../persistence/Migrations.ts'
 
 export class AppConfig extends Context.Service<AppConfig, AppConfigData>()(
   'friday/config/AppConfig',
@@ -11,5 +11,5 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigData>()(
 
 export const AppConfigLive = Layer.effect(
   AppConfig,
-  loadAppConfig({ path: FRIDAY_CONFIG_PATH }),
-).pipe(Layer.provideMerge(BunFileSystem.layer))
+  runMigrations().pipe(Effect.andThen(loadAppConfig())),
+)

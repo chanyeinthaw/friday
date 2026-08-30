@@ -17,6 +17,7 @@ import {
 
 const binding: ConversationBindingType = Schema.decodeSync(ConversationBinding)({
   platform: 'discord',
+  connectionId: 'discord',
   channelId: 'discord:channel-1',
   sourceMessageId: 'message-1',
   conversationId: 'discord:channel-1:message-1',
@@ -118,7 +119,7 @@ it.effect('acknowledges an accepted user message', () =>
   Effect.gen(function* () {
     const test = makeSource()
     test.addUser('message-2')
-    const platform = yield* makeChatSdkPlatform('discord', test.source)
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
     yield* platform.acknowledge({ binding, messageId: platformMessageId('message-2') })
 
@@ -133,7 +134,7 @@ it.effect('acknowledges a thread starter through the parent channel', () =>
     test.addUser('message-1', async () => {
       throw new Error('Discord API error: 404 Unknown Message')
     })
-    const platform = yield* makeChatSdkPlatform('discord', test.source)
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
     yield* platform.acknowledge({ binding, messageId: binding.sourceMessageId })
 
@@ -144,7 +145,7 @@ it.effect('acknowledges a thread starter through the parent channel', () =>
 it.effect('edits the working message when it remains latest', () =>
   Effect.gen(function* () {
     const test = makeSource()
-    const platform = yield* makeChatSdkPlatform('discord', test.source)
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
     yield* platform.beginWorking({ binding, text: '-# Thinking...' })
     yield* platform.updateWorking({ binding, text: '-# Reading files...' })
@@ -161,7 +162,7 @@ it.effect('edits the working message when it remains latest', () =>
 it.effect('splits a long final answer after editing the latest working message', () =>
   Effect.gen(function* () {
     const test = makeSource()
-    const platform = yield* makeChatSdkPlatform('discord', test.source, {
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source, {
       maxMessageLength: 10,
     })
 
@@ -180,7 +181,7 @@ it.effect('splits a long final answer after editing the latest working message',
 it.effect('splits a long final answer after deleting a stale working message', () =>
   Effect.gen(function* () {
     const test = makeSource()
-    const platform = yield* makeChatSdkPlatform('discord', test.source, {
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source, {
       maxMessageLength: 10,
     })
 
@@ -201,7 +202,7 @@ it.effect('splits a long final answer after deleting a stale working message', (
 it.effect('deletes a stale working message and posts the final answer at the bottom', () =>
   Effect.gen(function* () {
     const test = makeSource()
-    const platform = yield* makeChatSdkPlatform('discord', test.source)
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
     yield* platform.beginWorking({ binding, text: '-# Thinking...' })
     test.addUser('steering-message')

@@ -12,6 +12,7 @@ import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
 const decodeConversationId = Schema.decodeSync(PlatformConversationId)
 const binding = Schema.decodeSync(ConversationBinding)({
   platform: 'discord',
+  connectionId: 'discord',
   channelId: 'discord:guild-1:channel-1',
   conversationId: 'discord:guild-1:channel-1:thread-1',
   sourceMessageId: 'trigger-1',

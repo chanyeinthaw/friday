@@ -9,6 +9,7 @@ import { TestPlatform, TestPlatformLive } from './TestPlatform.ts'
 
 const binding = Schema.decodeSync(ConversationBinding)({
   platform: 'test',
+  connectionId: 'test',
   channelId: 'discord:guild:channel',
   sourceMessageId: 'message-1',
   conversationId: 'discord:guild:channel:thread-1',

@@ -1,21 +1,19 @@
-/* oxlint-disable eslint/no-underscore-dangle, effecttsgo/process-env -- Effect schema errors use the canonical _tag discriminator; the process environment is read at the configuration boundary. */
+/* oxlint-disable anti-slop/no-unsafe-dictionary-type, eslint/no-underscore-dangle -- SQL row payloads are decoded immediately through Effect Schema; Effect schema errors use the canonical _tag discriminator. */
 
-import { ModelSelection, SubagentProfileName, ThinkingLevel } from '@friday/contracts/conversation'
+import {
+  ModelSelection,
+  PlatformConnectionId,
+  SubagentProfileName,
+  ThinkingLevel,
+} from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
-import * as FileSystem from 'effect/FileSystem'
-import * as PlatformError from 'effect/PlatformError'
 import * as Schema from 'effect/Schema'
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 const Identifier = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
 const IdentifierArray = Schema.Array(Identifier)
-const NonEmptyIdentifierArray = IdentifierArray.pipe(Schema.check(Schema.isNonEmpty()))
 
-const AccessPolicyFile = Schema.Union([
-  Schema.Struct({ mode: Schema.Literal('all') }),
-  Schema.Struct({ mode: Schema.Literals(['allow', 'deny']), ids: NonEmptyIdentifierArray }),
-])
-
-const AccessPolicy = Schema.Struct({
+export const AccessPolicy = Schema.Struct({
   mode: Schema.Literals(['all', 'allow', 'deny']),
   ids: IdentifierArray,
 })
@@ -24,60 +22,9 @@ export type AccessPolicy = typeof AccessPolicy.Type
 export const SecretValue = Identifier.pipe(Schema.brand('SecretValue'))
 export type SecretValue = typeof SecretValue.Type
 
-const SecretReference = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
-
-const DiscordCredentials = Schema.Struct({
-  botToken: SecretReference,
-  applicationId: SecretReference,
-  publicKey: SecretReference,
-})
-
-const DiscordAccess = Schema.Struct({
-  users: AccessPolicyFile,
-  channels: AccessPolicyFile,
-  guilds: AccessPolicyFile,
-})
-
-const DiscordPlatform = Schema.Struct({
-  credentials: DiscordCredentials,
-  access: DiscordAccess,
-  respondToGlobalMentions: Schema.optionalKey(Schema.Boolean),
-  mentionRoleIds: Schema.optionalKey(IdentifierArray),
-})
-
-const SlackSocketCredentials = Schema.Struct({
-  botToken: SecretReference,
-  appToken: SecretReference,
-  signingSecret: Schema.optionalKey(SecretReference),
-})
-
-const SlackWebhookCredentials = Schema.Struct({
-  botToken: SecretReference,
-  signingSecret: SecretReference,
-})
-
-const SlackAccess = Schema.Struct({
-  users: AccessPolicyFile,
-  channels: AccessPolicyFile,
-  workspaces: AccessPolicyFile,
-})
-
-const SlackPlatform = Schema.Union([
-  Schema.Struct({
-    mode: Schema.Literal('socket'),
-    credentials: SlackSocketCredentials,
-    access: SlackAccess,
-  }),
-  Schema.Struct({
-    mode: Schema.Literal('webhook'),
-    credentials: SlackWebhookCredentials,
-    access: SlackAccess,
-  }),
-])
-
 export const SubagentProfile = Schema.Struct({
   name: SubagentProfileName,
-  description: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  description: Identifier,
   model: ModelSelection,
   thinkingLevel: ThinkingLevel,
 })
@@ -88,32 +35,10 @@ const ConfiguredModel = Schema.Struct({
   thinkingLevel: ThinkingLevel,
 })
 
-const Models = Schema.Struct({
-  primary: ConfiguredModel,
-  utility: ConfiguredModel,
-  subagents: Schema.Array(SubagentProfile),
-})
-
-const Agent = Schema.Struct({
-  recentMessageCount: Schema.optionalKey(
-    Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 }))),
-  ),
-})
-
-const Platforms = Schema.Struct({
-  discord: Schema.optionalKey(DiscordPlatform),
-  slack: Schema.optionalKey(SlackPlatform),
-})
-
-const AppConfigFileSchema = Schema.Struct({
-  models: Models,
-  platforms: Platforms,
-  agent: Schema.optionalKey(Agent),
-})
-
-export type AppConfigFile = typeof AppConfigFileSchema.Type
-
-const DiscordPlatformConfigSchema = Schema.Struct({
+export const DiscordPlatformConfig = Schema.Struct({
+  connectionId: PlatformConnectionId,
+  platform: Schema.Literal('discord'),
+  name: Identifier,
   credentials: Schema.Struct({
     botToken: SecretValue,
     applicationId: SecretValue,
@@ -127,9 +52,13 @@ const DiscordPlatformConfigSchema = Schema.Struct({
   respondToGlobalMentions: Schema.Boolean,
   mentionRoleIds: IdentifierArray,
 })
+export type DiscordPlatformConfig = typeof DiscordPlatformConfig.Type
 
-const SlackPlatformConfigSchema = Schema.Union([
+export const SlackPlatformConfig = Schema.Union([
   Schema.Struct({
+    connectionId: PlatformConnectionId,
+    platform: Schema.Literal('slack'),
+    name: Identifier,
     mode: Schema.Literal('socket'),
     credentials: Schema.Struct({
       botToken: SecretValue,
@@ -143,6 +72,9 @@ const SlackPlatformConfigSchema = Schema.Union([
     }),
   }),
   Schema.Struct({
+    connectionId: PlatformConnectionId,
+    platform: Schema.Literal('slack'),
+    name: Identifier,
     mode: Schema.Literal('webhook'),
     credentials: Schema.Struct({
       botToken: SecretValue,
@@ -155,12 +87,17 @@ const SlackPlatformConfigSchema = Schema.Union([
     }),
   }),
 ])
+export type SlackPlatformConfig = typeof SlackPlatformConfig.Type
 
-const AppConfigSchema = Schema.Struct({
-  models: Models,
+export const AppConfig = Schema.Struct({
+  models: Schema.Struct({
+    primary: ConfiguredModel,
+    utility: ConfiguredModel,
+    subagents: Schema.Array(SubagentProfile),
+  }),
   platforms: Schema.Struct({
-    discord: Schema.optionalKey(DiscordPlatformConfigSchema),
-    slack: Schema.optionalKey(SlackPlatformConfigSchema),
+    discord: Schema.Array(DiscordPlatformConfig),
+    slack: Schema.Array(SlackPlatformConfig),
   }),
   agent: Schema.Struct({
     recentMessageCount: Schema.Int.pipe(
@@ -168,12 +105,7 @@ const AppConfigSchema = Schema.Struct({
     ),
   }),
 })
-
-export type AppConfig = typeof AppConfigSchema.Type
-export type DiscordPlatformConfig = typeof DiscordPlatformConfigSchema.Type
-export type SlackPlatformConfig = typeof SlackPlatformConfigSchema.Type
-
-export type AppConfigOperation = 'read' | 'decode' | 'secret'
+export type AppConfig = typeof AppConfig.Type
 
 export class AppConfigError extends Schema.Error<AppConfigError>('AppConfigError')({
   _tag: Schema.tag('AppConfigError'),
@@ -187,222 +119,240 @@ export class AppConfigError extends Schema.Error<AppConfigError>('AppConfigError
   }
 }
 
-const AppConfigFileJson = Schema.fromJsonString(AppConfigFileSchema)
-const decodeAppConfigJson = Schema.decodeUnknownEffect(AppConfigFileJson)
+const AgentConfigRow = Schema.Struct({
+  primary_provider: Schema.String,
+  primary_model_id: Schema.String,
+  primary_thinking_level: Schema.String,
+  utility_provider: Schema.String,
+  utility_model_id: Schema.String,
+  utility_thinking_level: Schema.String,
+  recent_message_count: Schema.Number,
+})
+
+const SubagentProfileRow = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  provider: Schema.String,
+  model_id: Schema.String,
+  thinking_level: Schema.String,
+})
+
+const DiscordConnectionRow = Schema.Struct({
+  connection_id: Schema.String,
+  name: Schema.String,
+  application_id: Schema.String,
+  public_key: Schema.String,
+  bot_token_env: Schema.String,
+  respond_to_global_mentions: Schema.Number,
+})
+
+const DiscordMentionRoleRow = Schema.Struct({
+  connection_id: Schema.String,
+  role_id: Schema.String,
+})
+
+const AccessPolicyRow = Schema.Struct({
+  connection_id: Schema.String,
+  subject_type: Schema.String,
+  mode: Schema.Literals(['all', 'allow', 'deny']),
+})
+
+const AccessSubjectRow = Schema.Struct({
+  connection_id: Schema.String,
+  subject_type: Schema.String,
+  platform_subject_id: Schema.String,
+})
+
+const decodeAgentConfigRows = Schema.decodeUnknownEffect(Schema.Array(AgentConfigRow))
+const decodeSubagentProfileRows = Schema.decodeUnknownEffect(Schema.Array(SubagentProfileRow))
+const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
+const decodeDiscordMentionRoleRows = Schema.decodeUnknownEffect(Schema.Array(DiscordMentionRoleRow))
+const decodeAccessPolicyRows = Schema.decodeUnknownEffect(Schema.Array(AccessPolicyRow))
+const decodeAccessSubjectRows = Schema.decodeUnknownEffect(Schema.Array(AccessSubjectRow))
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
+const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
-const defaultRecentMessageCount = 20
-
-const makeConfiguredPlatforms = (
-  discord: DiscordPlatformConfig | undefined,
-  slack: SlackPlatformConfig | undefined,
-): AppConfig['platforms'] => {
-  if (discord !== undefined && slack !== undefined) return { discord, slack }
-  if (discord !== undefined) return { discord }
-  if (slack !== undefined) return { slack }
-  return {}
-}
-
-const isNotFound = (cause: PlatformError.PlatformError): boolean => cause.reason._tag === 'NotFound'
+const readRows = Effect.fn('AppConfig.readRows')(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const agentRows = yield* sql<Record<string, unknown>>`SELECT * FROM agent_config WHERE id = 1`
+  const agent = yield* decodeAgentConfigRows(agentRows).pipe(
+    Effect.flatMap((rows) =>
+      rows[0] === undefined
+        ? Effect.fail(
+            new AppConfigError({
+              operation: 'read',
+              path: 'agent_config',
+              detail: 'Friday configuration has not been initialized.',
+            }),
+          )
+        : Effect.succeed(rows[0]),
+    ),
+  )
+  const profiles = yield* sql<
+    Record<string, unknown>
+  >`SELECT * FROM subagent_profiles ORDER BY name`
+  const discord = yield* sql<Record<string, unknown>>`
+    SELECT
+      platform_connections.connection_id,
+      platform_connections.name,
+      discord_connections.application_id,
+      discord_connections.public_key,
+      discord_connections.bot_token_env,
+      discord_connections.respond_to_global_mentions
+    FROM platform_connections
+    JOIN discord_connections USING (connection_id)
+    WHERE platform_connections.platform = 'discord'
+      AND platform_connections.enabled = 1
+    ORDER BY platform_connections.connection_id
+  `
+  const mentionRoles = yield* sql<
+    Record<string, unknown>
+  >`SELECT * FROM discord_mention_roles ORDER BY connection_id, role_id`
+  const policies = yield* sql<
+    Record<string, unknown>
+  >`SELECT * FROM platform_access_policies ORDER BY connection_id, subject_type`
+  const subjects = yield* sql<
+    Record<string, unknown>
+  >`SELECT * FROM platform_access_subjects ORDER BY connection_id, subject_type, platform_subject_id`
+  return {
+    agent,
+    profiles: yield* decodeSubagentProfileRows(profiles),
+    discord: yield* decodeDiscordConnectionRows(discord),
+    mentionRoles: yield* decodeDiscordMentionRoleRows(mentionRoles),
+    policies: yield* decodeAccessPolicyRows(policies),
+    subjects: yield* decodeAccessSubjectRows(subjects),
+  }
+})
 
 const resolveSecret = (
-  value: string,
-  path: string,
   environment: Readonly<Record<string, string | undefined>>,
+  environmentName: string,
+  path: string,
 ): Effect.Effect<SecretValue, AppConfigError> => {
-  const trimmed = value.trim()
-  const reference =
-    trimmed.match(/^env:([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ??
-    trimmed.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/)?.[1] ??
-    trimmed.match(/^\$([A-Za-z_][A-Za-z0-9_]*)$/)?.[1]
-  if (reference !== undefined) {
-    const resolved = environment[reference]
-    return resolved === undefined || resolved.length === 0
-      ? Effect.fail(
-          new AppConfigError({
-            operation: 'secret',
-            path,
-            detail: `Environment variable ${reference} is not set.`,
-          }),
-        )
-      : decodeSecretValue(resolved).pipe(
-          Effect.mapError(
-            (cause) =>
-              new AppConfigError({
-                operation: 'secret',
-                path,
-                detail: `Environment variable ${reference} is empty.`,
-                cause,
-              }),
-          ),
-        )
-  }
-  if (trimmed.startsWith('env:') || trimmed.startsWith('$')) {
-    return Effect.fail(
-      new AppConfigError({
-        operation: 'secret',
-        path,
-        detail: 'Secret references must use $NAME, ${NAME}, or env:NAME syntax.',
-      }),
-    )
-  }
-  return decodeSecretValue(value).pipe(
-    Effect.mapError(
-      (cause) =>
+  const value = environment[environmentName]
+  return value === undefined || value.length === 0
+    ? Effect.fail(
         new AppConfigError({
           operation: 'secret',
           path,
-          detail: 'Secret value must not be empty.',
-          cause,
+          detail: `Environment variable ${environmentName} is not set.`,
         }),
-    ),
+      )
+    : decodeSecretValue(value).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AppConfigError({
+              operation: 'secret',
+              path,
+              detail: `Environment variable ${environmentName} is empty.`,
+              cause,
+            }),
+        ),
+      )
+}
+
+const policyFor = (
+  connectionId: string,
+  subjectType: 'user' | 'channel' | 'guild' | 'workspace',
+  policies: ReadonlyArray<typeof AccessPolicyRow.Type>,
+  subjects: ReadonlyArray<typeof AccessSubjectRow.Type>,
+): AccessPolicy => {
+  const policy = policies.find(
+    (candidate) =>
+      candidate.connection_id === connectionId && candidate.subject_type === subjectType,
   )
+  if (!policy) return { mode: 'all', ids: [] }
+  return {
+    mode: policy.mode,
+    ids: subjects
+      .filter(
+        (subject) => subject.connection_id === connectionId && subject.subject_type === subjectType,
+      )
+      .map((subject) => subject.platform_subject_id),
+  }
 }
 
-const resolveOptionalSecret = (
-  value: string | undefined,
-  path: string,
-  environment: Readonly<Record<string, string | undefined>>,
-): Effect.Effect<SecretValue | undefined, AppConfigError> =>
-  value === undefined ? Effect.as(Effect.void, undefined) : resolveSecret(value, path, environment)
-
-const normalizeAccessPolicy = (policy: typeof AccessPolicyFile.Type): AccessPolicy =>
-  policy.mode === 'all' ? { mode: 'all', ids: [] } : { mode: policy.mode, ids: policy.ids }
-
-const decodeConfig = (
-  file: AppConfigFile,
-  environment: Readonly<Record<string, string | undefined>>,
-): Effect.Effect<AppConfig, AppConfigError> => {
-  const discord = file.platforms.discord
-  const slack = file.platforms.slack
-  return Effect.gen(function* () {
-    let resolvedDiscord: DiscordPlatformConfig | undefined
-    if (discord) {
-      const credentials = {
-        botToken: yield* resolveSecret(
-          discord.credentials.botToken,
-          'platforms.discord.credentials.botToken',
-          environment,
-        ),
-        applicationId: yield* resolveSecret(
-          discord.credentials.applicationId,
-          'platforms.discord.credentials.applicationId',
-          environment,
-        ),
-      }
-      const publicKey = yield* resolveSecret(
-        discord.credentials.publicKey,
-        'platforms.discord.credentials.publicKey',
-        environment,
-      )
-      resolvedDiscord = {
-        credentials: { ...credentials, publicKey },
-        access: {
-          users: normalizeAccessPolicy(discord.access.users),
-          channels: normalizeAccessPolicy(discord.access.channels),
-          guilds: normalizeAccessPolicy(discord.access.guilds),
-        },
-        respondToGlobalMentions: discord.respondToGlobalMentions ?? false,
-        mentionRoleIds: discord.mentionRoleIds ?? [],
-      }
-    }
-    let resolvedSlack: SlackPlatformConfig | undefined
-    if (slack?.mode === 'socket') {
-      const botToken = yield* resolveSecret(
-        slack.credentials.botToken,
-        'platforms.slack.credentials.botToken',
-        environment,
-      )
-      const appToken = yield* resolveSecret(
-        slack.credentials.appToken,
-        'platforms.slack.credentials.appToken',
-        environment,
-      )
-      const signingSecret = yield* resolveOptionalSecret(
-        slack.credentials.signingSecret,
-        'platforms.slack.credentials.signingSecret',
-        environment,
-      )
-      resolvedSlack = {
-        mode: 'socket',
-        credentials:
-          signingSecret === undefined
-            ? { botToken, appToken }
-            : { botToken, appToken, signingSecret },
-        access: {
-          users: normalizeAccessPolicy(slack.access.users),
-          channels: normalizeAccessPolicy(slack.access.channels),
-          workspaces: normalizeAccessPolicy(slack.access.workspaces),
-        },
-      }
-    } else if (slack?.mode === 'webhook') {
-      const botToken = yield* resolveSecret(
-        slack.credentials.botToken,
-        'platforms.slack.credentials.botToken',
-        environment,
-      )
-      const signingSecret = yield* resolveSecret(
-        slack.credentials.signingSecret,
-        'platforms.slack.credentials.signingSecret',
-        environment,
-      )
-      resolvedSlack = {
-        mode: 'webhook',
-        credentials: { botToken, signingSecret },
-        access: {
-          users: normalizeAccessPolicy(slack.access.users),
-          channels: normalizeAccessPolicy(slack.access.channels),
-          workspaces: normalizeAccessPolicy(slack.access.workspaces),
-        },
-      }
-    }
-    return {
-      models: {
-        primary: file.models.primary,
-        utility: file.models.utility,
-        subagents: file.models.subagents,
-      },
-      platforms: makeConfiguredPlatforms(resolvedDiscord, resolvedSlack),
-      agent: {
-        recentMessageCount: file.agent?.recentMessageCount ?? defaultRecentMessageCount,
-      },
-    }
-  })
-}
-
-export interface LoadAppConfigOptions {
-  readonly path: string
+export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
   readonly environment?: Readonly<Record<string, string | undefined>>
-}
-
-export const loadAppConfig = Effect.fn('loadAppConfig')(function* (
-  options: LoadAppConfigOptions,
-): Effect.fn.Return<AppConfig, AppConfigError, FileSystem.FileSystem> {
-  const fileSystem = yield* FileSystem.FileSystem
-  const environment = options.environment ?? process.env
-  const source = yield* fileSystem.readFileString(options.path).pipe(
-    Effect.mapError(
-      (cause) =>
-        new AppConfigError({
-          operation: 'read',
-          path: options.path,
-          detail: isNotFound(cause)
-            ? 'Friday configuration file was not found.'
-            : 'Friday configuration file could not be read.',
-          cause,
-        }),
+}) {
+  const environment = options?.environment ?? process.env
+  const rows = yield* readRows().pipe(
+    Effect.mapError((cause) =>
+      Schema.isSchemaError(cause)
+        ? new AppConfigError({
+            operation: 'decode',
+            path: 'database',
+            detail: 'Stored Friday configuration is invalid.',
+            cause,
+          })
+        : cause,
     ),
   )
-  const file = yield* decodeAppConfigJson(source).pipe(
+  const candidate = {
+    models: {
+      primary: {
+        provider: rows.agent.primary_provider,
+        modelId: rows.agent.primary_model_id,
+        thinkingLevel: rows.agent.primary_thinking_level,
+      },
+      utility: {
+        provider: rows.agent.utility_provider,
+        modelId: rows.agent.utility_model_id,
+        thinkingLevel: rows.agent.utility_thinking_level,
+      },
+      subagents: rows.profiles.map((profile) => ({
+        name: profile.name,
+        description: profile.description,
+        model: { provider: profile.provider, modelId: profile.model_id },
+        thinkingLevel: profile.thinking_level,
+      })),
+    },
+    platforms: {
+      discord: yield* Effect.forEach(rows.discord, (connection) =>
+        resolveSecret(
+          environment,
+          connection.bot_token_env,
+          `platforms.${connection.connection_id}.credentials.botToken`,
+        ).pipe(
+          Effect.map((botToken) => ({
+            connectionId: connection.connection_id,
+            platform: 'discord',
+            name: connection.name,
+            credentials: {
+              botToken,
+              applicationId: connection.application_id,
+              publicKey: connection.public_key,
+            },
+            access: {
+              users: policyFor(connection.connection_id, 'user', rows.policies, rows.subjects),
+              channels: policyFor(
+                connection.connection_id,
+                'channel',
+                rows.policies,
+                rows.subjects,
+              ),
+              guilds: policyFor(connection.connection_id, 'guild', rows.policies, rows.subjects),
+            },
+            respondToGlobalMentions: connection.respond_to_global_mentions === 1,
+            mentionRoleIds: rows.mentionRoles
+              .filter((role) => role.connection_id === connection.connection_id)
+              .map((role) => role.role_id),
+          })),
+        ),
+      ),
+      slack: [],
+    },
+    agent: { recentMessageCount: rows.agent.recent_message_count },
+  }
+  return yield* decodeAppConfig(candidate).pipe(
     Effect.mapError(
       (cause) =>
         new AppConfigError({
           operation: 'decode',
-          path: options.path,
-          detail: 'Friday configuration is not valid JSON or does not match the expected schema.',
+          path: 'database',
+          detail: 'Stored Friday configuration is invalid.',
           cause,
         }),
     ),
   )
-  return yield* decodeConfig(file, environment)
 })

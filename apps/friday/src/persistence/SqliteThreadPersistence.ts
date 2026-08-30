@@ -3,8 +3,10 @@ import {
   ActivityId,
   AgentThread,
   PlatformKind,
+  PlatformConnectionId,
   PlatformConversationId,
   type PlatformKind as PlatformKindType,
+  type PlatformConnectionId as PlatformConnectionIdType,
   type PlatformConversationId as PlatformConversationIdType,
   Thread,
   ThreadId,
@@ -35,6 +37,7 @@ const encodeActivityJson = Schema.encodeEffect(ActivityJson)
 const GetThreadRequest = Schema.Struct({ threadId: ThreadId })
 const FindPlatformThreadRequest = Schema.Struct({
   platform: PlatformKind,
+  connectionId: PlatformConnectionId,
   conversationId: PlatformConversationId,
 })
 const ListAgentThreadsRequest = Schema.Struct({ parentThreadId: ThreadId })
@@ -161,12 +164,13 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
   const findPlatformThread = SqlSchema.findOneOption({
     Request: FindPlatformThreadRequest,
     Result: PersistedThreadRow,
-    execute: ({ platform, conversationId }) => sql`
+    execute: ({ platform, connectionId, conversationId }) => sql`
       SELECT payload_json AS payload
       FROM threads
       WHERE audience = 'user'
         AND status = 'active'
         AND json_extract(payload_json, '$.conversationBinding.platform') = ${platform}
+        AND json_extract(payload_json, '$.conversationBinding.connectionId') = ${connectionId}
         AND json_extract(payload_json, '$.conversationBinding.conversationId') = ${conversationId}
       LIMIT 1
     `,
@@ -238,6 +242,7 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
 
   const findActivePlatformThread = (lookup: {
     readonly platform: PlatformKindType
+    readonly connectionId: PlatformConnectionIdType
     readonly conversationId: PlatformConversationIdType
   }) =>
     findPlatformThread(lookup).pipe(

@@ -24,6 +24,7 @@ const channelThread = decodeChannelThread({
   channelContext: { name: 'task-tool', description: '' },
   conversationBinding: {
     platform: 'discord',
+    connectionId: 'discord',
     channelId: 'channel-task-tool',
     sourceMessageId: 'message-task-tool',
     conversationId: 'conversation-task-tool',

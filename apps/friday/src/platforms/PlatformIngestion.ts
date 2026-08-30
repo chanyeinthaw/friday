@@ -67,10 +67,11 @@ export const PlatformIngestionLive = Layer.effect(
 
     return PlatformIngestion.of({
       ingest: (input, createThread, loadInitialContext) => {
-        const key = `${input.binding.platform}:${input.binding.channelId}`
+        const key = `${input.binding.connectionId}:${input.binding.channelId}`
         const annotations = {
           component: 'ingestion',
           platform: input.binding.platform,
+          connectionId: input.binding.connectionId,
           channelId: input.binding.channelId,
           conversationId: input.binding.conversationId,
           platformMessageId: input.message.platformMessageId,
@@ -82,6 +83,7 @@ export const PlatformIngestionLive = Layer.effect(
             Effect.gen(function* () {
               const foundThread = yield* persistence.findPlatformThread({
                 platform: input.binding.platform,
+                connectionId: input.binding.connectionId,
                 conversationId: input.binding.conversationId,
               })
               const created = Option.isNone(foundThread)

@@ -15,7 +15,7 @@ import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiTextGeneration } from './harness/pi/PiTextGeneration.ts'
 import { TextGeneration } from './harness/TextGeneration.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
-import { ThreadPersistenceLive } from './persistence/Live.ts'
+import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
@@ -83,13 +83,15 @@ const ThreadRuntimesLive = Layer.effect(
   }),
 )
 
+const AppConfigConfiguredLive = AppConfigLive.pipe(Layer.provide(FridaySqliteLive))
+
 const CoreLive = Layer.mergeAll(
   ThreadPersistenceLive,
   PiModelRuntimeLive,
   BunCrypto.layer,
   BunFileSystem.layer,
   PlatformRegistryLive,
-  AppConfigLive,
+  AppConfigConfiguredLive,
   SystemPromptTemplatesLive,
   TaskToolDispatcherLive,
 )

@@ -21,6 +21,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   channelContext: { name: 'title', description: '' },
   conversationBinding: {
     platform: 'test',
+    connectionId: 'test',
     channelId: 'channel-title',
     sourceMessageId: 'message-title',
     conversationId: 'conversation-title',
@@ -37,6 +38,7 @@ it.effect('keeps generated titles unchanged and reports platform-wide task count
       const titles: Array<string> = []
       const activity: Array<{ taskId: string; active: boolean }> = []
       const platform: PlatformAdapter<never> = {
+        connectionId: thread.conversationBinding.connectionId,
         kind: 'test',
         publish: () => Effect.void,
         acknowledge: () => Effect.void,

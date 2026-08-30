@@ -27,6 +27,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   },
   conversationBinding: {
     platform: 'discord',
+    connectionId: 'discord',
     channelId: 'channel-system-prompt',
     sourceMessageId: 'message-system-prompt',
     conversationId: 'conversation-system-prompt',
@@ -69,7 +70,10 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, '`primary`: General delegated work.')
     assert.include(prompt, 'Model: `anthropic/claude-sonnet`')
     assert.include(prompt, 'Thinking: `max`')
+    assert.include(prompt, '- Default')
     assert.include(prompt, '`fast`: Quick investigations.')
+    assert.include(prompt, 'workspace cleanup apply <proposal-id> --json')
+    assert.include(prompt, '.friday/bin/friday')
     assert.include(prompt, 'Messages may come from different people')
     assert.include(prompt, 'Do not assume that a new message was written by the same person')
     assert.include(prompt, 'Background tasks are private implementation details')

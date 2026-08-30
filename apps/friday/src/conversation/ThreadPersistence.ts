@@ -2,6 +2,7 @@ import type {
   Activity,
   AgentThread,
   PlatformKind,
+  PlatformConnectionId,
   PlatformConversationId,
   HarnessSession,
   HarnessTurnId,
@@ -22,6 +23,7 @@ export type ThreadPersistenceError = PersistenceError
 
 export interface PlatformThreadLookup {
   readonly platform: PlatformKind
+  readonly connectionId: PlatformConnectionId
   readonly conversationId: PlatformConversationId
 }
 

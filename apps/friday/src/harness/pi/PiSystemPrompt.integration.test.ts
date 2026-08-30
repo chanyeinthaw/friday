@@ -37,6 +37,7 @@ const channelThread = decodeChannelThread({
   channelContext: { name: 'prompt-test', description: 'Prompt integration tests.' },
   conversationBinding: {
     platform: 'discord',
+    connectionId: 'discord',
     channelId: 'channel-prompt-test',
     sourceMessageId: 'message-prompt-test',
     conversationId: 'conversation-prompt-test',

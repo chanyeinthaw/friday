@@ -1,4 +1,4 @@
-import type { ConversationBinding } from '@friday/contracts/conversation'
+import type { ConversationBinding, PlatformConnectionId } from '@friday/contracts/conversation'
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/require-safety-comment-for-type-assertion -- Chat SDK's concrete generic message types are adapted to the narrow capabilities Friday uses. */
 
 import { emoji, type EmojiValue } from 'chat'
@@ -78,6 +78,7 @@ const publicationError = (operation: ChatSdkPublicationError['operation'], cause
 
 export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
   (
+    connectionId: PlatformConnectionId,
     kind: ConversationBinding['platform'],
     chat: ChatSdkPublicationSource,
     options: ChatSdkPlatformOptions = {},
@@ -108,6 +109,7 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
       }
 
       return {
+        connectionId,
         kind,
         publish: (publication: PlatformPublication) =>
           Effect.tryPromise({

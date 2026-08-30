@@ -28,6 +28,7 @@ export interface ChatSdkLifecycleSource {
 }
 
 export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
+  readonly connectionId: string
   readonly chat: ChatSdkLifecycleSource
   readonly normalizeInboundMessage?: (
     thread: ChatSdkThreadProjectionSource,
@@ -43,6 +44,7 @@ export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
 }
 
 interface ChatSdkMessageHandlerOptions<InboundError, InboundServices> {
+  readonly connectionId: string
   readonly context: Context.Context<InboundServices>
   readonly scope: Scope.Scope
   readonly normalizeInboundMessage?: ChatSdkLifecycleOptions<
@@ -83,7 +85,7 @@ const makeChatSdkMessageHandler = <InboundError, InboundServices>(
       const input = options.normalizeInboundMessage
         ? yield* options.normalizeInboundMessage(thread, message)
         : yield* Effect.try({
-            try: () => projectChatSdkMessage(thread, message),
+            try: () => projectChatSdkMessage(options.connectionId, thread, message),
             catch: callbackError,
           })
       yield* Effect.logInfo('platform.message.accepted').pipe(
@@ -158,6 +160,7 @@ export const startChatSdkLifecycle = Effect.fn('startChatSdkLifecycle')(function
   options: ChatSdkLifecycleOptions<InboundError, InboundServices>,
 ): ChatSdkLifecycleStart<InboundServices> {
   const handler = makeChatSdkMessageHandler({
+    connectionId: options.connectionId,
     context: yield* Effect.context<InboundServices>(),
     scope: yield* Effect.scope,
     normalizeInboundMessage: options.normalizeInboundMessage,

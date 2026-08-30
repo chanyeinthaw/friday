@@ -1,10 +1,12 @@
 /* oxlint-disable effecttsgo/process-env, effecttsgo/strict-effect-provide -- This executable is the application entry point, provides the complete live layer once, and selects the bootstrap log level from NODE_ENV. */
 
 import { BunRuntime } from '@effect/platform-bun'
+import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
 
 import {
   FRIDAY_BIN_DIRECTORY,
@@ -17,7 +19,26 @@ import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
 import { withFridayLogging } from './logging/Live.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
-import { FridaySqliteLive } from './persistence/Live.ts'
+import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
+import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
+import {
+  WorkspaceCleanupNotifications,
+  WorkspaceCleanupNotificationsLive,
+} from './workspaces/WorkspaceCleanupNotifications.ts'
+
+const WorkspaceCleanupConfiguredLive = WorkspaceCleanupLive.pipe(
+  Layer.provide(Layer.merge(FridaySqliteLive, ThreadPersistenceLive)),
+)
+const WorkspaceCleanupNotificationsConfiguredLive = WorkspaceCleanupNotificationsLive.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      WorkspaceCleanupConfiguredLive,
+      FridayLive,
+      FridaySqliteLive,
+      ThreadPersistenceLive,
+    ),
+  ),
+)
 
 const start = Effect.scoped(
   Effect.gen(function* () {
@@ -29,6 +50,8 @@ const start = Effect.scoped(
     )
     yield* fileSystem.chmod(FRIDAY_CLI_PATH, 0o755)
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
+    const cleanupNotifications = yield* WorkspaceCleanupNotifications
+    yield* cleanupNotifications.run.pipe(Effect.forkScoped)
     yield* Effect.logInfo('application.started').pipe(
       Effect.annotateLogs({
         component: 'application',
@@ -37,12 +60,21 @@ const start = Effect.scoped(
     )
     return yield* Effect.never
   }),
-).pipe(Effect.provide(FridayLive))
+).pipe(Effect.provide(WorkspaceCleanupNotificationsConfiguredLive), Effect.provide(FridayLive))
 
 const application = Effect.scoped(
   withFridayLogging(
     runFridayCli(process.argv.slice(2), {
       start,
+      applyWorkspaceCleanup: (action, currentWorkingDirectory) =>
+        WorkspaceCleanup.pipe(
+          Effect.flatMap((cleanup) => cleanup.apply(action.proposalId, currentWorkingDirectory)),
+          Effect.provide(WorkspaceCleanupLive),
+          Effect.provide(ThreadPersistenceLive),
+          Effect.provide(FridaySqliteLive),
+          Effect.provide(BunFileSystem.layer),
+          Effect.provide(BunCrypto.layer),
+        ),
       ensureWorktree: (action) => {
         const workspaceRoot = action.workspace ?? process.env.FRIDAY_WORKSPACE_ROOT ?? process.cwd()
         return action.ref === undefined

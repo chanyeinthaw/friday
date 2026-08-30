@@ -8,6 +8,7 @@ import { searchDiscordMessages } from './DiscordMessageSearch.ts'
 
 const binding = Schema.decodeSync(ConversationBinding)({
   platform: 'discord',
+  connectionId: 'discord',
   channelId: 'discord:guild-1:channel-1',
   sourceMessageId: 'message-3',
   conversationId: 'discord:guild-1:channel-1:thread-1',

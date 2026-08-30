@@ -64,6 +64,7 @@ export interface PlatformAgentActivity {
 }
 
 export interface PlatformAdapter<PlatformError> {
+  readonly connectionId: ConversationBinding['connectionId']
   readonly kind: ConversationBinding['platform']
   readonly publish: (publication: PlatformPublication) => Effect.Effect<void, PlatformError>
   readonly acknowledge: (target: PlatformMessageTarget) => Effect.Effect<void, PlatformError>

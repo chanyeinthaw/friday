@@ -1,5 +1,6 @@
 import {
   PlatformChannelId,
+  PlatformConnectionId,
   PlatformMessageId,
   PlatformKind,
   PlatformConversationId,
@@ -13,6 +14,7 @@ import * as Schema from 'effect/Schema'
 import type { PlatformInput } from '../PlatformAdapter.ts'
 
 const decodePlatform = Schema.decodeUnknownSync(PlatformKind)
+const decodeConnectionId = Schema.decodeUnknownSync(PlatformConnectionId)
 const decodeChannelId = Schema.decodeUnknownSync(PlatformChannelId)
 const decodeMessageId = Schema.decodeUnknownSync(PlatformMessageId)
 const decodeThreadId = Schema.decodeUnknownSync(PlatformConversationId)
@@ -40,11 +42,13 @@ export const projectChatSdkContextMessage = (
 })
 
 export const projectChatSdkMessage = (
+  connectionId: string,
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
 ): PlatformInput => {
   const binding: ConversationBinding = {
     platform: decodePlatform(thread.adapter.name),
+    connectionId: decodeConnectionId(connectionId),
     channelId: decodeChannelId(thread.channelId),
     sourceMessageId: decodeMessageId(message.id),
     conversationId: decodeThreadId(thread.id),

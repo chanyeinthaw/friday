@@ -3,6 +3,10 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import { RepositoryUrl, type ManagedWorktree } from './repositories/RepositoryWorktrees.ts'
+import {
+  WorkspaceCleanupProposalId,
+  type WorkspaceCleanupProposal,
+} from './workspaces/WorkspaceCleanup.ts'
 
 export const FRIDAY_VERSION = '0.1.0'
 
@@ -11,10 +15,12 @@ export const helpText = `Friday — your personal agent
 Usage:
   friday [command]
   friday worktree ensure <repository-url> [--ref <ref>] [--workspace <path>] [--json]
+  friday workspace cleanup apply <proposal-id> [--json]
 
 Commands:
   start             Start Friday (default)
-  worktree ensure   Ensure a reusable repository worktree for the current channel workspace
+  worktree ensure          Ensure a reusable repository worktree for the current channel workspace
+  workspace cleanup apply  Apply an approved workspace cleanup proposal
 
 Options:
   -h, --help     Show this help
@@ -25,6 +31,11 @@ export type FridayCliAction =
   | { readonly type: 'help' }
   | { readonly type: 'start' }
   | { readonly type: 'version' }
+  | {
+      readonly type: 'workspace-cleanup-apply'
+      readonly proposalId: WorkspaceCleanupProposalId
+      readonly json: boolean
+    }
   | {
       readonly type: 'worktree-ensure'
       readonly url: RepositoryUrl
@@ -43,6 +54,7 @@ export class FridayCliError extends Schema.Error<FridayCliError>('FridayCliError
 }
 
 const decodeRepositoryUrl = Schema.decodeUnknownEffect(RepositoryUrl)
+const decodeWorkspaceCleanupProposalId = Schema.decodeUnknownEffect(WorkspaceCleanupProposalId)
 
 const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
   arguments_: ReadonlyArray<string>,
@@ -83,6 +95,23 @@ const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
   return { type: 'worktree-ensure' as const, url, json }
 })
 
+const parseWorkspaceCleanupApply = Effect.fn('Cli.parseWorkspaceCleanupApply')(function* (
+  arguments_: ReadonlyArray<string>,
+) {
+  const proposalArgument = arguments_[3]
+  if (!proposalArgument || proposalArgument.startsWith('-')) {
+    return yield* new FridayCliError({ argument: arguments_.join(' ') })
+  }
+  const proposalId = yield* decodeWorkspaceCleanupProposalId(proposalArgument).pipe(
+    Effect.mapError(() => new FridayCliError({ argument: arguments_.join(' ') })),
+  )
+  const trailing = arguments_.slice(4)
+  if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
+    return yield* new FridayCliError({ argument: arguments_.join(' ') })
+  }
+  return { type: 'workspace-cleanup-apply' as const, proposalId, json: trailing[0] === '--json' }
+})
+
 export const parseFridayCli = (
   arguments_: ReadonlyArray<string>,
 ): Effect.Effect<FridayCliAction, FridayCliError> => {
@@ -98,8 +127,16 @@ export const parseFridayCli = (
   if (arguments_[0] === 'worktree' && arguments_[1] === 'ensure') {
     return parseWorktreeEnsure(arguments_)
   }
+  if (arguments_[0] === 'workspace' && arguments_[1] === 'cleanup' && arguments_[2] === 'apply') {
+    return parseWorkspaceCleanupApply(arguments_)
+  }
   return Effect.fail(new FridayCliError({ argument: arguments_.join(' ') }))
 }
+
+const renderCleanup = (proposal: WorkspaceCleanupProposal): string => `Workspace cleanup applied
+  Proposal: ${proposal.id}
+  Worktrees: ${proposal.resources.length}
+  Reclaimed: ${proposal.estimatedBytes} bytes`
 
 const renderWorktree = (worktree: ManagedWorktree): string => `Repository worktree ready
   URL: ${worktree.url}
@@ -108,15 +145,19 @@ const renderWorktree = (worktree: ManagedWorktree): string => `Repository worktr
   Base: ${worktree.baseRef}
   Reused: ${worktree.reused ? 'yes' : 'no'}`
 
-export const runFridayCli = <E, WorktreeError>(
+export const runFridayCli = <E, WorktreeError, CleanupError>(
   arguments_: ReadonlyArray<string>,
   options: {
     readonly start: Effect.Effect<never, E>
     readonly ensureWorktree: (
       action: Extract<FridayCliAction, { readonly type: 'worktree-ensure' }>,
     ) => Effect.Effect<ManagedWorktree, WorktreeError>
+    readonly applyWorkspaceCleanup: (
+      action: Extract<FridayCliAction, { readonly type: 'workspace-cleanup-apply' }>,
+      currentWorkingDirectory: string,
+    ) => Effect.Effect<WorkspaceCleanupProposal, CleanupError>
   },
-): Effect.Effect<void, FridayCliError | E | WorktreeError> =>
+): Effect.Effect<void, FridayCliError | E | WorktreeError | CleanupError> =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
     switch (action.type) {
@@ -126,6 +167,11 @@ export const runFridayCli = <E, WorktreeError>(
       case 'version':
         yield* Console.log(FRIDAY_VERSION)
         return
+      case 'workspace-cleanup-apply': {
+        const result = yield* options.applyWorkspaceCleanup(action, process.cwd())
+        yield* Console.log(action.json ? JSON.stringify(result) : renderCleanup(result))
+        return
+      }
       case 'worktree-ensure': {
         const result = yield* options.ensureWorktree(action)
         yield* Console.log(action.json ? JSON.stringify(result) : renderWorktree(result))

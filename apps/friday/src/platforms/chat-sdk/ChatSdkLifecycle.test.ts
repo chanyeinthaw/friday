@@ -1,5 +1,5 @@
 import { assert, it } from '@effect/vitest'
-import { PlatformConversationId } from '@friday/contracts/conversation'
+import { PlatformConnectionId, PlatformConversationId } from '@friday/contracts/conversation'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -17,6 +17,7 @@ import {
 } from './MessageProjection.ts'
 
 const decodeConversationId = Schema.decodeSync(PlatformConversationId)
+const discordConnectionId = Schema.decodeSync(PlatformConnectionId)('discord')
 
 const isChatSdkCallbackError = Schema.is(ChatSdkCallbackError)
 
@@ -40,6 +41,7 @@ it.effect('keeps effectful authorization failures inside the callback error chan
     yield* Effect.scoped(
       Effect.gen(function* () {
         yield* startChatSdkLifecycle({
+          connectionId: 'discord',
           chat,
           shouldHandleMessage: () =>
             Effect.fail(
@@ -103,12 +105,13 @@ it.effect('uses platform-specific inbound normalization before ingestion', () =>
     yield* Effect.scoped(
       Effect.gen(function* () {
         yield* startChatSdkLifecycle({
+          connectionId: 'discord',
           chat,
           normalizeInboundMessage: (thread, message) =>
             Effect.succeed({
-              ...projectChatSdkMessage(thread, message),
+              ...projectChatSdkMessage('discord', thread, message),
               binding: {
-                ...projectChatSdkMessage(thread, message).binding,
+                ...projectChatSdkMessage('discord', thread, message).binding,
                 conversationId: decodeConversationId('normalized-thread'),
               },
             }),
@@ -163,6 +166,7 @@ it.effect('owns Chat SDK initialization, callbacks, and shutdown in scope', () =
     yield* Effect.scoped(
       Effect.gen(function* () {
         yield* startChatSdkLifecycle({
+          connectionId: 'discord',
           chat,
           onInboundMessage: (inbound) =>
             Effect.sync(() => {
@@ -252,10 +256,11 @@ it.effect(
       let callbackPromise: Promise<void> = Promise.resolve()
       const outcomeFiber = yield* Effect.scoped(
         Effect.gen(function* () {
-          const platform = yield* makeChatSdkPlatform('discord', chat, {
+          const platform = yield* makeChatSdkPlatform(discordConnectionId, 'discord', chat, {
             typingRefreshInterval: '1 second',
           })
           yield* startChatSdkLifecycle({
+            connectionId: 'discord',
             chat,
             // The inbound worker never completes: it keeps a finalizer marker
             // installed while a typing refresh loop runs underneath it.

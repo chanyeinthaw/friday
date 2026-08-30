@@ -64,6 +64,7 @@ liveTest(
       channelContext: { name: 'Friday live test', description: '' },
       conversationBinding: {
         platform: 'discord',
+        connectionId: 'discord',
         channelId: 'live-channel',
         sourceMessageId: 'live-message',
         conversationId: 'live-thread',
@@ -174,6 +175,7 @@ liveCompactionTest(
       channelContext: { name: 'Friday live test', description: '' },
       conversationBinding: {
         platform: 'discord',
+        connectionId: 'discord',
         channelId: 'live-compaction-channel',
         sourceMessageId: 'live-compaction-message',
         conversationId: 'live-compaction-thread',

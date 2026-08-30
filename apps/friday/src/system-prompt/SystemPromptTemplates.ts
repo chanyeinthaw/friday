@@ -83,6 +83,7 @@ export const makeSystemPromptTemplates = (templates: {
         channelDescription: context.thread.channelContext.description || '(No channel description)',
         currentWorkingDirectory: context.thread.workingDirectory,
         availableAgentModels: renderAvailableModels(context.availableAgentModels),
+        fridayCliPath: FRIDAY_CLI_PATH,
       }),
     renderBootstrapAgent: (currentWorkingDirectory) =>
       renderTemplate('bootstrap-agent', templates.bootstrapAgent, {

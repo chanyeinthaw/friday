@@ -33,6 +33,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   channelContext: { name: 'Friday test channel', description: '' },
   conversationBinding: {
     platform: 'discord',
+    connectionId: 'discord',
     channelId: 'channel-1',
     sourceMessageId: 'message-1',
     conversationId: 'platform-conversation-1',
@@ -152,6 +153,7 @@ test('finds a Friday Thread by its Platform conversation', async () => {
     yield* persistence.createThread(thread)
     const stored = yield* persistence.findPlatformThread({
       platform: thread.conversationBinding.platform,
+      connectionId: thread.conversationBinding.connectionId,
       conversationId: thread.conversationBinding.conversationId,
     })
     expect(Option.getOrNull(stored)?.id).toBe(thread.id)

@@ -17,6 +17,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   channelContext: { name: 'messages', description: '' },
   conversationBinding: {
     platform: 'discord',
+    connectionId: 'discord',
     channelId: 'discord:guild:channel',
     sourceMessageId: 'message-1',
     conversationId: 'discord:guild:channel:thread',

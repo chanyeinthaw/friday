@@ -26,102 +26,119 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   const platforms = yield* PlatformRegistry
   const ingestion = yield* PlatformIngestion
   const configuration = yield* AppConfig
-  const discordConfig = configuration.platforms.discord
-  if (!discordConfig) {
+  const connections = configuration.platforms.discord
+  if (connections.length === 0) {
     yield* Effect.logDebug('discord.disabled').pipe(Effect.annotateLogs({ component: 'discord' }))
-    return null
+    return []
   }
 
-  const state = yield* makeSqliteChatStateAdapter()
-  const discord = yield* Effect.try({
-    try: () =>
-      createDiscordAdapter({
-        botToken: String(discordConfig.credentials.botToken),
-        applicationId: String(discordConfig.credentials.applicationId),
-        publicKey: String(discordConfig.credentials.publicKey),
-        mentionRoleIds: [...discordConfig.mentionRoleIds],
-        respondToChannelIds: discordRespondToChannelIds(discordConfig.access.channels),
-        respondToGlobalMentions: discordConfig.respondToGlobalMentions,
-      }),
-    catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
-  })
-  const chat = yield* Effect.try({
-    try: () =>
-      new Chat({
-        userName: 'Friday',
-        // SAFETY: Chat SDK 4.38's generic Adapter declaration is not exact-optional
-        // compatible with its concrete DiscordAdapter declaration under this repo's TS settings.
-        adapters: { discord: discord as never },
-        state,
-        concurrency: 'concurrent',
-      }),
-    catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-chat', cause }),
-  })
-  const bootstrapOptions: DiscordThreadBootstrapOptions = {
-    discord,
-    model: configuration.models.primary,
-    thinkingLevel: configuration.models.primary.thinkingLevel,
-  }
-  const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
-  const botToken = String(discordConfig.credentials.botToken)
-  const platform = yield* makeChatSdkPlatform('discord', chat, {
-    setConversationTitle: (title) => setDiscordConversationTitle(discord, botToken, title),
-    setAgentActivity: makeDiscordAgentActivity(discord, botToken),
-    searchMessages: (query) => searchDiscordMessages(discord, query),
-  })
-  yield* platforms.register(platform)
-  yield* startChatSdkLifecycle({
-    chat,
-    normalizeInboundMessage: (thread, message) => projectDiscordMessage(discord, thread, message),
-    shouldHandleMessage: (thread, message) =>
-      Effect.try({
-        try: () => {
-          const location = discord.decodeThreadId(thread.id)
-          const guildAllowed = isAllowedByPolicy(location.guildId, discordConfig.access.guilds)
-          return {
-            allowed:
-              guildAllowed &&
-              isAllowedByAccess({
-                userId: message.author.userId,
-                channelId: location.channelId,
-                userPolicy: discordConfig.access.users,
-                channelPolicy: discordConfig.access.channels,
-              }),
-            location,
-          }
-        },
-        catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
-      }).pipe(
-        Effect.tap(({ allowed, location }) =>
-          allowed
-            ? Effect.logDebug('discord.message.allowed')
-            : Effect.logDebug('discord.message.ignored').pipe(
-                Effect.annotateLogs({
-                  component: 'discord',
-                  guildId: location.guildId,
-                  channelId: location.channelId,
-                  userId: message.author.userId,
-                }),
+  return yield* Effect.forEach(
+    connections,
+    (discordConfig) =>
+      Effect.gen(function* () {
+        const state = yield* makeSqliteChatStateAdapter(`friday:${discordConfig.connectionId}`)
+        const discord = yield* Effect.try({
+          try: () =>
+            createDiscordAdapter({
+              botToken: String(discordConfig.credentials.botToken),
+              applicationId: String(discordConfig.credentials.applicationId),
+              publicKey: String(discordConfig.credentials.publicKey),
+              mentionRoleIds: [...discordConfig.mentionRoleIds],
+              respondToChannelIds: discordRespondToChannelIds(discordConfig.access.channels),
+              respondToGlobalMentions: discordConfig.respondToGlobalMentions,
+            }),
+          catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
+        })
+        const chat = yield* Effect.try({
+          try: () =>
+            new Chat({
+              userName: 'Friday',
+              // SAFETY: Chat SDK 4.38's generic Adapter declaration is not exact-optional
+              // compatible with its concrete DiscordAdapter declaration under this repo's TS settings.
+              adapters: { discord: discord as never },
+              state,
+              concurrency: 'concurrent',
+            }),
+          catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-chat', cause }),
+        })
+        const bootstrapOptions: DiscordThreadBootstrapOptions = {
+          discord,
+          model: configuration.models.primary,
+          thinkingLevel: configuration.models.primary.thinkingLevel,
+        }
+        const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
+        const botToken = String(discordConfig.credentials.botToken)
+        const platform = yield* makeChatSdkPlatform(discordConfig.connectionId, 'discord', chat, {
+          setConversationTitle: (title) => setDiscordConversationTitle(discord, botToken, title),
+          setAgentActivity: makeDiscordAgentActivity(discord, botToken),
+          searchMessages: (query) => searchDiscordMessages(discord, query),
+        })
+        yield* platforms.register(platform)
+        yield* startChatSdkLifecycle({
+          connectionId: discordConfig.connectionId,
+          chat,
+          normalizeInboundMessage: (thread, message) =>
+            projectDiscordMessage(discordConfig.connectionId, discord, thread, message),
+          shouldHandleMessage: (thread, message) =>
+            Effect.try({
+              try: () => {
+                const location = discord.decodeThreadId(thread.id)
+                const guildAllowed = isAllowedByPolicy(
+                  location.guildId,
+                  discordConfig.access.guilds,
+                )
+                return {
+                  allowed:
+                    guildAllowed &&
+                    isAllowedByAccess({
+                      userId: message.author.userId,
+                      channelId: location.channelId,
+                      userPolicy: discordConfig.access.users,
+                      channelPolicy: discordConfig.access.channels,
+                    }),
+                  location,
+                }
+              },
+              catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
+            }).pipe(
+              Effect.tap(({ allowed, location }) =>
+                allowed
+                  ? Effect.logDebug('discord.message.allowed')
+                  : Effect.logDebug('discord.message.ignored').pipe(
+                      Effect.annotateLogs({
+                        component: 'discord',
+                        guildId: location.guildId,
+                        channelId: location.channelId,
+                        userId: message.author.userId,
+                      }),
+                    ),
               ),
-        ),
-        Effect.map(({ allowed }) => allowed),
-      ),
-    onInboundMessage: (input) =>
-      ingestion.ingest(input, bootstrap, (initialInput) =>
-        loadDiscordInitialContext(discord, configuration.agent.recentMessageCount, initialInput),
-      ),
-  })
-  yield* startDiscordGateway(discord)
-  yield* Effect.logInfo('discord.started').pipe(
-    Effect.annotateLogs({
-      component: 'discord',
-      guildAccessMode: discordConfig.access.guilds.mode,
-      guildAccessCount: discordConfig.access.guilds.ids.length,
-      channelAccessMode: discordConfig.access.channels.mode,
-      channelAccessCount: discordConfig.access.channels.ids.length,
-      userAccessMode: discordConfig.access.users.mode,
-      userAccessCount: discordConfig.access.users.ids.length,
-    }),
+              Effect.map(({ allowed }) => allowed),
+            ),
+          onInboundMessage: (input) =>
+            ingestion.ingest(input, bootstrap, (initialInput) =>
+              loadDiscordInitialContext(
+                discord,
+                configuration.agent.recentMessageCount,
+                initialInput,
+              ),
+            ),
+        })
+        yield* startDiscordGateway(discord)
+        yield* Effect.logInfo('discord.started').pipe(
+          Effect.annotateLogs({
+            component: 'discord',
+            connectionId: discordConfig.connectionId,
+            guildAccessMode: discordConfig.access.guilds.mode,
+            guildAccessCount: discordConfig.access.guilds.ids.length,
+            channelAccessMode: discordConfig.access.channels.mode,
+            channelAccessCount: discordConfig.access.channels.ids.length,
+            userAccessMode: discordConfig.access.users.mode,
+            userAccessCount: discordConfig.access.users.ids.length,
+          }),
+        )
+        return { connectionId: discordConfig.connectionId, platform }
+      }),
+    { concurrency: 'unbounded' },
   )
-  return { platform }
 })

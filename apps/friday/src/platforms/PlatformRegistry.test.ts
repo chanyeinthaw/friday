@@ -1,5 +1,5 @@
 import { assert, it } from '@effect/vitest'
-import { ConversationBinding } from '@friday/contracts/conversation'
+import { ConversationBinding, PlatformConnectionId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
@@ -8,12 +8,16 @@ import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
 const discordBinding = Schema.decodeSync(ConversationBinding)({
   platform: 'discord',
+  connectionId: 'discord',
   channelId: 'channel-1',
   sourceMessageId: 'message-1',
   conversationId: 'thread-1',
 })
+const decodePlatformConnectionId = Schema.decodeSync(PlatformConnectionId)
+
 const slackBinding = Schema.decodeSync(ConversationBinding)({
   platform: 'slack',
+  connectionId: 'slack',
   channelId: 'channel-2',
   sourceMessageId: 'message-2',
   conversationId: 'thread-2',
@@ -62,6 +66,7 @@ const makePlatform = (
   events: Array<string>,
   label: string = kind,
 ): PlatformAdapter<never> => ({
+  connectionId: decodePlatformConnectionId(kind),
   kind,
   publish: ({ text }) =>
     Effect.sync(() => events.push(label === kind ? `${kind}:${text}` : `${label}:${kind}:${text}`)),
