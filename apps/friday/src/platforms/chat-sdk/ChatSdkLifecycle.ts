@@ -29,6 +29,10 @@ export interface ChatSdkLifecycleSource {
 
 export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
   readonly chat: ChatSdkLifecycleSource
+  readonly normalizeInboundMessage?: (
+    thread: ChatSdkThreadProjectionSource,
+    message: ChatSdkMessageProjectionSource,
+  ) => Effect.Effect<PlatformInput, ChatSdkCallbackError>
   readonly shouldHandleMessage?: (
     thread: ChatSdkThreadProjectionSource,
     message: ChatSdkMessageProjectionSource,
@@ -41,6 +45,10 @@ export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
 interface ChatSdkMessageHandlerOptions<InboundError, InboundServices> {
   readonly context: Context.Context<InboundServices>
   readonly scope: Scope.Scope
+  readonly normalizeInboundMessage?: ChatSdkLifecycleOptions<
+    InboundError,
+    InboundServices
+  >['normalizeInboundMessage']
   readonly shouldHandleMessage?: ChatSdkLifecycleOptions<
     InboundError,
     InboundServices
@@ -72,10 +80,12 @@ const makeChatSdkMessageHandler = <InboundError, InboundServices>(
         : true
       if (!shouldHandle) return yield* Effect.void
 
-      const input = yield* Effect.try({
-        try: () => projectChatSdkMessage(thread, message),
-        catch: callbackError,
-      })
+      const input = options.normalizeInboundMessage
+        ? yield* options.normalizeInboundMessage(thread, message)
+        : yield* Effect.try({
+            try: () => projectChatSdkMessage(thread, message),
+            catch: callbackError,
+          })
       yield* Effect.logInfo('platform.message.accepted').pipe(
         Effect.annotateLogs({
           component: 'chat-sdk',
@@ -150,6 +160,7 @@ export const startChatSdkLifecycle = Effect.fn('startChatSdkLifecycle')(function
   const handler = makeChatSdkMessageHandler({
     context: yield* Effect.context<InboundServices>(),
     scope: yield* Effect.scope,
+    normalizeInboundMessage: options.normalizeInboundMessage,
     shouldHandleMessage: options.shouldHandleMessage,
     onInboundMessage: options.onInboundMessage,
   })

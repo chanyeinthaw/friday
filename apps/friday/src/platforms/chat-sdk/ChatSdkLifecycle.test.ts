@@ -1,4 +1,5 @@
 import { assert, it } from '@effect/vitest'
+import { PlatformConversationId } from '@friday/contracts/conversation'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -9,10 +10,13 @@ import { TestClock } from 'effect/testing'
 import { ChatSdkCallbackError } from './Errors.ts'
 import { startChatSdkLifecycle, type ChatSdkLifecycleSource } from './ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform, type ChatSdkPublicationSource } from './ChatSdkPlatform.ts'
-import type {
-  ChatSdkMessageProjectionSource,
-  ChatSdkThreadProjectionSource,
+import {
+  projectChatSdkMessage,
+  type ChatSdkMessageProjectionSource,
+  type ChatSdkThreadProjectionSource,
 } from './MessageProjection.ts'
+
+const decodeConversationId = Schema.decodeSync(PlatformConversationId)
 
 const isChatSdkCallbackError = Schema.is(ChatSdkCallbackError)
 
@@ -73,6 +77,62 @@ it.effect('keeps effectful authorization failures inside the callback error chan
         )
         assert(Exit.isFailure(exit))
         assert(isChatSdkCallbackError(Cause.squash(exit.cause)))
+      }),
+    )
+  }),
+)
+
+it.effect('uses platform-specific inbound normalization before ingestion', () =>
+  Effect.gen(function* () {
+    const handlers: Array<
+      (
+        thread: ChatSdkThreadProjectionSource,
+        message: ChatSdkMessageProjectionSource,
+      ) => Promise<void>
+    > = []
+    const inputs: Array<string> = []
+    const chat: ChatSdkLifecycleSource = {
+      initialize: async () => undefined,
+      shutdown: async () => undefined,
+      thread: () => ({ post: () => Promise.resolve({}) }),
+      onNewMention: (handler) => handlers.push(handler),
+      onDirectMessage: (handler) => handlers.push(handler),
+      onSubscribedMessage: (handler) => handlers.push(handler),
+    }
+
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* startChatSdkLifecycle({
+          chat,
+          normalizeInboundMessage: (thread, message) =>
+            Effect.succeed({
+              ...projectChatSdkMessage(thread, message),
+              binding: {
+                ...projectChatSdkMessage(thread, message).binding,
+                conversationId: decodeConversationId('normalized-thread'),
+              },
+            }),
+          onInboundMessage: (input) =>
+            Effect.sync(() => inputs.push(String(input.binding.conversationId))),
+        })
+        yield* Effect.promise(
+          () =>
+            handlers[0]?.(
+              { adapter: { name: 'discord' }, channelId: 'channel-1', id: 'thread-1' },
+              {
+                id: 'message-1',
+                text: 'hello',
+                author: {
+                  userId: 'user-1',
+                  userName: 'user',
+                  fullName: 'User',
+                  isBot: false,
+                  isMe: false,
+                },
+              },
+            ) ?? Promise.resolve(),
+        )
+        assert.deepStrictEqual(inputs, ['normalized-thread'])
       }),
     )
   }),

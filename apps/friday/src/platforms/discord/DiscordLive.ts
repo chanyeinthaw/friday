@@ -14,6 +14,7 @@ import { makeDiscordAgentActivity } from './DiscordAgentActivity.ts'
 import { discordRespondToChannelIds } from './DiscordChannelAccess.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
+import { projectDiscordMessage } from './DiscordMessageProjection.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
@@ -68,6 +69,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   yield* platforms.register(platform)
   yield* startChatSdkLifecycle({
     chat,
+    normalizeInboundMessage: (thread, message) => projectDiscordMessage(discord, thread, message),
     shouldHandleMessage: (thread, message) =>
       Effect.try({
         try: () => {
