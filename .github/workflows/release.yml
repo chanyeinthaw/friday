@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'chanyeinthaw/friday'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '11.11.0'
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate tag
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]{7}$ ]]
+
+      - name: Update version
+        run: bun scripts/release-version.ts "$GITHUB_REF_NAME"
+
+      - name: Verify
+        run: pnpm verify
+
+      - name: Build release binaries
+        run: bun scripts/build-release.ts "$GITHUB_REF_NAME"
+
+      - name: Commit version to main
+        env:
+          TAG_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git reset --hard
+          git checkout -B release-version origin/main
+
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" HEAD; then
+            echo "The release tag is not an ancestor of origin/main." >&2
+            exit 1
+          fi
+
+          bun scripts/release-version.ts "$GITHUB_REF_NAME"
+          if git diff --quiet; then
+            echo "Version is already current."
+          else
+            git add package.json apps/friday/package.json apps/friday/src/Cli.ts
+            git commit -m "chore(release): $GITHUB_REF_NAME"
+            git push origin HEAD:main
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          dist/release/*.tar.gz
+          dist/release/SHA256SUMS
+          --verify-tag
+          --generate-notes
+          --title "Friday $GITHUB_REF_NAME"
