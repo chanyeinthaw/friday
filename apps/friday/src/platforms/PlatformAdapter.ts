@@ -1,5 +1,6 @@
 import type {
   ConversationBinding,
+  ContextMessage,
   InputMessage,
   PlatformMessageId,
 } from '@friday/contracts/conversation'
@@ -8,6 +9,7 @@ import type * as Effect from 'effect/Effect'
 export interface PlatformInput {
   readonly binding: ConversationBinding
   readonly message: InputMessage
+  readonly initialContext?: ReadonlyArray<ContextMessage>
 }
 
 export interface PlatformMessageTarget {

@@ -43,10 +43,11 @@ export type PlatformIngestionError<CreationError> =
   | CreationError
 
 export interface PlatformIngestionContract {
-  readonly ingest: <CreationError>(
+  readonly ingest: <CreationError, ContextError = never>(
     input: PlatformInput,
     createThread: (input: PlatformInput) => Effect.Effect<Thread, CreationError>,
-  ) => Effect.Effect<void, PlatformIngestionError<CreationError>, Scope.Scope>
+    loadInitialContext?: (input: PlatformInput) => Effect.Effect<PlatformInput, ContextError>,
+  ) => Effect.Effect<void, PlatformIngestionError<CreationError> | ContextError, Scope.Scope>
 }
 
 export class PlatformIngestion extends Context.Service<
@@ -65,7 +66,7 @@ export const PlatformIngestionLive = Layer.effect(
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
     return PlatformIngestion.of({
-      ingest: (input, createThread) => {
+      ingest: (input, createThread, loadInitialContext) => {
         const key = `${input.binding.platform}:${input.binding.channelId}`
         const annotations = {
           component: 'ingestion',
@@ -84,9 +85,13 @@ export const PlatformIngestionLive = Layer.effect(
                 conversationId: input.binding.conversationId,
               })
               const created = Option.isNone(foundThread)
+              const enrichedInput =
+                created && loadInitialContext !== undefined
+                  ? yield* loadInitialContext(input)
+                  : input
               const found = Option.isSome(foundThread)
                 ? foundThread.value
-                : yield* createThread(input).pipe(
+                : yield* createThread(enrichedInput).pipe(
                     Effect.tap((thread) => persistence.createThread(thread)),
                     Effect.tap((thread) =>
                       Effect.logInfo('thread.created').pipe(
@@ -121,7 +126,11 @@ export const PlatformIngestionLive = Layer.effect(
                     Effect.asVoid,
                   )
               }
-              yield* channelTurns.accept({ thread: found, message: input.message })
+              const message =
+                created && enrichedInput.initialContext !== undefined
+                  ? { ...enrichedInput.message, context: enrichedInput.initialContext }
+                  : enrichedInput.message
+              yield* channelTurns.accept({ thread: found, message })
             }),
           )
           .pipe(Effect.annotateLogs(annotations), Effect.withLogSpan('platform.ingest'))

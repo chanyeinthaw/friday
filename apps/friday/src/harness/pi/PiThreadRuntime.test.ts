@@ -155,7 +155,7 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
     const delivered = yield* Fiber.join(events)
     assert.deepStrictEqual(prompts, [
       {
-        text: 'Participant:\np1 = <@user-1> | chan | Chan\n\np1 [trigger]: start',
+        text: 'Participants:\np1 = <@user-1> | chan | Chan\n\np1 [trigger]: start',
         behavior: undefined,
       },
       { text: 'steer', behavior: 'steer' },

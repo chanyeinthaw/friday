@@ -45,10 +45,18 @@ export const MessageAuthor = Schema.Struct({
 })
 export type MessageAuthor = typeof MessageAuthor.Type
 
+export const ContextMessage = Schema.Struct({
+  author: MessageAuthor,
+  content: MessageContent,
+  platformMessageId: Schema.optionalKey(PlatformMessageId),
+})
+export type ContextMessage = typeof ContextMessage.Type
+
 export const InputMessage = Schema.Struct({
   source: InputSource,
   author: Schema.optionalKey(MessageAuthor),
   content: MessageContent,
   platformMessageId: Schema.optionalKey(PlatformMessageId),
+  context: Schema.optionalKey(Schema.Array(ContextMessage)),
 })
 export type InputMessage = typeof InputMessage.Type

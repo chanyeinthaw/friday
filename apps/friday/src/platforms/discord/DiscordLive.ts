@@ -14,6 +14,7 @@ import { makeDiscordAgentActivity } from './DiscordAgentActivity.ts'
 import { discordRespondToChannelIds } from './DiscordChannelAccess.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
+import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
 import {
   makeDiscordThreadBootstrap,
@@ -103,7 +104,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         ),
         Effect.map(({ allowed }) => allowed),
       ),
-    onInboundMessage: (input) => ingestion.ingest(input, bootstrap),
+    onInboundMessage: (input) =>
+      ingestion.ingest(input, bootstrap, (initialInput) =>
+        loadDiscordInitialContext(discord, configuration.agent.recentMessageCount, initialInput),
+      ),
   })
   yield* startDiscordGateway(discord)
   yield* Effect.logInfo('discord.started').pipe(

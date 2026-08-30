@@ -24,6 +24,21 @@ export interface ChatSdkThreadProjectionSource extends Pick<Thread, 'channelId' 
 
 export type ChatSdkMessageProjectionSource = Pick<Message, 'author' | 'id' | 'text'>
 
+export const projectChatSdkContextMessage = (
+  platform: ConversationBinding['platform'],
+  message: ChatSdkMessageProjectionSource,
+) => ({
+  author: decodeAuthor({
+    platformUserId: message.author.userId,
+    mention:
+      platform === 'discord' ? `<@${message.author.userId}>` : message.author.userName || null,
+    username: message.author.userName || null,
+    displayName: message.author.fullName || null,
+  }),
+  content: { text: message.text, images: [] },
+  platformMessageId: decodeMessageId(message.id),
+})
+
 export const projectChatSdkMessage = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
@@ -36,15 +51,7 @@ export const projectChatSdkMessage = (
   }
   const inputMessage: InputMessage = {
     source: 'user',
-    author: decodeAuthor({
-      platformUserId: message.author.userId,
-      mention:
-        binding.platform === 'discord'
-          ? `<@${message.author.userId}>`
-          : message.author.userName || null,
-      username: message.author.userName || null,
-      displayName: message.author.fullName || null,
-    }),
+    author: projectChatSdkContextMessage(binding.platform, message).author,
     content: {
       text: message.text,
       images: [],

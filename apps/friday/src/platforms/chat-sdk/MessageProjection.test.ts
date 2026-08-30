@@ -1,6 +1,6 @@
 import { assert, it } from '@effect/vitest'
 
-import { projectChatSdkMessage } from './MessageProjection.ts'
+import { projectChatSdkContextMessage, projectChatSdkMessage } from './MessageProjection.ts'
 
 it('projects Chat SDK identifiers and text into Friday contracts', () => {
   const inbound = projectChatSdkMessage(
@@ -34,4 +34,22 @@ it('projects Chat SDK identifiers and text into Friday contracts', () => {
   assert.strictEqual(inbound.message.content.text, 'Hello Friday')
   assert.deepStrictEqual(inbound.message.content.images, [])
   assert.strictEqual(String(inbound.message.platformMessageId), 'discord-message-1')
+})
+
+it('projects attributed context messages', () => {
+  const context = projectChatSdkContextMessage('discord', {
+    id: 'discord-message-2',
+    text: 'Earlier message',
+    author: {
+      userId: 'user-2',
+      userName: 'alice',
+      fullName: 'Alice',
+      isBot: false,
+      isMe: false,
+    },
+  })
+
+  assert.strictEqual(context.author.mention, '<@user-2>')
+  assert.strictEqual(context.content.text, 'Earlier message')
+  assert.strictEqual(String(context.platformMessageId), 'discord-message-2')
 })

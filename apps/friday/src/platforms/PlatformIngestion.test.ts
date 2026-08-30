@@ -134,6 +134,61 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
   ),
 )
 
+it.effect('loads initial platform context only when creating a new channel Thread', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const persistence = makePersistence(events, { newThread: true })
+      const friday = makeFriday(events, persistence)
+      const platform = makePlatform(events)
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(ThreadPersistence, persistence),
+        Layer.succeed(Friday, friday),
+        Layer.succeed(Crypto.Crypto, testCrypto),
+        Layer.succeed(AppConfig, testConfig),
+        Layer.succeed(
+          TextGeneration,
+          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+        ),
+        Layer.succeed(
+          ConversationTitles,
+          ConversationTitles.of({
+            generated: () => Effect.void,
+            taskStarted: () => Effect.void,
+            taskFinished: () => Effect.void,
+          }),
+        ),
+        PlatformRegistryLive,
+      )
+      const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
+      const TurnsLive = ChannelTurnsLive.pipe(
+        Layer.provide(Layer.merge(dependencies, ProgressLive)),
+      )
+      const TestLive = Layer.merge(
+        Layer.mergeAll(dependencies, ProgressLive, TurnsLive),
+        PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
+      )
+
+      yield* Effect.gen(function* () {
+        const ingestion = yield* PlatformIngestion
+        const platforms = yield* PlatformRegistry
+        yield* platforms.register(platform)
+        yield* ingestion.ingest(
+          input,
+          () => Effect.succeed(thread),
+          (initial) =>
+            Effect.sync(() => {
+              events.push('load-initial-context')
+              return { ...initial, initialContext: [] }
+            }),
+        )
+      }).pipe(Effect.provide(TestLive))
+
+      assert.strictEqual(events.filter((event) => event === 'load-initial-context').length, 1)
+    }),
+  ),
+)
+
 it.effect('routes follow-up input to steering without another typing lifecycle', () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -239,7 +294,7 @@ const makeFriday = (
 
 const makePersistence = (
   _events: Array<string>,
-  options: { readonly latestIsActive?: boolean } = {},
+  options: { readonly latestIsActive?: boolean; readonly newThread?: boolean } = {},
 ): ThreadPersistenceContract => {
   let storedTurn: TurnType | null = null
   const activeTurn: TurnType = {
@@ -262,7 +317,7 @@ const makePersistence = (
   return {
     createThread: () => Effect.void,
     getThread: () => Effect.succeedNone,
-    findPlatformThread: () => Effect.succeedSome(thread),
+    findPlatformThread: () => (options.newThread ? Effect.succeedNone : Effect.succeedSome(thread)),
     listAgentThreads: () => Effect.succeed([]),
     closeThread: () => Effect.void,
     setThreadHarnessSession: () => Effect.void,
