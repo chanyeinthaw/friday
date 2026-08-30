@@ -75,6 +75,13 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, 'Background tasks are private implementation details')
     assert.include(prompt, 'Say "I\'m still working on it,"')
     assert.include(prompt, 'Do not mention subagents, background agents, agent threads')
+    assert.include(prompt, "begin with that participant's native mention")
+    assert.include(prompt, 'Use the native mention token verbatim')
+    assert.include(
+      prompt,
+      'If you cannot confidently identify the related participant, do not guess',
+    )
+    assert.include(prompt, 'even if other people have spoken since they made the request')
     assert.include(prompt, 'respond as one coherent agent')
     assert.notInclude(prompt, '{{')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
