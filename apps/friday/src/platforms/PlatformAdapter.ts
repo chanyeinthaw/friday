@@ -12,6 +12,31 @@ export interface PlatformInput {
   readonly initialContext?: ReadonlyArray<ContextMessage>
 }
 
+export type PlatformMessageScope = 'thread' | 'channel'
+
+export interface PlatformMessageRecord {
+  readonly id: PlatformMessageId
+  readonly author: ContextMessage['author']
+  readonly text: string
+  readonly sentAt: string | null
+  readonly replyToMessageId: PlatformMessageId | null
+}
+
+export interface PlatformMessageQuery {
+  readonly binding: ConversationBinding
+  readonly scope: PlatformMessageScope
+  readonly limit: number
+  readonly before?: PlatformMessageId | undefined
+  readonly query?: string | undefined
+  readonly authorId?: string | undefined
+}
+
+export interface PlatformMessageSearchResult {
+  readonly messages: ReadonlyArray<PlatformMessageRecord>
+  readonly scannedCount: number
+  readonly truncated: boolean
+}
+
 export interface PlatformMessageTarget {
   readonly binding: ConversationBinding
   readonly messageId: PlatformMessageId
@@ -50,6 +75,9 @@ export interface PlatformAdapter<PlatformError> {
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, PlatformError>
   readonly setAgentActivity: (activity: PlatformAgentActivity) => Effect.Effect<void, PlatformError>
+  readonly searchMessages: (
+    query: PlatformMessageQuery,
+  ) => Effect.Effect<PlatformMessageSearchResult, PlatformError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,

@@ -47,6 +47,7 @@ it.effect('keeps generated titles unchanged and reports platform-wide task count
         setConversationTitle: ({ title }) => Effect.sync(() => titles.push(title)),
         setAgentActivity: ({ taskId, active }) =>
           Effect.sync(() => activity.push({ taskId, active })),
+        searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
         withTyping: (_binding, effect) => effect,
       }
       const registry = yield* PlatformRegistry

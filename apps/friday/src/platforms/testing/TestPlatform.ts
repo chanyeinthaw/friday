@@ -75,6 +75,7 @@ export const TestPlatformLive = Layer.effect(
       discardWorking: () => Effect.void,
       setConversationTitle: () => Effect.void,
       setAgentActivity: () => Effect.void,
+      searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
       withTyping: (binding, effect) =>
         Effect.acquireUseRelease(
           record({ type: 'typing-started', binding }),

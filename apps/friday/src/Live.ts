@@ -18,7 +18,7 @@ import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { ThreadPersistenceLive } from './persistence/Live.ts'
 import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
-import { PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
+import { PlatformRegistry, PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
 import {
   SystemPromptTemplates,
   SystemPromptTemplatesLive,
@@ -35,6 +35,7 @@ const ThreadRuntimesLive = Layer.effect(
     const configuration = yield* AppConfig
     const systemPromptTemplates = yield* SystemPromptTemplates
     const tasks = yield* TaskToolDispatcher
+    const platforms = yield* PlatformRegistry
 
     return ThreadRuntimes.of({
       open: (thread) =>
@@ -44,6 +45,7 @@ const ThreadRuntimesLive = Layer.effect(
           systemPromptTemplates,
           availableAgentModels: configuration.models.subagents,
           tasks,
+          platforms,
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError(

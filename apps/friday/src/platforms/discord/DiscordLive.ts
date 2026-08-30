@@ -16,6 +16,7 @@ import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
+import { searchDiscordMessages } from './DiscordMessageSearch.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
@@ -66,6 +67,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   const platform = yield* makeChatSdkPlatform('discord', chat, {
     setConversationTitle: (title) => setDiscordConversationTitle(discord, botToken, title),
     setAgentActivity: makeDiscordAgentActivity(discord, botToken),
+    searchMessages: (query) => searchDiscordMessages(discord, query),
   })
   yield* platforms.register(platform)
   yield* startChatSdkLifecycle({

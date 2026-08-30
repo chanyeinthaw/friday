@@ -69,6 +69,7 @@ const makePlatform = (
   beginWorking: () => Effect.void,
   updateWorking: () => Effect.void,
   setAgentActivity: () => Effect.void,
+  searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
   setConversationTitle: () => Effect.void,
   discardWorking: () => Effect.void,
   finalizeWorking: () => Effect.void,

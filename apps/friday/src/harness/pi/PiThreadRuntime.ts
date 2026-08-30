@@ -37,6 +37,8 @@ import type {
   ThreadRuntimeEvent,
 } from '../../conversation/ThreadRuntime.ts'
 import type { SystemPromptTemplatesContract } from '../../system-prompt/SystemPromptTemplates.ts'
+import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
+import type { PlatformRegistryContract } from '../../platforms/PlatformRegistry.ts'
 import { renderPromptMessage } from './PromptMessage.ts'
 import { makePiTaskTool, type PiTaskOperations } from '../../tasks/PiTaskTool.ts'
 
@@ -106,6 +108,7 @@ export interface MakePiThreadRuntimeOptions {
   readonly systemPromptTemplates?: SystemPromptTemplatesContract
   readonly availableAgentModels?: AppConfig['models']['subagents']
   readonly tasks?: PiTaskOperations
+  readonly platforms?: Pick<PlatformRegistryContract, 'searchMessages'>
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso)
@@ -383,13 +386,24 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
           runPromise: Effect.runPromise,
         })
       : undefined
+  const messagesTool =
+    options.thread.audience === 'user' && options.platforms
+      ? makePiMessagesTool({
+          thread: options.thread,
+          platforms: options.platforms,
+          runPromise: Effect.runPromise,
+        })
+      : undefined
   const sessionOptions: CreateAgentSessionOptions = {
     cwd: options.thread.workingDirectory,
     modelRuntime,
     model,
     thinkingLevel: options.thread.thinkingLevel,
   }
-  if (taskTool) sessionOptions.customTools = [taskTool]
+  const customTools = [taskTool, messagesTool].filter(
+    (tool): tool is NonNullable<typeof tool> => tool !== undefined,
+  )
+  if (customTools.length > 0) sessionOptions.customTools = customTools
   if (sessionManager) sessionOptions.sessionManager = sessionManager
   if (resourceLoader) sessionOptions.resourceLoader = resourceLoader
   const created = yield* Effect.tryPromise({

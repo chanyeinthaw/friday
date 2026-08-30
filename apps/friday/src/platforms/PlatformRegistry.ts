@@ -9,6 +9,8 @@ import type {
   PlatformAdapter,
   PlatformAgentActivity,
   PlatformConversationTitle,
+  PlatformMessageQuery,
+  PlatformMessageSearchResult,
   PlatformMessageTarget,
   PlatformPublication,
   PlatformWorkingMessage,
@@ -51,6 +53,9 @@ export interface RegisteredPlatform {
   readonly setAgentActivity: (
     activity: PlatformAgentActivity,
   ) => Effect.Effect<void, PlatformOperationError>
+  readonly searchMessages: (
+    query: PlatformMessageQuery,
+  ) => Effect.Effect<PlatformMessageSearchResult, PlatformOperationError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -69,6 +74,9 @@ export interface PlatformRegistryContract {
     title: PlatformConversationTitle,
   ) => Effect.Effect<void, RegistryError>
   readonly setAgentActivity: (activity: PlatformAgentActivity) => Effect.Effect<void, RegistryError>
+  readonly searchMessages: (
+    query: PlatformMessageQuery,
+  ) => Effect.Effect<PlatformMessageSearchResult, RegistryError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -108,6 +116,7 @@ export const PlatformRegistryLive = Layer.effect(
           discardWorking: (binding) => wrap(platform.discardWorking(binding)),
           setConversationTitle: (title) => wrap(platform.setConversationTitle(title)),
           setAgentActivity: (activity) => wrap(platform.setAgentActivity(activity)),
+          searchMessages: (query) => wrap(platform.searchMessages(query)),
           withTyping: (binding, effect) =>
             platform
               .withTyping(binding, effect)
@@ -141,6 +150,8 @@ export const PlatformRegistryLive = Layer.effect(
         invoke(title.binding.platform, (platform) => platform.setConversationTitle(title)),
       setAgentActivity: (activity) =>
         invoke(activity.binding.platform, (platform) => platform.setAgentActivity(activity)),
+      searchMessages: (query) =>
+        invoke(query.binding.platform, (platform) => platform.searchMessages(query)),
       withTyping: (binding, effect) =>
         invoke(binding.platform, (platform) => platform.withTyping(binding, effect)),
     })

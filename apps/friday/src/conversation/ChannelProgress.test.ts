@@ -57,6 +57,7 @@ const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
   beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
   updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
   setAgentActivity: () => Effect.void,
+  searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
   setConversationTitle: () => Effect.void,
   discardWorking: () => Effect.void,
   finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),

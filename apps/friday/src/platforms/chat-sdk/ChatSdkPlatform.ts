@@ -35,6 +35,7 @@ export interface ChatSdkPlatformOptions {
   readonly maxMessageLength?: number
   readonly setConversationTitle?: PlatformAdapter<ChatSdkPublicationError>['setConversationTitle']
   readonly setAgentActivity?: PlatformAdapter<ChatSdkPublicationError>['setAgentActivity']
+  readonly searchMessages?: PlatformAdapter<ChatSdkPublicationError>['searchMessages']
   /** Retained for lifecycle compatibility; durable working messages do not refresh typing. */
   readonly typingRefreshInterval?: unknown
 }
@@ -188,6 +189,9 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
           }),
         setConversationTitle: options.setConversationTitle ?? (() => Effect.void),
         setAgentActivity: options.setAgentActivity ?? (() => Effect.void),
+        searchMessages:
+          options.searchMessages ??
+          (() => Effect.succeed({ messages: [], scannedCount: 0, truncated: false })),
         withTyping: (_binding, effect) => effect,
       }
     }),
