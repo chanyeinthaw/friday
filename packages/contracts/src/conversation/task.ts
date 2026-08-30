@@ -28,6 +28,7 @@ export const StartTaskRequest = Schema.Struct({
   parentTurnId: TurnId,
   task: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
   workingDirectory: WorkingDirectory,
+  mayWrite: Schema.optionalKey(Schema.Boolean),
   profile: Schema.optionalKey(SubagentProfileName),
 })
 export type StartTaskRequest = typeof StartTaskRequest.Type
@@ -73,6 +74,7 @@ export const TaskSummary = Schema.Struct({
   status: TaskStatus,
   task: Schema.String,
   workingDirectory: WorkingDirectory,
+  mayWrite: Schema.Boolean,
   model: ModelSelection,
   thinkingLevel: ThinkingLevel,
   createdAt: IsoDateTime,

@@ -43,6 +43,7 @@ import {
   type ThreadPersistenceError,
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { createIsolatedWorktree } from '../repositories/RepositoryWorktrees.ts'
 import { TaskModels, type TaskModelsContract } from './TaskModels.ts'
 import {
   isActiveTaskStatus,
@@ -272,6 +273,8 @@ interface LaunchTaskInput {
   readonly parentTurnId: TurnId
   readonly task: string
   readonly workingDirectory: StartTaskRequest['workingDirectory']
+  readonly primaryWorkingDirectory?: StartTaskRequest['workingDirectory']
+  readonly mayWrite: boolean
   readonly profile: StartTaskRequest['profile']
   readonly role: AgentThread['role']
   readonly operation: 'start' | 'bootstrap'
@@ -282,6 +285,8 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
   const explicitlyCancelled = new Set<TaskId>()
 
   const launchTaskUnlocked = Effect.fn('Tasks.launchTask')(function* (input: LaunchTaskInput) {
+    let effectiveWorkingDirectory = input.workingDirectory
+    let primaryWorkingDirectory = input.primaryWorkingDirectory
     const existingTasks = yield* options.persistence.listAgentThreads({
       parentThreadId: input.parent.id,
     })
@@ -290,11 +295,27 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       if (!workingDirectoriesConflict(existing.workingDirectory, input.workingDirectory)) continue
       const latest = yield* options.persistence.getLatestTurn(existing.id)
       if (Option.isSome(latest) && isActiveTaskStatus(latest.value.status)) {
-        return yield* taskError(
-          'working-directory-busy',
-          `Working directory '${input.workingDirectory}' is already used by active task '${existing.id}'.`,
-          input.operation,
+        const existingMayWrite = existing.mayWrite ?? true
+        if (!input.mayWrite && !existingMayWrite) continue
+        const isolated = yield* createIsolatedWorktree({
+          primaryWorktree: input.workingDirectory,
+          taskId: `task-${yield* options.randomUUID}`,
+        }).pipe(
+          Effect.mapError((cause) =>
+            taskError(
+              'working-directory-busy',
+              `Could not isolate concurrent work from '${input.workingDirectory}': ${cause.message}`,
+              input.operation,
+            ),
+          ),
         )
+        effectiveWorkingDirectory = yield* decodeWorkingDirectory(isolated.path).pipe(
+          Effect.mapError((cause) =>
+            taskError('invalid-working-directory', String(cause), input.operation),
+          ),
+        )
+        primaryWorkingDirectory = input.workingDirectory
+        break
       }
     }
     const profile = yield* resolveProfile(options.models, input.profile, input.operation)
@@ -329,23 +350,29 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         ),
       ),
     )
-    const thread = yield* decodeAgentThread({
+    const threadInput = {
       id: threadId,
-      audience: 'agent',
+      audience: 'agent' as const,
       parent: { threadId: input.parent.id, turnId: input.parentTurnId },
       role: input.role,
       subagentProfile: profile.name,
       harness: input.parent.harness,
       harnessSession: null,
-      workingDirectory: input.workingDirectory,
+      workingDirectory: effectiveWorkingDirectory,
+      mayWrite: input.mayWrite,
       model,
       thinkingLevel: profile.thinkingLevel,
       conversationBinding: null,
-      status: 'active',
+      status: 'active' as const,
       createdAt: timestamp,
       updatedAt: timestamp,
       closedAt: null,
-    }).pipe(
+    }
+    const thread = yield* decodeAgentThread(
+      primaryWorkingDirectory === undefined
+        ? threadInput
+        : { ...threadInput, primaryWorkingDirectory },
+    ).pipe(
       Effect.mapError((cause) =>
         taskError(
           'start-failed',
@@ -451,6 +478,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       parentTurnId: request.parentTurnId,
       task: request.task,
       workingDirectory,
+      mayWrite: request.mayWrite ?? true,
       profile: request.profile,
       role: 'subagent',
       operation: 'start',
@@ -503,6 +531,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       parentTurnId: request.parentTurnId,
       task: request.task,
       workingDirectory,
+      mayWrite: true,
       profile: request.profile,
       role: 'bootstrap',
       operation: 'bootstrap',
@@ -679,6 +708,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           status: latest.value.status,
           task: first.value.input.content.text,
           workingDirectory: thread.workingDirectory,
+          mayWrite: thread.mayWrite ?? true,
           model: thread.model,
           thinkingLevel: thread.thinkingLevel,
           createdAt: thread.createdAt,

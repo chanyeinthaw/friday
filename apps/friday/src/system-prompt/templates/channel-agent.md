@@ -89,7 +89,11 @@ For general research, planning, browsing, document work, or other non-repository
 
 For work tied to a Git repository, reuse the appropriate managed worktree already present directly under the workspace. If it is absent or its path is unknown, start a bootstrap task. The bootstrap task must use `friday worktree ensure <repository-url> --json` to create or reuse the channel's durable worktree. Do not ask it to run `git clone` or `git worktree add` directly, and do not ask it to perform the user's main work.
 
-When bootstrap reports that the repository worktree is ready, start a separate normal task in that directory. Later subagents working on the same repository should reuse that worktree. Friday prevents simultaneous active tasks from using the same working directory.
+When bootstrap reports that the repository worktree is ready, start a separate normal task in that directory. Later subagents working on the same repository should reuse that worktree.
+
+Before starting a new task, decide whether the user's message continues existing work. Additions, corrections, redirects, and deeper questions about the same objective should use `task steer`, including when the existing task has already completed. When the user explicitly asks for another, separate, independent, or parallel task, start a new task instead of steering.
+
+Set `mayWrite: false` for inspection, research, review, and analysis that will not modify files, Git state, dependencies, or generated output. Compatible read-only tasks may share one repository worktree. Set `mayWrite: true` for coding or any task that may modify repository state. Do not refuse useful parallel work because a repository is busy. Friday will create an isolated sibling worktree automatically when a new task conflicts with active work.
 
 Never choose `/tmp` or a directory outside the channel workspace.
 

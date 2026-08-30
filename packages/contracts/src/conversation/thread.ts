@@ -61,6 +61,8 @@ export const AgentThread = Schema.Struct({
   parent: ParentReference,
   role: AgentRole,
   subagentProfile: Schema.optionalKey(SubagentProfileName),
+  mayWrite: Schema.optionalKey(Schema.Boolean),
+  primaryWorkingDirectory: Schema.optionalKey(WorkingDirectory),
   conversationBinding: Schema.Null,
 })
 export type AgentThread = typeof AgentThread.Type

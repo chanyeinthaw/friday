@@ -1,6 +1,7 @@
 /* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/async-function, effecttsgo/node-builtin-import, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Bun filesystem integration tests run through bun:test; Effect schemas use the canonical _tag discriminator. */
 
 import { expect, test } from 'bun:test'
+import { randomUUID } from 'node:crypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import {
   AgentThread,
@@ -630,7 +631,7 @@ test('rejects cancellation for a terminal task', async () => {
   if (error._tag === 'TaskError') expect(error.reason).toBe('task-not-active')
 })
 
-test('rejects concurrent tasks sharing one canonical working directory', async () => {
+test('allows concurrent read-only tasks sharing one canonical working directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-concurrency-'))
   const channelWorkspace = join(root, 'channel')
   const projectDirectory = join(channelWorkspace, 'project')
@@ -643,6 +644,7 @@ test('rejects concurrent tasks sharing one canonical working directory', async (
     ...taskThread(parent),
     id: 'task-existing',
     workingDirectory: projectDirectory,
+    mayWrite: false,
   })
   const running = taskTurn(existing, 'turn-running', 1, 'running', 'Existing task')
   const persistence: ThreadPersistenceContract = {
@@ -658,25 +660,23 @@ test('rejects concurrent tasks sharing one canonical working directory', async (
       models: makeTaskModels(profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
-      randomUUID: Effect.succeed('unused'),
+      randomUUID: Effect.sync(randomUUID),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
       fork: () => Effect.void,
     })
-    return yield* Effect.flip(
-      tasks.start({
-        parentThreadId: parent.id,
-        parentTurnId: decodeTurnId('turn-parent'),
-        task: 'Conflicting task.',
-        workingDirectory: decodeWorkingDirectory(projectDirectory),
-      }),
-    )
+    return yield* tasks.start({
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Independent read-only task.',
+      workingDirectory: decodeWorkingDirectory(projectDirectory),
+      mayWrite: false,
+    })
   }).pipe(Effect.provide(BunFileSystem.layer))
 
-  const error = await Effect.runPromise(program)
+  const started = await Effect.runPromise(program)
   await rm(root, { recursive: true, force: true })
 
-  expect(error._tag).toBe('TaskError')
-  if (error._tag === 'TaskError') expect(error.reason).toBe('working-directory-busy')
+  expect(started.status).toBe('pending')
 })
 
 test('rejects an unconfigured task model', async () => {

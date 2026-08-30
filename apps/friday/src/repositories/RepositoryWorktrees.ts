@@ -166,6 +166,73 @@ export interface EnsureRepositoryWorktreeInput {
   readonly ref?: string
 }
 
+export interface CreateIsolatedWorktreeInput {
+  readonly primaryWorktree: string
+  readonly taskId: string
+}
+
+export const createIsolatedWorktree = Effect.fn('RepositoryWorktrees.createIsolated')(function* (
+  input: CreateIsolatedWorktreeInput,
+) {
+  const primary = resolve(input.primaryWorktree)
+  const gitDirectory = yield* requireGit('inspect', [
+    '-C',
+    primary,
+    'rev-parse',
+    '--git-common-dir',
+  ])
+  const commonDirectory = resolve(primary, gitDirectory)
+  const baseCommit = yield* requireGit('inspect', ['-C', primary, 'rev-parse', 'HEAD'])
+  const shortTaskId = safeSegment(input.taskId.replace(/^task-/u, '')).slice(0, 12)
+  const destination = `${primary}--${shortTaskId}`
+  const branch = `friday/task/${shortTaskId}`
+  const existing = yield* runGit(['-C', destination, 'rev-parse', '--is-inside-work-tree'])
+  if (existing.exitCode === 0) {
+    const currentBranch = yield* requireGit('inspect', [
+      '-C',
+      destination,
+      'branch',
+      '--show-current',
+    ])
+    return ManagedWorktree.make({
+      url: RepositoryUrl.make(
+        yield* requireGit('inspect', ['-C', primary, 'remote', 'get-url', 'origin']),
+      ),
+      path: destination,
+      branch: currentBranch,
+      baseRef: baseCommit,
+      cachePath: commonDirectory,
+      reused: true,
+    })
+  }
+  if (yield* Effect.promise(() => Bun.file(destination).exists())) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'validate',
+      detail: `Isolated worktree destination '${destination}' already exists.`,
+    })
+  }
+  yield* requireGit('create', [
+    '-C',
+    primary,
+    'worktree',
+    'add',
+    '-b',
+    branch,
+    destination,
+    baseCommit,
+  ])
+  return ManagedWorktree.make({
+    url: RepositoryUrl.make(
+      yield* requireGit('inspect', ['-C', primary, 'remote', 'get-url', 'origin']),
+    ),
+    path: destination,
+    branch,
+    baseRef: baseCommit,
+    cachePath: commonDirectory,
+    reused: false,
+  })
+})
+
 export const ensureRepositoryWorktree = Effect.fn('RepositoryWorktrees.ensure')(function* (
   input: EnsureRepositoryWorktreeInput,
 ) {

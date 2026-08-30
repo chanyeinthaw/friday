@@ -23,6 +23,7 @@ const TaskToolInput = Schema.Union([
     action: Schema.Literal('start'),
     task: Schema.String,
     workingDirectory: WorkingDirectory,
+    mayWrite: Schema.optionalKey(Schema.Boolean),
     profile: Schema.optionalKey(SubagentProfileName),
   }),
   Schema.Struct({
@@ -46,8 +47,14 @@ const TaskToolParameters = Type.Union([
     }),
     workingDirectory: Type.String({
       description:
-        'Absolute project or task directory inside the channel workspace, but not the workspace root.',
+        'Absolute directory inside the channel workspace. The workspace root is allowed.',
     }),
+    mayWrite: Type.Optional(
+      Type.Boolean({
+        description:
+          'Whether the task may modify files or Git state. Defaults to true. Set false for read-only inspection so compatible tasks can share a worktree.',
+      }),
+    ),
     profile: Type.Optional(
       Type.String({ description: "Configured subagent profile name. Defaults to 'primary'." }),
     ),
@@ -76,6 +83,7 @@ const taskSummary = (task: TaskSummary) => {
     status: task.status,
     task: task.task,
     workingDirectory: task.workingDirectory,
+    mayWrite: task.mayWrite,
     model: task.model,
     thinkingLevel: task.thinkingLevel,
     createdAt: task.createdAt,
@@ -134,6 +142,7 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
             parentTurnId: await options.runPromise(decodeTurnId(activeTurnId)),
             task: input.task,
             workingDirectory: input.workingDirectory,
+            mayWrite: input.mayWrite ?? true,
           }
           const request: StartRequest =
             input.profile === undefined ? base : { ...base, profile: input.profile }
