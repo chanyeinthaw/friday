@@ -92,3 +92,4 @@ jobs:
           --verify-tag
           --generate-notes
           --title "Friday $GITHUB_REF_NAME"
+          ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
