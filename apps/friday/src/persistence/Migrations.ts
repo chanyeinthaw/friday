@@ -94,6 +94,30 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   `
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS platform_invocation_defaults (
+      connection_id TEXT PRIMARY KEY,
+      mode TEXT NOT NULL CHECK (mode IN ('mention-only', 'all-messages')),
+      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+    )
+  `
+
+  yield* sql`
+    INSERT OR IGNORE INTO platform_invocation_defaults (connection_id, mode)
+    SELECT connection_id, 'all-messages'
+    FROM discord_connections
+  `
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS platform_channel_invocation_policies (
+      connection_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK (mode IN ('mention-only', 'all-messages')),
+      PRIMARY KEY (connection_id, channel_id),
+      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+    )
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS discord_mention_roles (
       connection_id TEXT NOT NULL,
       role_id TEXT NOT NULL,

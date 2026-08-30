@@ -1,20 +1,47 @@
-import type { AccessPolicy } from '../../config/AppConfig.ts'
+import type { AccessPolicy, DiscordPlatformConfig } from '../../config/AppConfig.ts'
 
 /**
  * Adapts Friday's channel policy to Chat SDK's `respondToChannelIds` contract.
  * The pinned Discord adapter only reads `length` and calls `includes(channelId)`.
  */
-export const discordRespondToChannelIds = (policy: AccessPolicy): Array<string> => {
-  if (policy.mode === 'allow') return [...policy.ids]
+const isAccessible = (channelId: string, policy: AccessPolicy): boolean => {
+  if (policy.mode === 'all') return true
+  if (policy.mode === 'allow') return policy.ids.includes(channelId)
+  return !policy.ids.includes(channelId)
+}
 
-  return new Proxy([...policy.ids], {
-    get: (_target, property, _receiver) => {
-      if (property === 'length') return 1
-      if (property === 'includes') {
-        return (channelId: string) =>
-          policy.mode === 'all' ? true : !policy.ids.includes(channelId)
-      }
-      return undefined
+export interface DiscordInvocationChannelSelector {
+  readonly channels: Array<string>
+  readonly update: (invocation: DiscordPlatformConfig['invocation']) => void
+}
+
+/**
+ * The Discord adapter only reads `length` and calls `includes(channelId)`.
+ * Keep that stable adapter reference while Friday refreshes database policy.
+ */
+export const makeDiscordInvocationChannelSelector = (
+  access: AccessPolicy,
+  initial: DiscordPlatformConfig['invocation'],
+): DiscordInvocationChannelSelector => {
+  let invocation = initial
+  return {
+    channels: new Proxy([], {
+      get: (_target, property) => {
+        if (property === 'length') return 1
+        if (property === 'includes') {
+          return (channelId: string) => {
+            if (!isAccessible(channelId, access)) return false
+            const mode =
+              invocation.channels.find((policy) => policy.channelId === channelId)?.mode ??
+              invocation.defaultMode
+            return mode === 'all-messages'
+          }
+        }
+        return undefined
+      },
+    }),
+    update: (next) => {
+      invocation = next
     },
-  })
+  }
 }

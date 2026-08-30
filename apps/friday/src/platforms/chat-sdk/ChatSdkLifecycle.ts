@@ -11,6 +11,8 @@ import {
   type ChatSdkThreadProjectionSource,
 } from './MessageProjection.ts'
 
+export type ChatSdkInboundKind = 'mention' | 'direct-message' | 'subscribed-message'
+
 export type ChatSdkMessageHandler = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
@@ -35,6 +37,7 @@ export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
     message: ChatSdkMessageProjectionSource,
   ) => Effect.Effect<PlatformInput, ChatSdkCallbackError>
   readonly shouldHandleMessage?: (
+    kind: ChatSdkInboundKind,
     thread: ChatSdkThreadProjectionSource,
     message: ChatSdkMessageProjectionSource,
   ) => Effect.Effect<boolean, ChatSdkCallbackError>
@@ -68,6 +71,7 @@ const callbackError = (cause: unknown): ChatSdkCallbackError =>
   })
 
 const makeChatSdkMessageHandler = <InboundError, InboundServices>(
+  kind: ChatSdkInboundKind,
   options: ChatSdkMessageHandlerOptions<InboundError, InboundServices>,
 ): ChatSdkMessageHandler => {
   const runPromise = Effect.runPromiseWith(options.context)
@@ -77,8 +81,9 @@ const makeChatSdkMessageHandler = <InboundError, InboundServices>(
     message: ChatSdkMessageProjectionSource,
   ): Effect.Effect<void, ChatSdkCallbackError, InboundServices> =>
     Effect.gen(function* () {
+      const effectiveKind = kind === 'subscribed-message' && message.isMention ? 'mention' : kind
       const shouldHandle = options.shouldHandleMessage
-        ? yield* options.shouldHandleMessage(thread, message)
+        ? yield* options.shouldHandleMessage(effectiveKind, thread, message)
         : true
       if (!shouldHandle) return yield* Effect.void
 
@@ -109,13 +114,13 @@ const makeChatSdkMessageHandler = <InboundError, InboundServices>(
 
 const registerChatSdkHandlers = (
   chat: ChatSdkLifecycleSource,
-  handler: ChatSdkMessageHandler,
+  handlers: Readonly<Record<ChatSdkInboundKind, ChatSdkMessageHandler>>,
 ): Effect.Effect<void, ChatSdkLifecycleError> =>
   Effect.try({
     try: () => {
-      chat.onNewMention(handler)
-      chat.onDirectMessage(handler)
-      chat.onSubscribedMessage(handler)
+      chat.onNewMention(handlers.mention)
+      chat.onDirectMessage(handlers['direct-message'])
+      chat.onSubscribedMessage(handlers['subscribed-message'])
     },
     catch: (cause) =>
       new ChatSdkLifecycleError({
@@ -159,15 +164,18 @@ export const startChatSdkLifecycle = Effect.fn('startChatSdkLifecycle')(function
 >(
   options: ChatSdkLifecycleOptions<InboundError, InboundServices>,
 ): ChatSdkLifecycleStart<InboundServices> {
-  const handler = makeChatSdkMessageHandler({
+  const handlerOptions = {
     connectionId: options.connectionId,
     context: yield* Effect.context<InboundServices>(),
     scope: yield* Effect.scope,
     normalizeInboundMessage: options.normalizeInboundMessage,
     shouldHandleMessage: options.shouldHandleMessage,
     onInboundMessage: options.onInboundMessage,
+  }
+  yield* registerChatSdkHandlers(options.chat, {
+    mention: makeChatSdkMessageHandler('mention', handlerOptions),
+    'direct-message': makeChatSdkMessageHandler('direct-message', handlerOptions),
+    'subscribed-message': makeChatSdkMessageHandler('subscribed-message', handlerOptions),
   })
-
-  yield* registerChatSdkHandlers(options.chat, handler)
   yield* initializeChatSdk(options.chat)
 })

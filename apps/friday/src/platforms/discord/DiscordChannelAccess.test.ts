@@ -1,23 +1,40 @@
 import { assert, it } from '@effect/vitest'
 
-import { discordRespondToChannelIds } from './DiscordChannelAccess.ts'
+import { makeDiscordInvocationChannelSelector } from './DiscordChannelAccess.ts'
 
-it('adapts all mode to the Discord SDK channel contract', () => {
-  const channels = discordRespondToChannelIds({ mode: 'all', ids: [] })
-  assert(channels.length > 0)
-  assert.strictEqual(channels.includes('any-channel'), true)
+it('selects all-message channels while leaving mention-only channels to mention routing', () => {
+  const selector = makeDiscordInvocationChannelSelector(
+    { mode: 'all', ids: [] },
+    {
+      defaultMode: 'mention-only',
+      channels: [{ channelId: 'channel-1', mode: 'all-messages' }],
+    },
+  )
+  assert(selector.channels.length > 0)
+  assert.strictEqual(selector.channels.includes('channel-1'), true)
+  assert.strictEqual(selector.channels.includes('channel-2'), false)
 })
 
-it('adapts allow mode to explicit channel identifiers', () => {
-  const channels = discordRespondToChannelIds({ mode: 'allow', ids: ['channel-1'] })
-  assert.strictEqual(channels.length, 1)
-  assert.strictEqual(channels.includes('channel-1'), true)
-  assert.strictEqual(channels.includes('channel-2'), false)
-})
-
-it('adapts deny mode to every channel except blocked identifiers', () => {
-  const channels = discordRespondToChannelIds({ mode: 'deny', ids: ['channel-1'] })
-  assert(channels.length > 0)
+it('updates invocation routing without replacing the Discord adapter selector', () => {
+  const selector = makeDiscordInvocationChannelSelector(
+    { mode: 'all', ids: [] },
+    { defaultMode: 'mention-only', channels: [] },
+  )
+  const channels = selector.channels
   assert.strictEqual(channels.includes('channel-1'), false)
-  assert.strictEqual(channels.includes('channel-2'), true)
+  selector.update({
+    defaultMode: 'mention-only',
+    channels: [{ channelId: 'channel-1', mode: 'all-messages' }],
+  })
+  assert.strictEqual(selector.channels, channels)
+  assert.strictEqual(channels.includes('channel-1'), true)
+})
+
+it('never selects channels rejected by access policy', () => {
+  const selector = makeDiscordInvocationChannelSelector(
+    { mode: 'deny', ids: ['blocked'] },
+    { defaultMode: 'all-messages', channels: [] },
+  )
+  assert.strictEqual(selector.channels.includes('allowed'), true)
+  assert.strictEqual(selector.channels.includes('blocked'), false)
 })

@@ -5,12 +5,14 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { FridayCliError, parseFridayCli } from './Cli.ts'
+import { PlatformConnectionId } from '@friday/contracts/conversation'
 import { RepositoryUrl } from './repositories/RepositoryWorktrees.ts'
 import { WorkspaceCleanupProposalId } from './workspaces/WorkspaceCleanup.ts'
 
 const isFridayCliError = Schema.is(FridayCliError)
 const decodeRepositoryUrl = Schema.decodeSync(RepositoryUrl)
 const decodeCleanupProposalId = Schema.decodeSync(WorkspaceCleanupProposalId)
+const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
 
 it.effect('uses start as the default command', () =>
   Effect.gen(function* () {
@@ -53,6 +55,27 @@ it.effect('parses managed worktree options', () =>
         workspace: '/tmp/channel',
         ref: 'main',
         json: true,
+      },
+    )
+  }),
+)
+
+it.effect('parses a channel invocation policy update', () =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'platform',
+        'invocation',
+        'set',
+        'discord',
+        'channel-1',
+        'mention-only',
+      ]),
+      {
+        type: 'platform-invocation-set',
+        connectionId: decodeConnectionId('discord'),
+        channelId: 'channel-1',
+        mode: 'mention-only',
       },
     )
   }),

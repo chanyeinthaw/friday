@@ -47,6 +47,15 @@ const configured = Effect.gen(function* () {
     INSERT INTO discord_mention_roles (connection_id, role_id)
     VALUES ('discord-personal', 'role-1')
   `
+  yield* sql`
+    UPDATE platform_invocation_defaults
+    SET mode = 'mention-only'
+    WHERE connection_id = 'discord-personal'
+  `
+  yield* sql`
+    INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)
+    VALUES ('discord-personal', 'channel-1', 'all-messages')
+  `
   return yield* loadAppConfig({ environment: { DISCORD_BOT_TOKEN: 'discord-token' } })
 })
 
@@ -70,6 +79,10 @@ test('loads global agent configuration and enabled platform connections from SQL
       assert.deepStrictEqual(discord.access.guilds, { mode: 'deny', ids: ['guild-1'] })
       assert.deepStrictEqual(discord.mentionRoleIds, ['role-1'])
       assert.strictEqual(discord.respondToGlobalMentions, true)
+      assert.deepStrictEqual(discord.invocation, {
+        defaultMode: 'mention-only',
+        channels: [{ channelId: 'channel-1', mode: 'all-messages' }],
+      })
     }).pipe(Effect.provide(database)),
   ))
 

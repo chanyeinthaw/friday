@@ -35,6 +35,9 @@ const ConfiguredModel = Schema.Struct({
   thinkingLevel: ThinkingLevel,
 })
 
+export const InvocationMode = Schema.Literals(['mention-only', 'all-messages'])
+export type InvocationMode = typeof InvocationMode.Type
+
 export const DiscordPlatformConfig = Schema.Struct({
   connectionId: PlatformConnectionId,
   platform: Schema.Literal('discord'),
@@ -51,6 +54,10 @@ export const DiscordPlatformConfig = Schema.Struct({
   }),
   respondToGlobalMentions: Schema.Boolean,
   mentionRoleIds: IdentifierArray,
+  invocation: Schema.Struct({
+    defaultMode: InvocationMode,
+    channels: Schema.Array(Schema.Struct({ channelId: Identifier, mode: InvocationMode })),
+  }),
 })
 export type DiscordPlatformConfig = typeof DiscordPlatformConfig.Type
 
@@ -146,6 +153,17 @@ const DiscordConnectionRow = Schema.Struct({
   respond_to_global_mentions: Schema.Number,
 })
 
+const InvocationDefaultRow = Schema.Struct({
+  connection_id: Schema.String,
+  mode: InvocationMode,
+})
+
+const ChannelInvocationRow = Schema.Struct({
+  connection_id: Schema.String,
+  channel_id: Schema.String,
+  mode: InvocationMode,
+})
+
 const DiscordMentionRoleRow = Schema.Struct({
   connection_id: Schema.String,
   role_id: Schema.String,
@@ -166,6 +184,8 @@ const AccessSubjectRow = Schema.Struct({
 const decodeAgentConfigRows = Schema.decodeUnknownEffect(Schema.Array(AgentConfigRow))
 const decodeSubagentProfileRows = Schema.decodeUnknownEffect(Schema.Array(SubagentProfileRow))
 const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
+const decodeInvocationDefaultRows = Schema.decodeUnknownEffect(Schema.Array(InvocationDefaultRow))
+const decodeChannelInvocationRows = Schema.decodeUnknownEffect(Schema.Array(ChannelInvocationRow))
 const decodeDiscordMentionRoleRows = Schema.decodeUnknownEffect(Schema.Array(DiscordMentionRoleRow))
 const decodeAccessPolicyRows = Schema.decodeUnknownEffect(Schema.Array(AccessPolicyRow))
 const decodeAccessSubjectRows = Schema.decodeUnknownEffect(Schema.Array(AccessSubjectRow))
@@ -205,6 +225,12 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
       AND platform_connections.enabled = 1
     ORDER BY platform_connections.connection_id
   `
+  const invocationDefaults = yield* sql<
+    Record<string, unknown>
+  >`SELECT * FROM platform_invocation_defaults ORDER BY connection_id`
+  const channelInvocations = yield* sql<
+    Record<string, unknown>
+  >`SELECT * FROM platform_channel_invocation_policies ORDER BY connection_id, channel_id`
   const mentionRoles = yield* sql<
     Record<string, unknown>
   >`SELECT * FROM discord_mention_roles ORDER BY connection_id, role_id`
@@ -218,6 +244,8 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
     agent,
     profiles: yield* decodeSubagentProfileRows(profiles),
     discord: yield* decodeDiscordConnectionRows(discord),
+    invocationDefaults: yield* decodeInvocationDefaultRows(invocationDefaults),
+    channelInvocations: yield* decodeChannelInvocationRows(channelInvocations),
     mentionRoles: yield* decodeDiscordMentionRoleRows(mentionRoles),
     policies: yield* decodeAccessPolicyRows(policies),
     subjects: yield* decodeAccessSubjectRows(subjects),
@@ -337,6 +365,15 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
             mentionRoleIds: rows.mentionRoles
               .filter((role) => role.connection_id === connection.connection_id)
               .map((role) => role.role_id),
+            invocation: {
+              defaultMode:
+                rows.invocationDefaults.find(
+                  (policy) => policy.connection_id === connection.connection_id,
+                )?.mode ?? 'mention-only',
+              channels: rows.channelInvocations
+                .filter((policy) => policy.connection_id === connection.connection_id)
+                .map((policy) => ({ channelId: policy.channel_id, mode: policy.mode })),
+            },
           })),
         ),
       ),

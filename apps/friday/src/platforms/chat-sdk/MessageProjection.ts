@@ -24,7 +24,7 @@ export interface ChatSdkThreadProjectionSource extends Pick<Thread, 'channelId' 
   readonly adapter: Pick<Thread['adapter'], 'name'>
 }
 
-export type ChatSdkMessageProjectionSource = Pick<Message, 'author' | 'id' | 'text'>
+export type ChatSdkMessageProjectionSource = Pick<Message, 'author' | 'id' | 'text' | 'isMention'>
 
 export const projectChatSdkContextMessage = (
   platform: ConversationBinding['platform'],

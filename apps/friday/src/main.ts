@@ -18,6 +18,7 @@ import { ensureRepositoryWorktree } from './repositories/RepositoryWorktrees.ts'
 import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
 import { withFridayLogging } from './logging/Live.ts'
+import { InvocationPolicies, InvocationPoliciesLive } from './platforms/InvocationPolicies.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
@@ -38,6 +39,10 @@ const WorkspaceCleanupNotificationsConfiguredLive = WorkspaceCleanupNotification
       ThreadPersistenceLive,
     ),
   ),
+)
+
+const InvocationPoliciesConfiguredLive = InvocationPoliciesLive.pipe(
+  Layer.provide(FridaySqliteLive),
 )
 
 const start = Effect.scoped(
@@ -66,6 +71,17 @@ const application = Effect.scoped(
   withFridayLogging(
     runFridayCli(process.argv.slice(2), {
       start,
+      setPlatformInvocation: (action) =>
+        InvocationPolicies.pipe(
+          Effect.flatMap((policies) =>
+            policies.setChannelMode({
+              connectionId: action.connectionId,
+              channelId: action.channelId,
+              mode: action.mode,
+            }),
+          ),
+          Effect.provide(InvocationPoliciesConfiguredLive),
+        ),
       applyWorkspaceCleanup: (action, currentWorkingDirectory) =>
         WorkspaceCleanup.pipe(
           Effect.flatMap((cleanup) => cleanup.apply(action.proposalId, currentWorkingDirectory)),

@@ -43,6 +43,7 @@ export type PlatformIngestionError<CreationError> =
   | CreationError
 
 export interface PlatformIngestionContract {
+  readonly hasBinding: (input: PlatformInput) => Effect.Effect<boolean, ThreadPersistenceError>
   readonly ingest: <CreationError, ContextError = never>(
     input: PlatformInput,
     createThread: (input: PlatformInput) => Effect.Effect<Thread, CreationError>,
@@ -66,6 +67,14 @@ export const PlatformIngestionLive = Layer.effect(
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
     return PlatformIngestion.of({
+      hasBinding: (input) =>
+        persistence
+          .findPlatformThread({
+            platform: input.binding.platform,
+            connectionId: input.binding.connectionId,
+            conversationId: input.binding.conversationId,
+          })
+          .pipe(Effect.map(Option.isSome)),
       ingest: (input, createThread, loadInitialContext) => {
         const key = `${input.binding.connectionId}:${input.binding.channelId}`
         const annotations = {

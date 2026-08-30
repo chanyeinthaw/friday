@@ -8,7 +8,11 @@ import * as Schema from 'effect/Schema'
 import { TestClock } from 'effect/testing'
 
 import { ChatSdkCallbackError } from './Errors.ts'
-import { startChatSdkLifecycle, type ChatSdkLifecycleSource } from './ChatSdkLifecycle.ts'
+import {
+  startChatSdkLifecycle,
+  type ChatSdkLifecycleSource,
+  type ChatSdkMessageHandler,
+} from './ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform, type ChatSdkPublicationSource } from './ChatSdkPlatform.ts'
 import {
   projectChatSdkMessage,
@@ -79,6 +83,55 @@ it.effect('keeps effectful authorization failures inside the callback error chan
         )
         assert(Exit.isFailure(exit))
         assert(isChatSdkCallbackError(Cause.squash(exit.cause)))
+      }),
+    )
+  }),
+)
+
+it.effect('classifies mentions inside subscribed threads as mention invocations', () =>
+  Effect.gen(function* () {
+    const subscribed: Array<ChatSdkMessageHandler> = []
+    const kinds: Array<string> = []
+    const chat: ChatSdkLifecycleSource = {
+      initialize: async () => undefined,
+      shutdown: async () => undefined,
+      thread: () => ({ post: () => Promise.resolve({}) }),
+      onNewMention: () => undefined,
+      onDirectMessage: () => undefined,
+      onSubscribedMessage: (handler) => subscribed.push(handler),
+    }
+
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* startChatSdkLifecycle({
+          connectionId: 'discord',
+          chat,
+          shouldHandleMessage: (kind) =>
+            Effect.sync(() => {
+              kinds.push(kind)
+              return false
+            }),
+          onInboundMessage: () => Effect.die('inbound should not run'),
+        })
+        yield* Effect.promise(
+          () =>
+            subscribed[0]?.(
+              { adapter: { name: 'discord' }, channelId: 'channel-1', id: 'thread-1' },
+              {
+                id: 'message-1',
+                text: 'hello',
+                isMention: true,
+                author: {
+                  userId: 'user-1',
+                  userName: 'user',
+                  fullName: 'User',
+                  isBot: false,
+                  isMe: false,
+                },
+              },
+            ) ?? Promise.resolve(),
+        )
+        assert.deepStrictEqual(kinds, ['mention'])
       }),
     )
   }),
