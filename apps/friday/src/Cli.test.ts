@@ -5,27 +5,54 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { FridayCliError, parseFridayCli } from './Cli.ts'
+import { RepositoryUrl } from './repositories/RepositoryWorktrees.ts'
 
 const isFridayCliError = Schema.is(FridayCliError)
+const decodeRepositoryUrl = Schema.decodeSync(RepositoryUrl)
 
 it.effect('uses start as the default command', () =>
   Effect.gen(function* () {
-    assert.strictEqual(yield* parseFridayCli([]), 'start')
-    assert.strictEqual(yield* parseFridayCli(['start']), 'start')
+    assert.deepStrictEqual(yield* parseFridayCli([]), { type: 'start' })
+    assert.deepStrictEqual(yield* parseFridayCli(['start']), { type: 'start' })
   }),
 )
 
 it.effect('recognizes help without starting Friday', () =>
   Effect.gen(function* () {
-    assert.strictEqual(yield* parseFridayCli(['--help']), 'help')
-    assert.strictEqual(yield* parseFridayCli(['-h']), 'help')
+    assert.deepStrictEqual(yield* parseFridayCli(['--help']), { type: 'help' })
+    assert.deepStrictEqual(yield* parseFridayCli(['-h']), { type: 'help' })
   }),
 )
 
 it.effect('recognizes version without starting Friday', () =>
   Effect.gen(function* () {
-    assert.strictEqual(yield* parseFridayCli(['--version']), 'version')
-    assert.strictEqual(yield* parseFridayCli(['-v']), 'version')
+    assert.deepStrictEqual(yield* parseFridayCli(['--version']), { type: 'version' })
+    assert.deepStrictEqual(yield* parseFridayCli(['-v']), { type: 'version' })
+  }),
+)
+
+it.effect('parses managed worktree options', () =>
+  Effect.gen(function* () {
+    const url = decodeRepositoryUrl('git@github.com:one-terrace/timezone-relay-bot.git')
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'worktree',
+        'ensure',
+        'git@github.com:one-terrace/timezone-relay-bot.git',
+        '--workspace',
+        '/tmp/channel',
+        '--ref',
+        'main',
+        '--json',
+      ]),
+      {
+        type: 'worktree-ensure',
+        url,
+        workspace: '/tmp/channel',
+        ref: 'main',
+        json: true,
+      },
+    )
   }),
 )
 

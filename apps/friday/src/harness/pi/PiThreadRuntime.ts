@@ -342,16 +342,18 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
             ),
           )
       : options.thread.role === 'bootstrap'
-        ? yield* options.systemPromptTemplates.renderBootstrapAgent.pipe(
-            Effect.mapError(
-              (cause) =>
-                new PiThreadRuntimeError({
-                  operation: 'create-session',
-                  detail: cause.detail,
-                  cause,
-                }),
-            ),
-          )
+        ? yield* options.systemPromptTemplates
+            .renderBootstrapAgent(options.thread.workingDirectory)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PiThreadRuntimeError({
+                    operation: 'create-session',
+                    detail: cause.detail,
+                    cause,
+                  }),
+              ),
+            )
         : undefined
     : undefined
   const resourceLoader = systemPrompt

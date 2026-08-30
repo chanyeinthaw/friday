@@ -251,12 +251,6 @@ const validateWorkingDirectory = Effect.fn('Tasks.validateWorkingDirectory')(fun
         taskError('invalid-working-directory', 'The parent channel workspace cannot be resolved.'),
       ),
     )
-  if (workingDirectoriesConflict(directory, channelWorkspace)) {
-    return yield* taskError(
-      'channel-workspace',
-      'Normal tasks cannot run at the parent channel workspace root.',
-    )
-  }
   if (!isWorkingDirectoryInsideWorkspace(channelWorkspace, directory)) {
     return yield* taskError(
       'outside-channel-workspace',

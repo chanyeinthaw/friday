@@ -39,10 +39,10 @@ describe('task workspace policy', () => {
     expect(workingDirectoriesConflict('/work/project', '/work/project/subdirectory')).toBe(false)
   })
 
-  it('accepts only child directories inside the channel workspace', () => {
+  it('accepts the channel workspace and its child directories', () => {
     expect(isWorkingDirectoryInsideWorkspace('/workspace', '/workspace/repo')).toBe(true)
     expect(isWorkingDirectoryInsideWorkspace('/workspace', '/workspace/tasks/task-1')).toBe(true)
-    expect(isWorkingDirectoryInsideWorkspace('/workspace', '/workspace')).toBe(false)
+    expect(isWorkingDirectoryInsideWorkspace('/workspace', '/workspace')).toBe(true)
     expect(isWorkingDirectoryInsideWorkspace('/workspace', '/')).toBe(false)
     expect(isWorkingDirectoryInsideWorkspace('/workspace', '/workspace-copy/repo')).toBe(false)
     expect(isWorkingDirectoryInsideWorkspace('/workspace', '/tmp/repo')).toBe(false)

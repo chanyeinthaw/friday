@@ -5,6 +5,7 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 
 import type { SubagentProfile } from '../config/AppConfig.ts'
+import { FRIDAY_CLI_PATH } from '../FridayHome.ts'
 import bootstrapAgentTemplate from './templates/bootstrap-agent.md' with { type: 'text' }
 import channelAgentTemplate from './templates/channel-agent.md' with { type: 'text' }
 
@@ -25,7 +26,9 @@ export interface SystemPromptTemplatesContract {
   readonly renderChannelAgent: (
     context: ChannelAgentSystemPromptContext,
   ) => Effect.Effect<string, SystemPromptTemplateError>
-  readonly renderBootstrapAgent: Effect.Effect<string, SystemPromptTemplateError>
+  readonly renderBootstrapAgent: (
+    currentWorkingDirectory: string,
+  ) => Effect.Effect<string, SystemPromptTemplateError>
 }
 
 export class SystemPromptTemplates extends Context.Service<
@@ -81,7 +84,11 @@ export const makeSystemPromptTemplates = (templates: {
         currentWorkingDirectory: context.thread.workingDirectory,
         availableAgentModels: renderAvailableModels(context.availableAgentModels),
       }),
-    renderBootstrapAgent: renderTemplate('bootstrap-agent', templates.bootstrapAgent, {}),
+    renderBootstrapAgent: (currentWorkingDirectory) =>
+      renderTemplate('bootstrap-agent', templates.bootstrapAgent, {
+        currentWorkingDirectory,
+        fridayCliPath: FRIDAY_CLI_PATH,
+      }),
   })
 
 export const SystemPromptTemplatesLive = Layer.succeed(

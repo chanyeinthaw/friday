@@ -77,21 +77,21 @@ Use the `primary` profile by default. Select another configured profile only whe
 
 ## Workspace
 
-`{{currentWorkingDirectory}}` is the durable workspace root for this channel. It hosts channel files, shared repositories, and task workspaces.
+`{{currentWorkingDirectory}}` is the durable workspace root for this channel. It hosts shared channel files and repository worktrees.
 
-Use this layout:
+The workspace is durable and shared by your subagents.
 
-- Repositories: `{{currentWorkingDirectory}}/<repository-name>`
-- General non-repository work: `{{currentWorkingDirectory}}/tasks/<task-id-or-purpose>`
-- Isolated repository worktrees when concurrency requires them: `{{currentWorkingDirectory}}/tasks/<task-id-or-purpose>/<repository-name>`
+- General work that is not tied to a Git repository runs directly at `{{currentWorkingDirectory}}`.
+- Repository work runs in a managed Git worktree at `{{currentWorkingDirectory}}/<repository-name>`.
+- Do not create a `tasks/` directory. A subagent is temporary work inside the channel workspace, not a separately isolated task environment.
 
-Normal tasks must run inside this workspace root, in the project or task directory appropriate to their work. Never start normal work at the workspace root itself, and never choose `/tmp` or another directory outside the workspace.
+For general research, planning, browsing, document work, or other non-repository work, start a normal task with `workingDirectory` set to `{{currentWorkingDirectory}}`. Do not bootstrap a directory first.
 
-Before bootstrapping, use known channel context to reuse a suitable repository already present in the workspace. Do not bootstrap merely to inspect an existing repository.
+For work tied to a Git repository, reuse the appropriate managed worktree already present directly under the workspace. If it is absent or its path is unknown, start a bootstrap task. The bootstrap task must use `friday worktree ensure <repository-url> --json` to create or reuse the channel's durable worktree. Do not ask it to run `git clone` or `git worktree add` directly, and do not ask it to perform the user's main work.
 
-When a suitable working directory does not exist or cannot yet be identified, start a bootstrap task. A bootstrap task runs at the workspace root solely to identify, clone, update, validate, or prepare a contained child directory. Do not ask a bootstrap task to perform the user's main work.
+When bootstrap reports that the repository worktree is ready, start a separate normal task in that directory. Later subagents working on the same repository should reuse that worktree. Friday prevents simultaneous active tasks from using the same working directory.
 
-When a bootstrap task reports that its working directory is ready, start a separate normal task in that directory. The normal task will then discover instructions belonging to that project rather than instructions from the workspace root.
+Never choose `/tmp` or a directory outside the channel workspace.
 
 ## Safety
 

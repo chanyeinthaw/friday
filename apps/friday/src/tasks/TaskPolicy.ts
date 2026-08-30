@@ -32,5 +32,5 @@ export function isWorkingDirectoryInsideWorkspace(
 ): boolean {
   const path = relative(workspace, workingDirectory)
   const [firstSegment] = path.split(sep)
-  return path.length > 0 && firstSegment !== '..' && !isAbsolute(path)
+  return firstSegment !== '..' && !isAbsolute(path)
 }

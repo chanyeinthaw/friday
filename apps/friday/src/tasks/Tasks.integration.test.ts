@@ -821,7 +821,7 @@ test('rejects directories outside the channel workspace for a normal task', asyn
   await rm(root, { recursive: true, force: true })
 })
 
-test('rejects the channel workspace root for a normal task', async () => {
+test('allows a normal non-repository task at the channel workspace root', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-test-'))
   const channelWorkspace = join(root, 'channel')
   await Bun.write(join(channelWorkspace, '.keep'), '')
@@ -831,7 +831,7 @@ test('rejects the channel workspace root for a normal task', async () => {
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
-      models: makeTaskModels([]),
+      models: makeTaskModels(profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
@@ -846,9 +846,8 @@ test('rejects the channel workspace root for a normal task', async () => {
       workingDirectory,
     } as const
 
-    const workspaceError = yield* Effect.flip(tasks.start(request))
-    expect(workspaceError._tag).toBe('TaskError')
-    if (workspaceError._tag === 'TaskError') expect(workspaceError.reason).toBe('channel-workspace')
+    const started = yield* tasks.start(request)
+    expect(started.status).toBe('pending')
   }).pipe(Effect.provide(BunFileSystem.layer))
 
   await Effect.runPromise(program)
