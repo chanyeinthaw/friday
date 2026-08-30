@@ -1,14 +1,13 @@
 const tag = process.argv[2]
-const tagPattern = /^v(\d+\.\d+\.\d+)-([0-9A-Za-z]{7})$/
+const tagPattern = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)$/
 const match = tagPattern.exec(tag ?? '')
 
 if (!match) {
-  console.error('Expected release tag in the form vX.Y.Z-XXXXXXX')
+  console.error('Expected a SemVer tag such as v1.2.3 or v0.0.0-nightly.1')
   process.exit(1)
 }
 
-const [, semver, build] = match
-const version = `${semver}-${build}`
+const [, version] = match
 const packagePaths = ['package.json', 'apps/friday/package.json'] as const
 
 for (const path of packagePaths) {

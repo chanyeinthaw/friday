@@ -1,8 +1,8 @@
 const tag = process.argv[2]
-const tagPattern = /^v\d+\.\d+\.\d+-[0-9A-Za-z]{7}$/
+const tagPattern = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/
 
 if (!tagPattern.test(tag ?? '')) {
-  console.error('Expected release tag in the form vX.Y.Z-XXXXXXX')
+  console.error('Expected a SemVer tag such as v1.2.3 or v0.0.0-nightly.1')
   process.exit(1)
 }
 
