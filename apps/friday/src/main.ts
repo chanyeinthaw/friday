@@ -28,6 +28,7 @@ import {
   DiscordActivityDescriptionsLive,
 } from './platforms/DiscordActivityDescriptions.ts'
 import { AppConfig } from './config/AppConfigLive.ts'
+import { DiscordAdmins, DiscordAdminsLive } from './config/DiscordAdmins.ts'
 import { SystemChannels, SystemChannelsLive } from './platforms/SystemChannels.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
@@ -58,6 +59,7 @@ const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLiv
   Layer.provide(FridaySqliteLive),
 )
 const SystemChannelsConfiguredLive = SystemChannelsLive.pipe(Layer.provide(FridaySqliteLive))
+const DiscordAdminsConfiguredLive = DiscordAdminsLive.pipe(Layer.provide(FridaySqliteLive))
 
 const start = Effect.scoped(
   Effect.gen(function* () {
@@ -121,6 +123,21 @@ const application = Effect.scoped(
             }),
           ),
           Effect.provide(InvocationPoliciesConfiguredLive),
+        ),
+      addDiscordAdmin: (userId) =>
+        DiscordAdmins.pipe(
+          Effect.flatMap((admins) => admins.add(userId)),
+          Effect.provide(DiscordAdminsConfiguredLive),
+        ),
+      removeDiscordAdmin: (userId) =>
+        DiscordAdmins.pipe(
+          Effect.flatMap((admins) => admins.remove(userId)),
+          Effect.provide(DiscordAdminsConfiguredLive),
+        ),
+      listDiscordAdmins: () =>
+        DiscordAdmins.pipe(
+          Effect.flatMap((admins) => admins.list()),
+          Effect.provide(DiscordAdminsConfiguredLive),
         ),
       applyWorkspaceCleanup: (action, currentWorkingDirectory) =>
         WorkspaceCleanup.pipe(

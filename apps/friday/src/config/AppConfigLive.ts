@@ -42,56 +42,70 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigContract>()(
 
 const isAppConfigError = Schema.is(AppConfigError)
 
-export const AppConfigLive = Layer.effect(
-  AppConfig,
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-    yield* runMigrations()
-    const initial = yield* loadAppConfig()
-    const snapshot = MutableRef.make<AppConfigSnapshot>({ version: 1, config: initial })
-    // Serializes reload loads so concurrent swaps cannot regress the version.
-    const reloadLock = yield* Semaphore.make(1)
+export interface AppConfigLiveOptions {
+  /**
+   * Resolves platform secrets from an explicit environment instead of
+   * `process.env`. Mirrors the `loadAppConfig` options so tests can inject an
+   * environment; the default layer reads `process.env`.
+   */
+  readonly environment?: Readonly<Record<string, string | undefined>>
+}
 
-    return AppConfig.of({
-      current: () => MutableRef.get(snapshot).config,
-      reload: reloadLock
-        .withPermits(1)(
-          Effect.gen(function* () {
-            const running = MutableRef.get(snapshot)
-            const loaded = yield* loadAppConfig().pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-              // Keep the reload contract typed: persistence failures become
-              // AppConfigError, and a failed load never touches the snapshot.
-              Effect.catch((cause) =>
-                isAppConfigError(cause)
-                  ? Effect.fail(cause)
-                  : Effect.fail(
-                      new AppConfigError({
-                        operation: 'read',
-                        path: 'database',
-                        detail: String(cause),
-                        cause,
-                      }),
-                    ),
+/** Builds the configuration layer with explicit `loadAppConfig` options. */
+export const makeAppConfigLive = (options?: AppConfigLiveOptions) =>
+  Layer.effect(
+    AppConfig,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* runMigrations()
+      const initial = yield* loadAppConfig(options)
+      const snapshot = MutableRef.make<AppConfigSnapshot>({ version: 1, config: initial })
+      // Serializes reload loads so concurrent swaps cannot regress the version.
+      const reloadLock = yield* Semaphore.make(1)
+
+      return AppConfig.of({
+        current: () => MutableRef.get(snapshot).config,
+        reload: reloadLock
+          .withPermits(1)(
+            Effect.gen(function* () {
+              const running = MutableRef.get(snapshot)
+              const loaded = yield* loadAppConfig(options).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                // Keep the reload contract typed: persistence failures become
+                // AppConfigError, and a failed load never touches the snapshot.
+                Effect.catch((cause) =>
+                  isAppConfigError(cause)
+                    ? Effect.fail(cause)
+                    : Effect.fail(
+                        new AppConfigError({
+                          operation: 'read',
+                          path: 'database',
+                          detail: String(cause),
+                          cause,
+                        }),
+                      ),
+                ),
+              )
+              const next: AppConfigSnapshot = {
+                version: running.version + 1,
+                config: mergeReloadedAppConfig(running.config, loaded),
+              }
+              // Atomic swap: concurrent readers observe either the previous or the
+              // next complete snapshot, never a partially built configuration.
+              MutableRef.set(next)(snapshot)
+              return next.version
+            }),
+          )
+          .pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning('config.reload.failed').pipe(
+                Effect.annotateLogs({ detail: cause.detail, path: cause.path }),
               ),
-            )
-            const next: AppConfigSnapshot = {
-              version: running.version + 1,
-              config: mergeReloadedAppConfig(running.config, loaded),
-            }
-            // Atomic swap: concurrent readers observe either the previous or the
-            // next complete snapshot, never a partially built configuration.
-            MutableRef.set(next)(snapshot)
-            return next.version
-          }),
-        )
-        .pipe(
-          Effect.tapError((cause) =>
-            Effect.logWarning('config.reload.failed').pipe(
-              Effect.annotateLogs({ detail: cause.detail, path: cause.path }),
             ),
           ),
-        ),
-    })
-  }),
-)
+      })
+    }),
+  )
+
+/** The production configuration layer; secrets resolve from `process.env`. */
+export const AppConfigLive = makeAppConfigLive()

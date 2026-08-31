@@ -34,16 +34,24 @@ Changes to these require a Friday restart.
 ## Admin allow-list
 
 `/friday reload` is authorized by exact match against stable Discord user IDs
-stored in the `admin_discord_users` table:
+stored in the `admin_discord_users` table. The list is read into the snapshot
+at startup and pinned across reloads, so a database edit can never lock
+administrators out of a running process. Managing the list is a restart-based
+operation.
 
-```sql
-INSERT INTO admin_discord_users (user_id, created_at)
-VALUES ('123456789012345678', CURRENT_TIMESTAMP);
+### CLI
+
+The administrator allow-list is managed through direct SQLite administration —
+the commands never use the control socket, so they work while Friday is not
+running. User IDs are validated as Discord snowflakes (17-20 digits). Add and
+remove are idempotent and report a clear outcome either way; both require a
+Friday restart because the running process pins the allow-list at startup.
+
 ```
-
-The list is read into the snapshot at startup and pinned across reloads, so a
-database edit can never lock administrators out of a running process. Managing
-the list is a restart-based operation.
+friday config admin discord add <user-id>
+friday config admin discord remove <user-id>
+friday config admin discord list [--json]
+```
 
 ## How to reload
 
