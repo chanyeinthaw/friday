@@ -355,6 +355,12 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
 
 const respondEphemeral = (event: SlashCommandEvent, message: string) =>
   Effect.tryPromise({
-    try: () => event.channel.postEphemeral(event.user, message, { fallbackToDM: false }),
+    // The Discord adapter (chat SDK 4.38) implements no postEphemeral, so a
+    // direct postEphemeral call returns null and leaves the deferred interaction
+    // response hanging. Posting through the channel is intercepted by the
+    // adapter's slash-command context and completes the interaction webhook's
+    // original response; the Ephemeral interactionFlags set at deferReply keep
+    // it visible only to the caller.
+    try: () => event.channel.post(message),
     catch: (cause) => new ChatSdkCallbackError({ operation: 'slash-command', cause }),
   }).pipe(Effect.asVoid)

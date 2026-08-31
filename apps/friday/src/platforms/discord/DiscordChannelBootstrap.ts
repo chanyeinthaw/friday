@@ -73,6 +73,9 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
         ),
       )
     const timestamp = DateTime.formatIso(yield* DateTime.now)
+    // One coherent read: a reload between two reads could otherwise pair a
+    // model from one snapshot with a thinking level from another.
+    const model = options.model?.()
     return decodeChannelThread({
       id: decodeThreadId(yield* crypto.randomUUIDv4),
       audience: 'user',
@@ -81,11 +84,11 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
       harness: 'pi',
       harnessSession: null,
       workingDirectory,
-      model: options.model?.() ?? {
+      model: model ?? {
         provider: 'opencode-go',
         modelId: 'deepseek-v4-flash',
       },
-      thinkingLevel: options.model?.().thinkingLevel ?? 'max',
+      thinkingLevel: model?.thinkingLevel ?? 'max',
       channelContext: {
         name: channelName,
         description: channelDescription,

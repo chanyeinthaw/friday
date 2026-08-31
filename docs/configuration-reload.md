@@ -84,6 +84,8 @@ lock:
   cannot hang
 - return structured outcomes: `{ ok: true, version }` on success and
   `{ ok: false, reason, detail }` on failure
+- are requested under a client-side deadline (10 seconds) and response size
+  cap, so an unresponsive or misbehaving server fails fast with a typed error
 
 CLI configuration commands that write SQLite (`platform invocation set`,
 `platform system-channel set/reset`) take effect on the next reload.
