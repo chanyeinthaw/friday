@@ -13,6 +13,7 @@ import {
   FRIDAY_CLI_PATH,
   FRIDAY_LOG_DIRECTORY,
   FRIDAY_LOG_PATH,
+  isPackagedBuild,
 } from './FridayHome.ts'
 import { ensureRepositoryWorktree } from './repositories/RepositoryWorktrees.ts'
 import { runFridayCli } from './Cli.ts'
@@ -50,12 +51,14 @@ const SystemChannelsConfiguredLive = SystemChannelsLive.pipe(Layer.provide(Frida
 const start = Effect.scoped(
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem
-    yield* fileSystem.makeDirectory(FRIDAY_BIN_DIRECTORY, { recursive: true })
-    yield* fileSystem.writeFileString(
-      FRIDAY_CLI_PATH,
-      `#!/usr/bin/env sh\nexec "${process.execPath}" "${import.meta.filename}" "$@"\n`,
-    )
-    yield* fileSystem.chmod(FRIDAY_CLI_PATH, 0o755)
+    if (!isPackagedBuild) {
+      yield* fileSystem.makeDirectory(FRIDAY_BIN_DIRECTORY, { recursive: true })
+      yield* fileSystem.writeFileString(
+        FRIDAY_CLI_PATH,
+        `#!/usr/bin/env sh\nexec "${process.execPath}" "${import.meta.filename}" "$@"\n`,
+      )
+      yield* fileSystem.chmod(FRIDAY_CLI_PATH, 0o755)
+    }
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
     const cleanupNotifications = yield* WorkspaceCleanupNotifications
     yield* cleanupNotifications.run.pipe(Effect.forkScoped)
