@@ -366,17 +366,19 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
     options.thread.audience === 'agent' && options.thread.role === 'subagent'
       ? renderModelHint(options.thread)
       : undefined
+  const resourceLoaderOptions: ConstructorParameters<typeof DefaultResourceLoader>[0] = {
+    cwd: options.thread.workingDirectory,
+    agentDir: getAgentDir(),
+  }
+  if (systemPrompt) resourceLoaderOptions.systemPromptOverride = () => systemPrompt
+  if (subagentModelHint) {
+    resourceLoaderOptions.appendSystemPromptOverride = (base: Array<string>) => [
+      ...base,
+      subagentModelHint,
+    ]
+  }
   const resourceLoader =
-    systemPrompt || subagentModelHint
-      ? new DefaultResourceLoader({
-          cwd: options.thread.workingDirectory,
-          agentDir: getAgentDir(),
-          ...(systemPrompt ? { systemPromptOverride: () => systemPrompt } : {}),
-          ...(subagentModelHint
-            ? { appendSystemPromptOverride: (base) => [...base, subagentModelHint] }
-            : {}),
-        })
-      : undefined
+    systemPrompt || subagentModelHint ? new DefaultResourceLoader(resourceLoaderOptions) : undefined
   if (resourceLoader) {
     yield* Effect.tryPromise({
       try: () => resourceLoader.reload(),
