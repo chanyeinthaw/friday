@@ -231,6 +231,120 @@ test('publishes task lifecycle in order and cleans up once for an immediately te
   expect(activity).toEqual(['started:task-immediate-task', 'finished:task-immediate-task'])
 })
 
+test('finalizes initial task activity when awaitTerminal defects', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-terminal-failure-'))
+  const channelWorkspace = join(root, 'channel')
+  const projectDirectory = join(channelWorkspace, 'project')
+  await Promise.all([
+    Bun.write(join(channelWorkspace, '.keep'), ''),
+    Bun.write(join(projectDirectory, '.keep'), ''),
+  ])
+
+  const parent = parentThread(channelWorkspace)
+  const activeTasks = new Set<string>()
+  const finishedTasks: Array<string> = []
+  const identifiers = ['terminal-failure-task', 'terminal-failure-turn']
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence: makePersistence(parent, []),
+      friday: {
+        openThread: () =>
+          Effect.succeed({
+            prompt: (turn) =>
+              Effect.succeed({
+                turnId: turn.id,
+                awaitTerminal: Effect.die('terminal watcher failed'),
+              }),
+            steer: () => Effect.void,
+            cancel: () => Effect.void,
+            onEvent: () => Effect.void,
+            start: Effect.void,
+            drain: Effect.never,
+          }),
+      },
+      models: makeTaskModels(profilesFor(parent)),
+      channelTurns: noChannelTurns,
+      conversationTitles: {
+        generated: () => Effect.void,
+        taskStarted: (_parent, taskId) =>
+          Effect.sync(() => activeTasks.add(String(taskId))).pipe(Effect.asVoid),
+        taskFinished: (_parent, taskId) =>
+          Effect.sync(() => {
+            const id = String(taskId)
+            activeTasks.delete(id)
+            finishedTasks.push(id)
+          }),
+      },
+      fileSystem,
+      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: (effect) => effect,
+    })
+
+    return yield* tasks.start({
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Fail after starting.',
+      workingDirectory: decodeWorkingDirectory(projectDirectory),
+    })
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  const started = await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  expect(String(started.taskId)).toBe('task-terminal-failure-task')
+  expect(finishedTasks).toEqual(['task-terminal-failure-task'])
+  expect(activeTasks.size).toBe(0)
+})
+
+test('finalizes initial task activity once when watcher installation fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-watcher-failure-'))
+  const channelWorkspace = join(root, 'channel')
+  const projectDirectory = join(channelWorkspace, 'project')
+  await Promise.all([
+    Bun.write(join(channelWorkspace, '.keep'), ''),
+    Bun.write(join(projectDirectory, '.keep'), ''),
+  ])
+
+  const parent = parentThread(channelWorkspace)
+  const activity: Array<string> = []
+  const identifiers = ['watcher-failure-task', 'watcher-failure-turn']
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence: makePersistence(parent, []),
+      friday: makeFriday([]),
+      models: makeTaskModels(profilesFor(parent)),
+      channelTurns: noChannelTurns,
+      conversationTitles: {
+        generated: () => Effect.void,
+        taskStarted: () => Effect.sync(() => activity.push('started')),
+        taskFinished: () => Effect.sync(() => activity.push('finished')),
+      },
+      fileSystem,
+      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: () => Effect.die('watcher installation failed'),
+    })
+
+    return yield* Effect.exit(
+      tasks.start({
+        parentThreadId: parent.id,
+        parentTurnId: decodeTurnId('turn-parent'),
+        task: 'Fail watcher installation.',
+        workingDirectory: decodeWorkingDirectory(projectDirectory),
+      }),
+    )
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  const exit = await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  expect(exit._tag).toBe('Failure')
+  expect(activity).toEqual(['started', 'finished'])
+})
+
 test('applies the selected subagent profile model and thinking level', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-profile-'))
   const channelWorkspace = join(root, 'channel')
