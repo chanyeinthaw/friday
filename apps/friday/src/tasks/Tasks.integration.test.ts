@@ -164,6 +164,73 @@ test('starts a subagent task without waiting for its terminal result', async () 
   expect(promptedTurns[0]?.input.content.text).toBe('Inspect the repository and report the result.')
 })
 
+test('publishes task lifecycle in order and cleans up once for an immediately terminal task', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-lifecycle-'))
+  const channelWorkspace = join(root, 'channel')
+  const projectDirectory = join(channelWorkspace, 'project')
+  await Promise.all([
+    Bun.write(join(channelWorkspace, '.keep'), ''),
+    Bun.write(join(projectDirectory, '.keep'), ''),
+  ])
+
+  const parent = parentThread(channelWorkspace)
+  const activity: Array<string> = []
+  const identifiers = ['immediate-task', 'immediate-turn']
+  const friday: FridayContract = {
+    openThread: () =>
+      Effect.succeed({
+        prompt: (turn) =>
+          Effect.succeed({
+            turnId: turn.id,
+            awaitTerminal: Effect.succeed({
+              status: 'completed' as const,
+              turnId: turn.id,
+              agentMessage: 'Immediate result.',
+              usage: null,
+            }),
+          }),
+        steer: () => Effect.void,
+        cancel: () => Effect.void,
+        onEvent: () => Effect.void,
+        start: Effect.void,
+        drain: Effect.never,
+      }),
+  }
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence: makePersistence(parent, []),
+      friday,
+      models: makeTaskModels(profilesFor(parent)),
+      channelTurns: { accept: () => Effect.die('terminal delivery failed') },
+      conversationTitles: {
+        generated: () => Effect.void,
+        taskStarted: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`started:${String(taskId)}`)),
+        taskFinished: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`finished:${String(taskId)}`)),
+      },
+      fileSystem,
+      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
+    })
+
+    yield* tasks.start({
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Finish immediately.',
+      workingDirectory: decodeWorkingDirectory(projectDirectory),
+    })
+    yield* Effect.yieldNow
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  expect(activity).toEqual(['started:task-immediate-task', 'finished:task-immediate-task'])
+})
+
 test('applies the selected subagent profile model and thinking level', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-profile-'))
   const channelWorkspace = join(root, 'channel')

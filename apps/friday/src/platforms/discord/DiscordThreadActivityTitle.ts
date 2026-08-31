@@ -8,42 +8,63 @@ import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 const activityPrefix = '⚡ '
 const activityPrefixPattern = /^⚡ /u
 const titleLimit = 100
-const discordApiBase = 'https://discord.com/api/v10'
+const operationTimeout = '5 seconds'
 
 interface ThreadActivityState {
   /** Active channel-agent turns; each begin/finalize (or discard) pair contributes one. */
   turns: number
   /** Active subagent and background task IDs reported via agent-activity events. */
   readonly tasks: Set<string>
-  /** Last known thread name without the activity prefix; null until first observed. */
+  /** Last known thread name without the activity prefix. */
   baseName: string | null
-  /** Name believed to be set on Discord right now, used to skip redundant renames. */
+  /** Last name successfully applied by this wrapper. */
   appliedName: string | null
 }
 
-/** Narrow slice of the Discord adapter the wrapper needs to resolve thread IDs. */
-export interface DiscordThreadLocator {
-  decodeThreadId(threadId: string): { readonly threadId?: string | undefined }
+interface DiscordThreadLocation {
+  readonly guildId?: string | undefined
+  readonly channelId?: string | undefined
+  readonly threadId?: string | undefined
 }
 
+/** Narrow slice of the Discord adapter used for thread title reads and writes. */
+export interface DiscordThreadTitleAdapter {
+  decodeThreadId(threadId: string): DiscordThreadLocation
+  encodeThreadId(location: DiscordThreadLocation): string
+  fetchThread(threadId: string): Promise<{ readonly channelName?: string | undefined }>
+  setThreadTitle(threadId: string, title: string): Promise<void>
+}
+
+const truncateTitle = (title: string): string => Array.from(title).slice(0, titleLimit).join('')
+
+const bestEffort = (conversationId: string, effect: Effect.Effect<void, ChatSdkPublicationError>) =>
+  effect.pipe(
+    Effect.tapError((cause) =>
+      Effect.logWarning('discord.thread-activity-title.failed').pipe(
+        Effect.annotateLogs({ conversationId, cause: String(cause) }),
+      ),
+    ),
+    Effect.ignore,
+  )
+
 /**
- * Wraps a chat-SDK platform so a Discord thread's title is prefixed with `⚡ ` while
- * the thread has active work: a running channel-agent turn or one or more running
- * subagent/background tasks. The prefix is a single marker (never a count) and is
- * removed once no work is active.
- *
- * The wrapper is additive and best-effort: title sync failures are logged and never
- * fail the wrapped platform operations. State lives in memory; the current thread
- * name is fetched from Discord when unknown, and any existing prefix is stripped
- * first so the original title is preserved and prefixes never duplicate.
+ * Prefixes a Discord thread title with `⚡ ` while its channel turn or background tasks are active.
+ * Discord reads and writes are best-effort, bounded, and serialized per conversation.
  */
 export const withDiscordThreadActivityTitle = (
-  discord: DiscordThreadLocator,
-  botToken: string,
+  discord: DiscordThreadTitleAdapter,
   platform: PlatformAdapter<ChatSdkPublicationError>,
 ): PlatformAdapter<ChatSdkPublicationError> => {
-  const lock = Semaphore.makeUnsafe(1)
+  const locks = new Map<string, Semaphore.Semaphore>()
   const states = new Map<string, ThreadActivityState>()
+
+  const lockFor = (conversationId: string): Semaphore.Semaphore => {
+    const existing = locks.get(conversationId)
+    if (existing) return existing
+    const created = Semaphore.makeUnsafe(1)
+    locks.set(conversationId, created)
+    return created
+  }
 
   const stateFor = (conversationId: string): ThreadActivityState => {
     const existing = states.get(conversationId)
@@ -58,113 +79,130 @@ export const withDiscordThreadActivityTitle = (
     return created
   }
 
-  const threadIdFromConversation = (conversationId: string): string | null =>
-    discord.decodeThreadId(conversationId).threadId ?? null
-  const threadIdFromBinding = (binding: ConversationBinding): string | null =>
-    threadIdFromConversation(String(binding.conversationId))
+  const locationFor = (conversationId: string): DiscordThreadLocation | null => {
+    const location = discord.decodeThreadId(conversationId)
+    return location.threadId ? location : null
+  }
 
   const fetchThreadName = (
-    threadId: string,
+    conversationId: string,
+    location: DiscordThreadLocation,
   ): Effect.Effect<string | null, ChatSdkPublicationError> =>
     Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(`${discordApiBase}/channels/${threadId}`, {
-          headers: { Authorization: `Bot ${botToken}` },
-        })
-        if (!response.ok) throw new Error(`Discord thread lookup failed: HTTP ${response.status}`)
-        // SAFETY: Discord's documented channel response exposes an optional name.
-        const channel = (await response.json()) as { name?: string }
-        return channel.name ?? null
-      },
+      try: () =>
+        discord
+          .fetchThread(
+            discord.encodeThreadId({
+              guildId: location.guildId,
+              channelId: location.threadId,
+            }),
+          )
+          .then((thread) => thread.channelName ?? null),
       catch: (cause) =>
         new ChatSdkPublicationError({ operation: 'set-thread-activity-title', cause }),
-    })
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: operationTimeout,
+        orElse: () =>
+          Effect.fail(
+            new ChatSdkPublicationError({
+              operation: 'set-thread-activity-title',
+              cause: new Error(`Discord thread lookup timed out for '${conversationId}'`),
+            }),
+          ),
+      }),
+    )
 
   const renameThread = (
-    threadId: string,
+    conversationId: string,
     name: string,
   ): Effect.Effect<void, ChatSdkPublicationError> =>
     Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(`${discordApiBase}/channels/${threadId}`, {
-          method: 'PATCH',
-          headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        })
-        if (!response.ok) throw new Error(`Discord thread rename failed: HTTP ${response.status}`)
-      },
+      try: () => discord.setThreadTitle(conversationId, name),
       catch: (cause) =>
         new ChatSdkPublicationError({ operation: 'set-thread-activity-title', cause }),
-    })
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: operationTimeout,
+        orElse: () =>
+          Effect.fail(
+            new ChatSdkPublicationError({
+              operation: 'set-thread-activity-title',
+              cause: new Error(`Discord thread rename timed out for '${conversationId}'`),
+            }),
+          ),
+      }),
+    )
 
-  // Caller must hold `lock`; state must already exist for the conversation.
+  const refreshBaseName = (
+    conversationId: string,
+    location: DiscordThreadLocation,
+    state: ThreadActivityState,
+  ): Effect.Effect<void, ChatSdkPublicationError> =>
+    fetchThreadName(conversationId, location).pipe(
+      Effect.flatMap((name) => {
+        if (name === null) {
+          return Effect.fail(
+            new ChatSdkPublicationError({
+              operation: 'set-thread-activity-title',
+              cause: new Error(`Discord thread '${location.threadId}' has no name`),
+            }),
+          )
+        }
+        if (name !== state.appliedName) state.baseName = name.replace(activityPrefixPattern, '')
+        return Effect.void
+      }),
+    )
+
   const applyActivityTitle = (
     conversationId: string,
     state: ThreadActivityState,
   ): Effect.Effect<void, ChatSdkPublicationError> =>
     Effect.gen(function* () {
-      const threadId = threadIdFromConversation(conversationId)
-      if (threadId === null) return
-      if (state.baseName === null) {
-        yield* fetchThreadName(threadId).pipe(
-          Effect.flatMap((name) =>
-            name === null
-              ? Effect.fail(
-                  new ChatSdkPublicationError({
-                    operation: 'set-thread-activity-title',
-                    cause: new Error(`Discord thread '${threadId}' has no name`),
-                  }),
-                )
-              : Effect.sync(() => {
-                  state.baseName = name.replace(activityPrefixPattern, '')
-                }),
-          ),
-        )
-      }
+      if (state.baseName === null) return
       const active = state.turns > 0 || state.tasks.size > 0
-      const desired = `${active ? activityPrefix : ''}${state.baseName}`.slice(0, titleLimit)
+      const desired = truncateTitle(`${active ? activityPrefix : ''}${state.baseName}`)
       if (desired === state.appliedName) return
-      yield* renameThread(threadId, desired)
+      yield* renameThread(conversationId, desired)
       state.appliedName = desired
       yield* Effect.logInfo('discord.thread-activity-title.updated').pipe(
         Effect.annotateLogs({ conversationId, name: desired, active: String(active) }),
       )
     })
 
-  const applyActivityTitleBestEffort = (conversationId: string): Effect.Effect<void> =>
-    lock
-      .withPermit(
-        Effect.suspend(() => {
-          const state = states.get(conversationId)
-          return state ? applyActivityTitle(conversationId, state) : Effect.void
+  const updateActivity = (
+    binding: ConversationBinding,
+    update: (state: ThreadActivityState) => void,
+  ): Effect.Effect<void> => {
+    const conversationId = String(binding.conversationId)
+    const location = locationFor(conversationId)
+    if (location === null) return Effect.void
+    return lockFor(conversationId).withPermit(
+      bestEffort(
+        conversationId,
+        Effect.gen(function* () {
+          const state = stateFor(conversationId)
+          const wasActive = state.turns > 0 || state.tasks.size > 0
+          update(state)
+          const active = state.turns > 0 || state.tasks.size > 0
+          if (active !== wasActive || state.baseName === null) {
+            yield* refreshBaseName(conversationId, location, state)
+          }
+          yield* applyActivityTitle(conversationId, state)
         }),
-      )
-      .pipe(
-        Effect.tapError((cause) =>
-          Effect.logWarning('discord.thread-activity-title.failed').pipe(
-            Effect.annotateLogs({ conversationId, cause: String(cause) }),
-          ),
-        ),
-        Effect.ignore,
-      )
+      ),
+    )
+  }
 
   const markTurn = (binding: ConversationBinding, delta: 1 | -1): Effect.Effect<void> =>
-    Effect.suspend(() => {
-      const conversationId = String(binding.conversationId)
-      if (threadIdFromBinding(binding) === null) return Effect.void
-      const state = stateFor(conversationId)
+    updateActivity(binding, (state) => {
       state.turns = Math.max(0, state.turns + delta)
-      return applyActivityTitleBestEffort(conversationId)
     })
 
   const trackTask = (activity: PlatformAgentActivity): Effect.Effect<void> =>
-    Effect.suspend(() => {
-      const conversationId = String(activity.binding.conversationId)
-      if (threadIdFromConversation(conversationId) === null) return Effect.void
-      const state = stateFor(conversationId)
+    updateActivity(activity.binding, (state) => {
       if (activity.active) state.tasks.add(activity.taskId)
       else state.tasks.delete(activity.taskId)
-      return Effect.void
     })
 
   return {
@@ -181,22 +219,22 @@ export const withDiscordThreadActivityTitle = (
       markTurn(message.binding, -1).pipe(Effect.andThen(platform.finalizeWorking(message))),
     discardWorking: (binding) =>
       markTurn(binding, -1).pipe(Effect.andThen(platform.discardWorking(binding))),
-    setConversationTitle: (title) =>
-      lock.withPermit(
-        Effect.gen(function* () {
-          const conversationId = String(title.binding.conversationId)
-          const threadId = threadIdFromConversation(conversationId)
-          if (threadId === null) return yield* platform.setConversationTitle(title)
-          const state = stateFor(conversationId)
-          // A generated title replaces the base name; the prefix is reapplied on top if work is active.
-          state.baseName = title.title.replace(activityPrefixPattern, '')
-          yield* applyActivityTitle(conversationId, state)
-        }),
-      ),
+    setConversationTitle: (title) => {
+      const conversationId = String(title.binding.conversationId)
+      if (locationFor(conversationId) === null) return platform.setConversationTitle(title)
+      return lockFor(conversationId).withPermit(
+        bestEffort(
+          conversationId,
+          Effect.gen(function* () {
+            const state = stateFor(conversationId)
+            state.baseName = title.title.replace(activityPrefixPattern, '')
+            state.appliedName = null
+            yield* applyActivityTitle(conversationId, state)
+          }),
+        ),
+      )
+    },
     setAgentActivity: (activity) =>
-      trackTask(activity).pipe(
-        Effect.andThen(applyActivityTitleBestEffort(String(activity.binding.conversationId))),
-        Effect.andThen(platform.setAgentActivity(activity)),
-      ),
+      trackTask(activity).pipe(Effect.andThen(platform.setAgentActivity(activity))),
   }
 }

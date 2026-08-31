@@ -283,6 +283,51 @@ interface LaunchTaskInput {
 export const makeTasks = (options: MakeTasksOptions): TasksContract => {
   const launchLock = Semaphore.makeUnsafe(1)
   const explicitlyCancelled = new Set<TaskId>()
+  const activeTitleTasks = new Set<TaskId>()
+  const finishedTitleTasks = new Set<TaskId>()
+
+  const publishTaskActivity = (
+    operation: 'started' | 'finished',
+    parent: ChannelThread,
+    taskId: TaskId,
+  ): Effect.Effect<void> => {
+    if (!options.conversationTitles) return Effect.void
+    return (
+      operation === 'started'
+        ? options.conversationTitles.taskStarted(parent, taskId)
+        : options.conversationTitles.taskFinished(parent, taskId)
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning('Task title activity publication failed', cause).pipe(
+          Effect.annotateLogs({ operation, taskId, parentThreadId: parent.id }),
+        ),
+      ),
+    )
+  }
+
+  const taskStarted = (parent: ChannelThread, taskId: TaskId): Effect.Effect<void> =>
+    Effect.sync(() => {
+      finishedTitleTasks.delete(taskId)
+      if (activeTitleTasks.has(taskId)) return false
+      activeTitleTasks.add(taskId)
+      return true
+    }).pipe(
+      Effect.flatMap((added) =>
+        added ? publishTaskActivity('started', parent, taskId) : Effect.void,
+      ),
+    )
+
+  const taskFinished = (parent: ChannelThread, taskId: TaskId): Effect.Effect<void> =>
+    Effect.sync(() => {
+      if (finishedTitleTasks.has(taskId)) return false
+      finishedTitleTasks.add(taskId)
+      activeTitleTasks.delete(taskId)
+      return true
+    }).pipe(
+      Effect.flatMap((firstFinish) =>
+        firstFinish ? publishTaskActivity('finished', parent, taskId) : Effect.void,
+      ),
+    )
 
   const launchTaskUnlocked = Effect.fn('Tasks.launchTask')(function* (input: LaunchTaskInput) {
     let effectiveWorkingDirectory = input.workingDirectory
@@ -430,13 +475,11 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           ),
         ),
       )
+    yield* taskStarted(input.parent, taskId)
     yield* options.fork(
       handle.awaitTerminal.pipe(
         Effect.flatMap((terminal) =>
           Effect.gen(function* () {
-            if (options.conversationTitles) {
-              yield* options.conversationTitles.taskFinished(input.parent, taskId)
-            }
             yield* options.persistence.closeThread({
               threadId: thread.id,
               closedAt: yield* options.now,
@@ -456,12 +499,10 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
             Effect.annotateLogs({ taskId, parentThreadId: input.parent.id }),
           ),
         ),
+        Effect.ensuring(taskFinished(input.parent, taskId)),
       ),
     )
 
-    if (options.conversationTitles) {
-      yield* options.conversationTitles.taskStarted(input.parent, taskId)
-    }
     return { taskId, status: 'pending' as const }
   })
   const launchTask = (input: LaunchTaskInput) => launchLock.withPermit(launchTaskUnlocked(input))
@@ -662,9 +703,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         ),
       )
     const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
-    if (options.conversationTitles) {
-      yield* options.conversationTitles.taskStarted(parent, request.taskId)
-    }
+    yield* taskStarted(parent, request.taskId)
     yield* options.fork(
       handle.awaitTerminal.pipe(
         Effect.flatMap((terminal) =>
@@ -683,11 +722,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           }),
         ),
         Effect.catchCause((cause) => Effect.logError('Task continuation delivery failed', cause)),
-        Effect.ensuring(
-          options.conversationTitles
-            ? options.conversationTitles.taskFinished(parent, request.taskId)
-            : Effect.void,
-        ),
+        Effect.ensuring(taskFinished(parent, request.taskId)),
       ),
     )
   })
@@ -777,9 +812,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       ),
     )
     const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
-    if (options.conversationTitles) {
-      yield* options.conversationTitles.taskFinished(parent, request.taskId)
-    }
+    yield* taskFinished(parent, request.taskId)
   })
 
   return Tasks.of({

@@ -1,12 +1,15 @@
 import { assert, it } from '@effect/vitest'
 import { ConversationBinding, PlatformConnectionId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
-import { afterEach, vi } from 'vitest'
 
 import type { PlatformAdapter } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
-import { withDiscordThreadActivityTitle } from './DiscordThreadActivityTitle.ts'
+import {
+  type DiscordThreadTitleAdapter,
+  withDiscordThreadActivityTitle,
+} from './DiscordThreadActivityTitle.ts'
 
 const decodeBinding = Schema.decodeSync(ConversationBinding)
 const threadBinding = decodeBinding({
@@ -16,6 +19,11 @@ const threadBinding = decodeBinding({
   sourceMessageId: 'm-1',
   conversationId: 'discord:guild-1:channel-1:thread-1',
 })
+const secondThreadBinding = decodeBinding({
+  ...threadBinding,
+  sourceMessageId: 'm-2',
+  conversationId: 'discord:guild-1:channel-1:thread-2',
+})
 const channelBinding = decodeBinding({
   platform: 'discord',
   connectionId: 'discord',
@@ -24,34 +32,38 @@ const channelBinding = decodeBinding({
   conversationId: 'discord:guild-1:channel-1',
 })
 
-const discordAdapter = {
-  decodeThreadId: (id: string) => {
-    const [, , channelId, threadId] = id.split(':')
-    return { guildId: 'guild-1', channelId: channelId ?? '', threadId }
-  },
-}
-
-const RenameBody = Schema.fromJsonString(Schema.Struct({ name: Schema.String }))
-const decodeRenameBody = Schema.decodeUnknownSync(RenameBody)
-
-interface DiscordStub {
-  readonly renames: Array<string>
+interface DiscordStub extends DiscordThreadTitleAdapter {
+  readonly names: Map<string, string | null>
+  readonly renames: Array<{ readonly conversationId: string; readonly name: string }>
   readonly requests: Array<string>
 }
 
-const stubDiscord = (threadName: string | null, renameStatus = 200): DiscordStub => {
-  const renames: Array<string> = []
+const stubDiscord = (initialNames: Readonly<Record<string, string | null>>): DiscordStub => {
+  const names = new Map(Object.entries(initialNames))
+  const renames: DiscordStub['renames'] = []
   const requests: Array<string> = []
-  vi.stubGlobal('fetch', (input: string | URL, init?: RequestInit): Promise<Response> => {
-    const method = init?.method ?? 'GET'
-    requests.push(`${method} ${String(input)}`)
-    if (method === 'PATCH') {
-      renames.push(decodeRenameBody(init?.body).name)
-      return Promise.resolve(new Response(null, { status: renameStatus }))
-    }
-    return Promise.resolve(Response.json(threadName === null ? {} : { name: threadName }))
-  })
-  return { renames, requests }
+  return {
+    names,
+    renames,
+    requests,
+    decodeThreadId: (id) => {
+      const [, guildId, channelId, threadId] = id.split(':')
+      return { guildId, channelId, threadId }
+    },
+    encodeThreadId: ({ guildId, channelId, threadId }) =>
+      ['discord', guildId, channelId, threadId].filter((part) => part !== undefined).join(':'),
+    fetchThread: (id) => {
+      requests.push(`GET ${id}`)
+      return Promise.resolve({ channelName: names.get(id) ?? undefined })
+    },
+    setThreadTitle: (id, name) => {
+      requests.push(`PATCH ${id}`)
+      renames.push({ conversationId: id, name })
+      const [, guildId, , threadId] = id.split(':')
+      names.set(`discord:${guildId}:${threadId}`, name)
+      return Promise.resolve()
+    },
+  }
 }
 
 const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
@@ -61,9 +73,9 @@ const makeInnerPlatform = (calls: Array<string>): PlatformAdapter<ChatSdkPublica
   kind: 'discord',
   publish: () => Effect.void,
   acknowledge: () => Effect.void,
-  beginWorking: () =>
+  beginWorking: ({ binding }) =>
     Effect.sync(() => {
-      calls.push('beginWorking')
+      calls.push(`beginWorking:${binding.conversationId}`)
     }),
   updateWorking: () => Effect.void,
   finalizeWorking: () =>
@@ -86,110 +98,173 @@ const makeInnerPlatform = (calls: Array<string>): PlatformAdapter<ChatSdkPublica
   withTyping: (_binding, effect) => effect,
 })
 
-const makePlatform = (calls: Array<string>) =>
-  withDiscordThreadActivityTitle(discordAdapter, 'bot-token', makeInnerPlatform(calls))
-
-afterEach(() => {
-  vi.unstubAllGlobals()
+const initialThreadNames = (name: string | null) => ({
+  'discord:guild-1:thread-1': name,
 })
+
+const makePlatform = (discord: DiscordThreadTitleAdapter, calls: Array<string>) =>
+  withDiscordThreadActivityTitle(discord, makeInnerPlatform(calls))
 
 it.effect('prefixes the thread title while a turn runs and restores it afterwards', () =>
   Effect.gen(function* () {
-    const stub = stubDiscord('Design Review')
+    const stub = stubDiscord(initialThreadNames('Design Review'))
     const calls: Array<string> = []
-    const platform = makePlatform(calls)
+    const platform = makePlatform(stub, calls)
 
     yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review'])
-    assert.deepStrictEqual(calls, ['beginWorking'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review'],
+    )
 
     yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done' })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review', 'Design Review'])
-    assert.deepStrictEqual(calls, ['beginWorking', 'finalizeWorking'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review', 'Design Review'],
+    )
+    assert.deepStrictEqual(calls, [
+      `beginWorking:${threadBinding.conversationId}`,
+      'finalizeWorking',
+    ])
   }),
 )
 
-it.effect('keeps the prefix while a task outlives the turn without renaming repeatedly', () =>
+it.effect('keeps the prefix while a task outlives the turn without redundant renames', () =>
   Effect.gen(function* () {
-    const stub = stubDiscord('Design Review')
-    const platform = makePlatform([])
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    const platform = makePlatform(stub, [])
 
     yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
     yield* platform.setAgentActivity({ binding: threadBinding, taskId: 'task-1', active: true })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review'])
-
     yield* platform.finalizeWorking({ binding: threadBinding, text: 'Spawned task' })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review'],
+    )
 
     yield* platform.setAgentActivity({ binding: threadBinding, taskId: 'task-1', active: false })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review', 'Design Review'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review', 'Design Review'],
+    )
   }),
 )
 
-it.effect('overlapping tasks share a single prefix and keep it until the last one finishes', () =>
+it.effect('overlapping tasks keep the prefix until the last task finishes', () =>
   Effect.gen(function* () {
-    const stub = stubDiscord('Design Review')
-    const platform = makePlatform([])
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    const platform = makePlatform(stub, [])
 
     yield* platform.setAgentActivity({ binding: threadBinding, taskId: 'task-1', active: true })
     yield* platform.setAgentActivity({ binding: threadBinding, taskId: 'task-2', active: true })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review'])
-
     yield* platform.setAgentActivity({ binding: threadBinding, taskId: 'task-1', active: false })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review'],
+    )
 
     yield* platform.setAgentActivity({ binding: threadBinding, taskId: 'task-2', active: false })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review', 'Design Review'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review', 'Design Review'],
+    )
   }),
 )
 
-it.effect('strips a stale prefix instead of duplicating it and preserves the base title', () =>
+it.effect('strips a stale prefix instead of duplicating it', () =>
   Effect.gen(function* () {
-    const stub = stubDiscord('⚡ Design Review')
-    const platform = makePlatform([])
+    const stub = stubDiscord(initialThreadNames('⚡ Design Review'))
+    const platform = makePlatform(stub, [])
 
     yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review'])
-
     yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done' })
-    assert.deepStrictEqual(stub.renames, ['⚡ Design Review', 'Design Review'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review', 'Design Review'],
+    )
   }),
 )
 
-it.effect('applies generated titles under the active prefix and reuses the known base', () =>
+it.effect('applies generated titles under the active prefix', () =>
   Effect.gen(function* () {
-    const stub = stubDiscord('Design Review')
-    const calls: Array<string> = []
-    const platform = makePlatform(calls)
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    const platform = makePlatform(stub, [])
 
     yield* platform.setConversationTitle({ binding: threadBinding, title: 'New Title' })
-    assert.deepStrictEqual(stub.renames, ['New Title'])
-
     yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
-    assert.deepStrictEqual(stub.renames, ['New Title', '⚡ New Title'])
+
     assert.deepStrictEqual(
-      stub.requests.filter((request) => request.startsWith('GET')),
-      [],
+      stub.renames.map(({ name }) => name),
+      ['New Title', '⚡ New Title'],
     )
-    assert.deepStrictEqual(calls, ['beginWorking'])
   }),
 )
 
-it.effect('renames generated titles without a prefix when the thread is idle', () =>
+it.effect('preserves an external rename across later activity cycles', () =>
   Effect.gen(function* () {
-    const stub = stubDiscord('Design Review')
-    const platform = makePlatform([])
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    const platform = makePlatform(stub, [])
 
-    yield* platform.setConversationTitle({ binding: threadBinding, title: 'Fresh Name' })
-    assert.deepStrictEqual(stub.renames, ['Fresh Name'])
+    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done' })
+    stub.names.set('discord:guild-1:thread-1', 'Externally Renamed')
+
+    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking again...' })
+    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done again' })
+
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review', 'Design Review', '⚡ Externally Renamed', 'Externally Renamed'],
+    )
+  }),
+)
+
+it.effect('does not split a Unicode surrogate pair at the Discord title boundary', () =>
+  Effect.gen(function* () {
+    const name = `${'a'.repeat(97)}😀suffix`
+    const stub = stubDiscord(initialThreadNames(name))
+    const platform = makePlatform(stub, [])
+
+    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+
+    const applied = stub.renames[0]?.name
+    assert.strictEqual(applied, `⚡ ${'a'.repeat(97)}😀`)
+    assert.strictEqual(Array.from(applied ?? '').length, 100)
+    assert.notMatch(applied ?? '', /[\uD800-\uDBFF]$/u)
+  }),
+)
+
+it.effect('serializes per thread so a hanging lookup cannot block another thread', () =>
+  Effect.gen(function* () {
+    const hangingLookup = Promise.withResolvers<{ readonly channelName?: string }>()
+    const calls: Array<string> = []
+    const stub = stubDiscord({ 'discord:guild-1:thread-2': 'Second Thread' })
+    const adapter: DiscordThreadTitleAdapter = {
+      ...stub,
+      fetchThread: (id) =>
+        id === 'discord:guild-1:thread-1' ? hangingLookup.promise : stub.fetchThread(id),
+    }
+    const platform = makePlatform(adapter, calls)
+
+    const stalled = yield* platform
+      .beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+      .pipe(Effect.forkChild)
+    yield* Effect.yieldNow
+    yield* platform.beginWorking({ binding: secondThreadBinding, text: '-# Thinking...' })
+
+    assert.deepStrictEqual(stub.renames, [
+      { conversationId: String(secondThreadBinding.conversationId), name: '⚡ Second Thread' },
+    ])
+    assert.include(calls, `beginWorking:${secondThreadBinding.conversationId}`)
+    yield* Fiber.interrupt(stalled)
   }),
 )
 
 it.effect('leaves non-thread conversations untouched', () =>
   Effect.gen(function* () {
-    const stub = stubDiscord('General')
+    const stub = stubDiscord(initialThreadNames('General'))
     const calls: Array<string> = []
-    const platform = makePlatform(calls)
+    const platform = makePlatform(stub, calls)
 
     yield* platform.beginWorking({ binding: channelBinding, text: '-# Thinking...' })
     yield* platform.setAgentActivity({ binding: channelBinding, taskId: 'task-1', active: true })
@@ -197,9 +272,8 @@ it.effect('leaves non-thread conversations untouched', () =>
     yield* platform.finalizeWorking({ binding: channelBinding, text: 'Done' })
 
     assert.deepStrictEqual(stub.requests, [])
-    assert.deepStrictEqual(stub.renames, [])
     assert.deepStrictEqual(calls, [
-      'beginWorking',
+      `beginWorking:${channelBinding.conversationId}`,
       'activity:task-1:true',
       'title:General',
       'finalizeWorking',
@@ -207,25 +281,21 @@ it.effect('leaves non-thread conversations untouched', () =>
   }),
 )
 
-it.effect('keeps wrapped operations working when Discord renames fail', () =>
+it.effect('keeps wrapped operations working when Discord title calls fail', () =>
   Effect.gen(function* () {
-    stubDiscord('Design Review', 500)
     const calls: Array<string> = []
-    const platform = makePlatform(calls)
+    const adapter: DiscordThreadTitleAdapter = {
+      ...stubDiscord(initialThreadNames('Design Review')),
+      fetchThread: () => Promise.reject(new Error('lookup failed')),
+      setThreadTitle: () => Promise.reject(new Error('rename failed')),
+    }
+    const platform = makePlatform(adapter, calls)
 
     yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
     yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done' })
-    assert.deepStrictEqual(calls, ['beginWorking', 'finalizeWorking'])
-  }),
-)
-
-it.effect('keeps wrapped operations working when Discord thread lookups fail', () =>
-  Effect.gen(function* () {
-    vi.stubGlobal('fetch', () => Promise.resolve(new Response(null, { status: 500 })))
-    const calls: Array<string> = []
-    const platform = makePlatform(calls)
-
-    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
-    assert.deepStrictEqual(calls, ['beginWorking'])
+    assert.deepStrictEqual(calls, [
+      `beginWorking:${threadBinding.conversationId}`,
+      'finalizeWorking',
+    ])
   }),
 )

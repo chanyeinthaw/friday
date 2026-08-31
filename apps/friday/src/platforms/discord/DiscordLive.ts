@@ -100,12 +100,12 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           'discord',
           chat,
           {
-            setConversationTitle: (title) => setDiscordConversationTitle(discord, botToken, title),
+            setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
             setAgentActivity: makeDiscordAgentActivity(discord, botToken),
             searchMessages: (query) => searchDiscordMessages(discord, query),
           },
         )
-        const platform = withDiscordThreadActivityTitle(discord, botToken, chatSdkPlatform)
+        const platform = withDiscordThreadActivityTitle(discord, chatSdkPlatform)
         yield* platforms.register(platform)
         yield* invocationPolicies.watch(discordConfig.connectionId, (configuration) =>
           Effect.sync(() => invocationChannels.update(configuration)),
