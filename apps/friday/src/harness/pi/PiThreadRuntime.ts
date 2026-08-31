@@ -36,7 +36,10 @@ import type {
   ThreadRuntime,
   ThreadRuntimeEvent,
 } from '../../conversation/ThreadRuntime.ts'
-import type { SystemPromptTemplatesContract } from '../../system-prompt/SystemPromptTemplates.ts'
+import {
+  renderModelHint,
+  type SystemPromptTemplatesContract,
+} from '../../system-prompt/SystemPromptTemplates.ts'
 import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
 import type { PlatformRegistryContract } from '../../platforms/PlatformRegistry.ts'
 import { renderPromptMessage } from './PromptMessage.ts'
@@ -359,13 +362,21 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
             )
         : undefined
     : undefined
-  const resourceLoader = systemPrompt
-    ? new DefaultResourceLoader({
-        cwd: options.thread.workingDirectory,
-        agentDir: getAgentDir(),
-        systemPromptOverride: () => systemPrompt,
-      })
-    : undefined
+  const subagentModelHint =
+    options.thread.audience === 'agent' && options.thread.role === 'subagent'
+      ? renderModelHint(options.thread)
+      : undefined
+  const resourceLoader =
+    systemPrompt || subagentModelHint
+      ? new DefaultResourceLoader({
+          cwd: options.thread.workingDirectory,
+          agentDir: getAgentDir(),
+          ...(systemPrompt ? { systemPromptOverride: () => systemPrompt } : {}),
+          ...(subagentModelHint
+            ? { appendSystemPromptOverride: (base) => [...base, subagentModelHint] }
+            : {}),
+        })
+      : undefined
   if (resourceLoader) {
     yield* Effect.tryPromise({
       try: () => resourceLoader.reload(),

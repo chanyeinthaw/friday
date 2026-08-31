@@ -65,6 +65,9 @@ it.effect('renders the channel agent system prompt from thread context and confi
       ],
     })
 
+    assert.include(prompt, '## Runtime model')
+    assert.include(prompt, 'Model: `opencode-go/deepseek-v4-flash`')
+    assert.include(prompt, 'Thinking level: `max`')
     assert.include(prompt, '- Platform: discord')
     assert.include(prompt, '- Channel: orbs-at-home')
     assert.include(prompt, 'Development for the orbs-at-home repository.')
@@ -110,6 +113,9 @@ it.effect('renders the system-management prompt for system channels', () =>
     })
 
     assert.include(prompt, "Friday's system management agent")
+    assert.include(prompt, '## Runtime model')
+    assert.include(prompt, 'Model: `opencode-go/deepseek-v4-flash`')
+    assert.include(prompt, 'Thinking level: `max`')
     assert.include(prompt, '/home/chan/.friday')
     assert.include(prompt, 'Do not reveal credentials')
     assert.include(prompt, 'Deployment changes and service restarts require an explicit request')

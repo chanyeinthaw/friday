@@ -124,13 +124,16 @@ const open = (thread: Thread, captured: Array<CreateAgentSessionOptions>) =>
     yield* Scope.close(scope, Exit.void)
   }).pipe(Effect.provide(SystemPromptTemplatesLive), Effect.provide(BunCrypto.layer))
 
-test('overrides Pi system prompts for channel and bootstrap agents only', async () => {
+test('sets role prompts and appends the model hint to normal subagents', async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const channelOptions: Array<CreateAgentSessionOptions> = []
       yield* open(channelThread, channelOptions)
       const channelPrompt = channelOptions[0]?.resourceLoader?.getSystemPrompt()
       expect(channelPrompt ?? '').toContain('# Friday channel agent')
+      expect(channelPrompt ?? '').toContain('## Runtime model')
+      expect(channelPrompt ?? '').toContain('Model: `opencode-go/deepseek-v4-flash`')
+      expect(channelPrompt ?? '').toContain('Thinking level: `max`')
       expect(channelPrompt ?? '').toContain('`primary`: General delegated work.')
       expect(channelPrompt ?? '').toContain('Model: `anthropic/claude-sonnet`')
       expect(channelOptions[0]?.customTools?.map((tool) => tool.name)).toEqual(['task'])
@@ -144,7 +147,11 @@ test('overrides Pi system prompts for channel and bootstrap agents only', async 
 
       const subagentOptions: Array<CreateAgentSessionOptions> = []
       yield* open(agentThread('subagent'), subagentOptions)
-      expect(subagentOptions[0]?.resourceLoader).toBeUndefined()
+      const subagentLoader = subagentOptions[0]?.resourceLoader
+      expect(subagentLoader?.getSystemPrompt()).toBeUndefined()
+      expect(subagentLoader?.getAppendSystemPrompt()).toContain(
+        '## Runtime model\n\n- Model: `opencode-go/deepseek-v4-flash`\n- Thinking level: `max`',
+      )
       expect(subagentOptions[0]?.customTools).toBeUndefined()
     }),
   )

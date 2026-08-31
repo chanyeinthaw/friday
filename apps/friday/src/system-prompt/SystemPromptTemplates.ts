@@ -1,4 +1,4 @@
-import type { ChannelThread } from '@friday/contracts/conversation'
+import type { ChannelThread, Thread } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -62,6 +62,9 @@ const renderTemplate = (
     return rendered.trim()
   })
 
+export const renderModelHint = (thread: Thread): string =>
+  `## Runtime model\n\n- Model: \`${thread.model.provider}/${thread.model.modelId}\`\n- Thinking level: \`${thread.thinkingLevel}\``
+
 const renderAvailableModels = (profiles: ReadonlyArray<SubagentProfile>): string =>
   profiles.length === 0
     ? '(No subagent profiles are configured.)'
@@ -82,6 +85,7 @@ export const makeSystemPromptTemplates = (templates: {
       context.thread.channelRole === 'system'
         ? renderTemplate('system-agent', templates.systemAgent ?? templates.channelAgent, {
             currentWorkingDirectory: context.thread.workingDirectory,
+            modelHint: renderModelHint(context.thread),
             availableAgentModels: renderAvailableModels(context.availableAgentModels),
             fridayCliPath: FRIDAY_CLI_PATH,
           })
@@ -91,6 +95,7 @@ export const makeSystemPromptTemplates = (templates: {
             channelDescription:
               context.thread.channelContext.description || '(No channel description)',
             currentWorkingDirectory: context.thread.workingDirectory,
+            modelHint: renderModelHint(context.thread),
             availableAgentModels: renderAvailableModels(context.availableAgentModels),
             fridayCliPath: FRIDAY_CLI_PATH,
           }),
