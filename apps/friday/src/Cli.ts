@@ -19,7 +19,7 @@ import {
   type WorkspaceCleanupProposal,
 } from './workspaces/WorkspaceCleanup.ts'
 
-export const FRIDAY_VERSION = '0.0.0-nightly.7'
+export const FRIDAY_VERSION = '0.0.0-nightly.8'
 
 export const helpText = `Friday — your personal agent
 
