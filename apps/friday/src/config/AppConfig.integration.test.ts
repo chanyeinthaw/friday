@@ -4,11 +4,13 @@ import { test } from 'bun:test'
 import { PlatformConnectionId } from '@friday/contracts/conversation'
 import { strict as assert } from 'node:assert'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 import { AppConfigError, loadAppConfig } from './AppConfig.ts'
+import { AppConfig, AppConfigLive } from './AppConfigLive.ts'
 import { runMigrations } from '../persistence/Migrations.ts'
 import {
   DiscordActivityDescriptions,
@@ -18,6 +20,29 @@ import {
 const database = SqliteClient.layer({ filename: ':memory:' })
 const isAppConfigError = Schema.is(AppConfigError)
 const decodePlatformConnectionId = Schema.decodeSync(PlatformConnectionId)
+
+/**
+ * Wraps the real SQLite client so tests can observe transaction usage without
+ * changing query behavior. SAFETY: the tracked delegate re-exposes the inner
+ * client's own properties; only `withTransaction` is intercepted to count
+ * transactional reads.
+ */
+const trackingDatabase = (log: { transactionCount: number }) =>
+  Layer.effect(
+    SqlClient.SqlClient,
+    Effect.map(SqlClient.SqlClient, (inner) => {
+      // SAFETY: the delegate forwards every call to the real client; only
+      // `withTransaction` is intercepted to count transactional reads.
+      const delegate = ((...arguments_: Parameters<SqlClient.SqlClient>) =>
+        inner(...arguments_)) as SqlClient.SqlClient
+      return Object.assign(delegate, {
+        withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+          log.transactionCount += 1
+          return inner.withTransaction(effect)
+        },
+      })
+    }),
+  )
 
 const configured = Effect.gen(function* () {
   yield* runMigrations()
@@ -206,4 +231,114 @@ test('fails safely when an enabled connection secret is missing', async () =>
       assert.strictEqual(error.path, 'platforms.discord-personal.credentials.botToken')
       assert(error.detail.includes('DISCORD_BOT_TOKEN'))
     }).pipe(Effect.provide(database)),
+  ))
+
+test('reads the complete configuration inside a single coherent transaction', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const log = { transactionCount: 0 }
+      yield* runMigrations()
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO platform_connections (
+          connection_id, platform, name, enabled, created_at, updated_at
+        ) VALUES (
+          'discord-personal', 'discord', 'Personal Discord', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `
+      yield* sql`
+        INSERT INTO discord_connections (
+          connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions
+        ) VALUES (
+          'discord-personal', 'application-id', 'public-key', 'DISCORD_BOT_TOKEN', 1
+        )
+      `
+      // loadAppConfig issues many separate queries (installation, agent,
+      // profiles, connections, policies, ...); they must all run inside one
+      // transaction so a concurrent writer can never tear the snapshot.
+      const config = yield* loadAppConfig({
+        environment: { DISCORD_BOT_TOKEN: 'discord-token' },
+      }).pipe(Effect.provide(trackingDatabase(log).pipe(Layer.provide(database))))
+      assert.strictEqual(config.platforms.discord[0]?.connectionId, 'discord-personal')
+      assert.strictEqual(log.transactionCount, 1)
+    }).pipe(Effect.provide(database)),
+  ))
+
+// Reload tests share one seeded database per runtime: the seed layer runs before
+// AppConfigLive builds its initial snapshot.
+const reloadable = AppConfigLive.pipe(
+  Layer.provide(database),
+  Layer.provide(Layer.effectDiscard(configured)),
+)
+
+test('reloads the complete configuration and bumps the snapshot version', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const config = yield* AppConfig
+      const first = config.current()
+      assert.strictEqual(first.platforms.discord[0]?.systemChannelIds[0], 'system-channel')
+
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO platform_system_channels (connection_id, channel_id, created_at, updated_at)
+        VALUES ('discord-personal', 'system-channel-2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `
+      const version = yield* config.reload
+      assert.strictEqual(version, 2)
+      const second = config.current()
+      assert.deepStrictEqual(second.platforms.discord[0]?.systemChannelIds, [
+        'system-channel',
+        'system-channel-2',
+      ])
+      assert.strictEqual(second.agent.recentMessageCount, first.agent.recentMessageCount)
+    }).pipe(Effect.provide(reloadable), Effect.provide(database)),
+  ))
+
+test('retains the previous snapshot when a reload fails validation', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const config = yield* AppConfig
+      const sql = yield* SqlClient.SqlClient
+      const before = config.current()
+
+      // Empty the connection name: valid for SQLite, invalid for the config schema.
+      yield* sql`
+        UPDATE platform_connections SET name = '' WHERE connection_id = 'discord-personal'
+      `
+      const error = yield* Effect.flip(config.reload)
+      assert(isAppConfigError(error))
+      // The failed reload retained the previous snapshot object unchanged.
+      assert.strictEqual(config.current(), before)
+
+      yield* sql`
+        UPDATE platform_connections SET name = 'Personal Discord'
+        WHERE connection_id = 'discord-personal'
+      `
+      const version = yield* config.reload
+      assert.strictEqual(version, 2)
+    }).pipe(Effect.provide(reloadable), Effect.provide(database)),
+  ))
+
+test('reload keeps startup Discord topology and admin allow-list pinned', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const config = yield* AppConfig
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        DELETE FROM discord_mention_roles WHERE connection_id = 'discord-personal'
+      `
+      yield* sql`
+        INSERT INTO admin_discord_users (user_id, created_at)
+        VALUES ('admin-rotated', CURRENT_TIMESTAMP)
+      `
+      const version = yield* config.reload
+      assert.strictEqual(version, 2)
+      const reloaded = config.current()
+      const connection = reloaded.platforms.discord[0]
+      assert(connection)
+      assert.deepStrictEqual([...connection.mentionRoleIds], ['role-1'])
+      assert.deepStrictEqual([...reloaded.admin.discordUserIds], [])
+      // Access policies stay reloadable.
+      assert.strictEqual(connection.access.users.mode, 'all')
+    }).pipe(Effect.provide(reloadable), Effect.provide(database)),
   ))

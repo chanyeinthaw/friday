@@ -26,3 +26,5 @@ export const isPackagedBuild = isPackagedEntryFileName(import.meta.filename)
 export const FRIDAY_CLI_PATH = isPackagedBuild
   ? resolve(process.execPath)
   : join(FRIDAY_BIN_DIRECTORY, 'friday')
+
+export const FRIDAY_CONTROL_SOCKET_PATH = join(FRIDAY_HOME, 'friday.sock')

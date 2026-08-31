@@ -20,4 +20,13 @@ describe('DiscordLive wiring', () => {
     const registerIndex = liveSource.indexOf('platforms.register(platform)')
     expect(registerIndex).toBeGreaterThan(wrapMatch?.index ?? -1)
   })
+
+  it('completes slash responses through the channel, never postEphemeral', () => {
+    // The Discord adapter (chat SDK 4.38) implements no postEphemeral, so a
+    // postEphemeral call returns null and leaves the deferred interaction
+    // response hanging forever. The reply must go through event.channel.post,
+    // which the adapter intercepts to complete the interaction webhook.
+    expect(liveSource).toContain('event.channel.post(message)')
+    expect(liveSource).not.toMatch(/\.postEphemeral\(/u)
+  })
 })

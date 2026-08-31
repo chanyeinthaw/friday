@@ -11,6 +11,7 @@ import * as Layer from 'effect/Layer'
 import {
   FRIDAY_BIN_DIRECTORY,
   FRIDAY_CLI_PATH,
+  FRIDAY_CONTROL_SOCKET_PATH,
   FRIDAY_LOG_DIRECTORY,
   FRIDAY_LOG_PATH,
   isPackagedBuild,
@@ -19,11 +20,14 @@ import { ensureRepositoryWorktree } from './repositories/RepositoryWorktrees.ts'
 import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
 import { withFridayLogging } from './logging/Live.ts'
+import { reloadApplicationConfig } from './config/ConfigReload.ts'
+import { sendControlRequest, serveControlSocket } from './control/ControlSocket.ts'
 import { InvocationPolicies, InvocationPoliciesLive } from './platforms/InvocationPolicies.ts'
 import {
   DiscordActivityDescriptions,
   DiscordActivityDescriptionsLive,
 } from './platforms/DiscordActivityDescriptions.ts'
+import { AppConfig } from './config/AppConfigLive.ts'
 import { SystemChannels, SystemChannelsLive } from './platforms/SystemChannels.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
@@ -66,6 +70,11 @@ const start = Effect.scoped(
       )
       yield* fileSystem.chmod(FRIDAY_CLI_PATH, 0o755)
     }
+    const config = yield* AppConfig
+    yield* serveControlSocket({
+      path: FRIDAY_CONTROL_SOCKET_PATH,
+      reload: reloadApplicationConfig(config),
+    })
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
     const cleanupNotifications = yield* WorkspaceCleanupNotifications
     yield* cleanupNotifications.run.pipe(Effect.forkScoped)
@@ -83,6 +92,7 @@ const application = Effect.scoped(
   withFridayLogging(
     runFridayCli(process.argv.slice(2), {
       start,
+      reloadConfig: sendControlRequest(FRIDAY_CONTROL_SOCKET_PATH, { op: 'config.reload' }),
       setDiscordActivityDescription: (action, enabled) =>
         DiscordActivityDescriptions.pipe(
           Effect.flatMap((descriptions) =>

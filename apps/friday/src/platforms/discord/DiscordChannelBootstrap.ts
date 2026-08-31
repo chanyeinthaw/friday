@@ -1,10 +1,6 @@
 /* oxlint-disable effecttsgo/node-builtin-import, eslint/no-underscore-dangle -- Workspace paths use Node path; Effect schema errors use the canonical _tag discriminator. */
 
-import {
-  ChannelThread,
-  ThreadId,
-  type ChannelThread as ChannelThreadType,
-} from '@friday/contracts/conversation'
+import { ChannelThread, ThreadId } from '@friday/contracts/conversation'
 import type { DiscordAdapter } from '@chat-adapter/discord'
 import * as Crypto from 'effect/Crypto'
 import * as DateTime from 'effect/DateTime'
@@ -35,10 +31,17 @@ export class DiscordThreadBootstrapError extends Schema.Error<DiscordThreadBoots
 
 export interface DiscordThreadBootstrapOptions {
   discord: DiscordAdapter
-  systemChannelIds?: ReadonlyArray<string>
+  /**
+   * Provider for the system channel IDs, read at thread creation time so
+   * configuration reloads apply to new threads.
+   */
+  systemChannelIds?: () => ReadonlyArray<string>
   workingDirectoryRoot?: string
-  model?: AppConfig['models']['primary']
-  thinkingLevel?: ChannelThreadType['thinkingLevel']
+  /**
+   * Reads the current primary model at thread-creation time so configuration
+   * reloads apply to newly bootstrapped threads without a restart.
+   */
+  model?: () => AppConfig['models']['primary']
 }
 
 export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap')(function* (
@@ -48,7 +51,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
   const fileSystem = yield* FileSystem.FileSystem
 
   return Effect.fn('DiscordThreadBootstrap.create')(function* (inbound: PlatformInput) {
-    const systemChannel = (options.systemChannelIds ?? []).includes(
+    const systemChannel = (options.systemChannelIds?.() ?? []).includes(
       String(inbound.binding.channelId),
     )
     const channel = yield* Effect.tryPromise({
@@ -70,6 +73,9 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
         ),
       )
     const timestamp = DateTime.formatIso(yield* DateTime.now)
+    // One coherent read: a reload between two reads could otherwise pair a
+    // model from one snapshot with a thinking level from another.
+    const model = options.model?.()
     return decodeChannelThread({
       id: decodeThreadId(yield* crypto.randomUUIDv4),
       audience: 'user',
@@ -78,11 +84,11 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
       harness: 'pi',
       harnessSession: null,
       workingDirectory,
-      model: options.model ?? {
+      model: model ?? {
         provider: 'opencode-go',
         modelId: 'deepseek-v4-flash',
       },
-      thinkingLevel: options.thinkingLevel ?? 'max',
+      thinkingLevel: model?.thinkingLevel ?? 'max',
       channelContext: {
         name: channelName,
         description: channelDescription,

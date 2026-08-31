@@ -1,11 +1,15 @@
-import { Chat } from 'chat'
+import { DiscordInteractionResponseFlag } from '@chat-adapter/discord'
+import { Chat, type SlashCommandEvent } from 'chat'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 
 import { DiscordActivityDescriptions } from '../DiscordActivityDescriptions.ts'
-import { InvocationPolicies, shouldInvoke } from '../InvocationPolicies.ts'
+import { effectiveInvocationMode, shouldInvoke } from '../InvocationPolicies.ts'
 import { PlatformIngestion } from '../PlatformIngestion.ts'
 import { isAllowedByAccess, isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import { AppConfig } from '../../config/AppConfigLive.ts'
+import { findDiscordConnection } from '../../config/AppConfig.ts'
+import { reloadApplicationConfig } from '../../config/ConfigReload.ts'
 import { ChatSdkCallbackError, ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
 import { PlatformRegistry } from '../PlatformRegistry.ts'
 import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
@@ -18,11 +22,22 @@ import {
 import {
   makeDiscordInvocationChannelSelector,
   makeDiscordLocationGate,
+  type DiscordConnectionPolicies,
+  type DiscordPolicyProvider,
 } from './DiscordChannelAccess.ts'
+import { registerGlobalFridayCommand } from './DiscordCommandRegistration.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
+import {
+  FRIDAY_COMMAND_PATHS,
+  decideFridayCommand,
+  decodeFridayInteraction,
+  fridayCommandReply,
+  fridayReloadReply,
+  fridaySubcommand,
+} from './DiscordSlashCommand.ts'
 import {
   FridayDiscordAdapter,
   type FridayDiscordAdapterConfig,
@@ -41,14 +56,18 @@ import {
 export const startDiscord = Effect.fn('startDiscord')(function* () {
   const platforms = yield* PlatformRegistry
   const activityDescriptions = yield* DiscordActivityDescriptions
-  const invocationPolicies = yield* InvocationPolicies
   const ingestion = yield* PlatformIngestion
-  const configuration = yield* AppConfig
-  const connections = configuration.platforms.discord
+  const config = yield* AppConfig
+  // Startup topology snapshot: Discord resources are built once per process.
+  const startup = config.current()
+  const connections = startup.platforms.discord
   if (connections.length === 0) {
     yield* Effect.logDebug('discord.disabled').pipe(Effect.annotateLogs({ component: 'discord' }))
     return []
   }
+  // Admin allow-list is pinned to the running snapshot so database edits cannot
+  // lock administrators out of running reloads; changes require a restart.
+  const admin = startup.admin
   const duplicateApplications = findDuplicateDiscordApplications(
     connections.map((connection) => ({
       connectionId: String(connection.connectionId),
@@ -72,14 +91,29 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
     (discordConfig) =>
       Effect.gen(function* () {
         const state = yield* makeSqliteChatStateAdapter(`friday:${discordConfig.connectionId}`)
-        const invocationChannels = makeDiscordInvocationChannelSelector(
-          discordConfig.access.channels,
-          discordConfig.invocation,
-        )
-        const isAllowedLocation = makeDiscordLocationGate(
-          discordConfig.access.guilds,
-          discordConfig.access.channels,
-        )
+        // Reloadable policies are read from the in-memory snapshot on every
+        // message; the Discord resources above never observe partial swaps.
+        const policies: DiscordPolicyProvider = () =>
+          Option.map(
+            findDiscordConnection(config.current(), discordConfig.connectionId),
+            (connection): DiscordConnectionPolicies => ({
+              guilds: connection.access.guilds,
+              channels: connection.access.channels,
+              users: connection.access.users,
+              invocation: connection.invocation,
+              systemChannelIds: connection.systemChannelIds,
+            }),
+          )
+        const currentPolicies = (): DiscordConnectionPolicies =>
+          Option.getOrElse(policies(), (): DiscordConnectionPolicies => ({
+            guilds: { mode: 'deny', ids: [] },
+            channels: { mode: 'deny', ids: [] },
+            users: { mode: 'deny', ids: [] },
+            invocation: { defaultMode: 'mention-only', channels: [] },
+            systemChannelIds: [],
+          }))
+        const invocationChannels = makeDiscordInvocationChannelSelector(policies)
+        const isAllowedLocation = makeDiscordLocationGate(policies)
         const discord = yield* Effect.try({
           try: () =>
             new FridayDiscordAdapter({
@@ -87,13 +121,20 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               applicationId: String(discordConfig.credentials.applicationId),
               publicKey: String(discordConfig.credentials.publicKey),
               mentionRoleIds: [...discordConfig.mentionRoleIds],
-              // Friday owns invocation policy and refreshes this selector from SQLite.
+              // Friday owns invocation and access policy through the snapshot.
               respondToChannelIds: invocationChannels.channels,
               respondToGlobalMentions: true,
-              systemChannelIds: discordConfig.systemChannelIds,
+              systemChannelIds: () => currentPolicies().systemChannelIds,
               // The adapter must ignore unconfigured guilds/channels before it
               // creates any Discord thread on Friday's behalf.
               isAllowedLocation,
+              // The adapter flattens (or drops) subcommands in the command
+              // path depending on arguments; match every produced path and
+              // make the reload reply ephemeral.
+              interactionFlags: (context) =>
+                FRIDAY_COMMAND_PATHS.includes(context.command)
+                  ? DiscordInteractionResponseFlag.Ephemeral
+                  : undefined,
             } satisfies FridayDiscordAdapterConfig),
           catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
         })
@@ -111,9 +152,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         })
         const bootstrapOptions: DiscordThreadBootstrapOptions = {
           discord,
-          systemChannelIds: discordConfig.systemChannelIds,
-          model: configuration.models.primary,
-          thinkingLevel: configuration.models.primary.thinkingLevel,
+          // The bootstrap reads system channels live so reloaded system channels
+          // bind new threads to the parent channel instead of a child thread.
+          systemChannelIds: () => currentPolicies().systemChannelIds,
+          model: () => config.current().models.primary,
         }
         const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
         const botToken = String(discordConfig.credentials.botToken)
@@ -121,7 +163,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           activityDescription: discordConfig.activityDescription,
           watchActivityDescription: (onChange) =>
             activityDescriptions.watch(discordConfig.connectionId, onChange),
-          installationId: configuration.installationId,
+          installationId: startup.installationId,
         })
         const chatSdkPlatform = yield* makeChatSdkPlatform(
           discordConfig.connectionId,
@@ -135,14 +177,37 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         )
         const platform = withDiscordThreadActivityTitle(discord, chatSdkPlatform)
         yield* platforms.register(platform)
-        yield* invocationPolicies.watch(discordConfig.connectionId, (configuration) =>
-          Effect.sync(() => invocationChannels.update(configuration)),
+        const runFridayCommand = (event: SlashCommandEvent) =>
+          Effect.gen(function* () {
+            const decision = decideFridayCommand({
+              subcommand: Option.flatMap(decodeFridayInteraction(event.raw), fridaySubcommand),
+              userId: event.user.userId,
+              admin,
+            })
+            if (decision.kind !== 'reload') {
+              yield* respondEphemeral(event, fridayCommandReply(decision))
+              return
+            }
+            const outcome = yield* reloadApplicationConfig(config)
+            yield* respondEphemeral(event, fridayReloadReply(outcome))
+            yield* Effect.logInfo('discord.command.reload').pipe(
+              Effect.annotateLogs({
+                component: 'discord',
+                connectionId: discordConfig.connectionId,
+                userId: event.user.userId,
+              }),
+            )
+          }).pipe(
+            Effect.catchCause((cause) => Effect.logError('Friday slash command failed', cause)),
+          )
+        chat.onSlashCommand(FRIDAY_COMMAND_PATHS, (event) =>
+          Effect.runPromise(runFridayCommand(event)).then(() => undefined),
         )
         yield* startChatSdkLifecycle({
           connectionId: discordConfig.connectionId,
           chat,
           normalizeInboundMessage: (thread, message) =>
-            isDiscordSystemChannel(discord, thread, discordConfig.systemChannelIds)
+            isDiscordSystemChannel(discord, thread, currentPolicies().systemChannelIds)
               ? Effect.succeed(
                   projectDiscordSystemChannelMessage(
                     discordConfig.connectionId,
@@ -156,35 +221,30 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
             Effect.try({
               try: () => {
                 const location = discord.decodeThreadId(thread.id)
+                const policiesNow = currentPolicies()
                 const systemChannel =
-                  discordConfig.systemChannelIds.includes(location.channelId) &&
+                  policiesNow.systemChannelIds.includes(location.channelId) &&
                   (location.threadId === undefined || location.threadId === location.channelId)
-                const guildAllowed = isAllowedByPolicy(
-                  location.guildId,
-                  discordConfig.access.guilds,
-                )
                 return {
                   accessAllowed:
-                    guildAllowed &&
+                    isAllowedByPolicy(location.guildId, policiesNow.guilds) &&
                     isAllowedByAccess({
                       userId: message.author.userId,
                       channelId: location.channelId,
-                      userPolicy: discordConfig.access.users,
-                      channelPolicy: discordConfig.access.channels,
+                      userPolicy: policiesNow.users,
+                      channelPolicy: policiesNow.channels,
                     }),
                   location,
                   systemChannel,
+                  mode: effectiveInvocationMode(policiesNow.invocation, location.channelId),
                 }
               },
               catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
             }).pipe(
-              Effect.flatMap(({ accessAllowed, location, systemChannel }) =>
+              Effect.flatMap(({ accessAllowed, location, systemChannel, mode }) =>
                 accessAllowed
                   ? Effect.all({
-                      mode: invocationPolicies.effectiveMode(
-                        discordConfig.connectionId,
-                        location.channelId,
-                      ),
+                      mode: Effect.succeed(mode),
                       input: (systemChannel
                         ? Effect.succeed(
                             projectDiscordSystemChannelMessage(
@@ -262,10 +322,16 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
             ingestion.ingest(input, bootstrap, (initialInput) =>
               loadDiscordInitialContext(
                 discord,
-                configuration.agent.recentMessageCount,
+                config.current().agent.recentMessageCount,
                 initialInput,
               ),
             ),
+        })
+        // Register the application command before the gateway starts so a
+        // registration failure cannot leave partially started Discord resources.
+        yield* registerGlobalFridayCommand({
+          botToken,
+          applicationId: String(discordConfig.credentials.applicationId),
         })
         yield* startDiscordGateway(discord)
         yield* Effect.logInfo('discord.started').pipe(
@@ -286,3 +352,15 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
     { concurrency: 'unbounded' },
   )
 })
+
+const respondEphemeral = (event: SlashCommandEvent, message: string) =>
+  Effect.tryPromise({
+    // The Discord adapter (chat SDK 4.38) implements no postEphemeral, so a
+    // direct postEphemeral call returns null and leaves the deferred interaction
+    // response hanging. Posting through the channel is intercepted by the
+    // adapter's slash-command context and completes the interaction webhook's
+    // original response; the Ephemeral interactionFlags set at deferReply keep
+    // it visible only to the caller.
+    try: () => event.channel.post(message),
+    catch: (cause) => new ChatSdkCallbackError({ operation: 'slash-command', cause }),
+  }).pipe(Effect.asVoid)

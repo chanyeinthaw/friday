@@ -76,7 +76,12 @@ const testConfig = {
   },
   platforms: { discord: [], slack: [] },
   agent: { recentMessageCount: 20 },
+  admin: { discordUserIds: [] },
 } as const
+const testAppConfig = AppConfig.of({
+  current: () => testConfig,
+  reload: Effect.die('reload is not expected in PlatformIngestion tests'),
+})
 
 const testCrypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
@@ -94,7 +99,7 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
         Layer.succeed(ThreadPersistence, persistence),
         Layer.succeed(Friday, friday),
         Layer.succeed(Crypto.Crypto, testCrypto),
-        Layer.succeed(AppConfig, testConfig),
+        Layer.succeed(AppConfig, testAppConfig),
         Layer.succeed(
           TextGeneration,
           TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
@@ -147,7 +152,7 @@ it.effect('loads initial platform context only when creating a new channel Threa
         Layer.succeed(ThreadPersistence, persistence),
         Layer.succeed(Friday, friday),
         Layer.succeed(Crypto.Crypto, testCrypto),
-        Layer.succeed(AppConfig, testConfig),
+        Layer.succeed(AppConfig, testAppConfig),
         Layer.succeed(
           TextGeneration,
           TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
@@ -202,7 +207,7 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         Layer.succeed(ThreadPersistence, persistence),
         Layer.succeed(Friday, friday),
         Layer.succeed(Crypto.Crypto, testCrypto),
-        Layer.succeed(AppConfig, testConfig),
+        Layer.succeed(AppConfig, testAppConfig),
         Layer.succeed(
           TextGeneration,
           TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),

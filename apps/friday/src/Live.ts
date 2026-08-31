@@ -25,7 +25,7 @@ import {
   SystemPromptTemplates,
   SystemPromptTemplatesLive,
 } from './system-prompt/SystemPromptTemplates.ts'
-import { TaskModelsLive } from './tasks/TaskModels.ts'
+import { makeTaskModels, TaskModels } from './tasks/TaskModels.ts'
 import { TaskToolDispatcher, TaskToolDispatcherLive } from './tasks/TaskToolDispatcher.ts'
 import { Tasks, TasksLive } from './tasks/Tasks.ts'
 
@@ -34,7 +34,7 @@ const ThreadRuntimesLive = Layer.effect(
   Effect.gen(function* () {
     const modelRuntime = yield* PiModelRuntime
     const crypto = yield* Crypto.Crypto
-    const configuration = yield* AppConfig
+    const config = yield* AppConfig
     const systemPromptTemplates = yield* SystemPromptTemplates
     const tasks = yield* TaskToolDispatcher
     const platforms = yield* PlatformRegistry
@@ -45,7 +45,9 @@ const ThreadRuntimesLive = Layer.effect(
           thread,
           modelRuntime,
           systemPromptTemplates,
-          availableAgentModels: configuration.models.subagents,
+          // Read at open time so reloaded profiles apply to newly opened
+          // runtimes; active runtimes keep their resolved sessions.
+          availableAgentModels: config.current().models.subagents,
           tasks,
           platforms,
         }).pipe(
@@ -128,10 +130,11 @@ const AgentLive = FridayServiceLive.pipe(Layer.provide(PoolLive))
 const ChannelTurnsConfiguredLive = ChannelTurnsLive.pipe(
   Layer.provide(Layer.mergeAll(CoreLive, AgentLive, ChannelProgressConfiguredLive)),
 )
-const TaskModelsConfiguredLive = Layer.unwrap(
+const TaskModelsConfiguredLive = Layer.effect(
+  TaskModels,
   Effect.gen(function* () {
-    const configuration = yield* AppConfig
-    return TaskModelsLive(configuration.models.subagents)
+    const config = yield* AppConfig
+    return makeTaskModels(() => config.current().models.subagents)
   }),
 ).pipe(Layer.provide(CoreLive))
 const TasksConfiguredLive = TasksLive.pipe(

@@ -7,6 +7,7 @@ import {
   ThinkingLevel,
 } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
@@ -102,6 +103,12 @@ export const SlackPlatformConfig = Schema.Union([
 ])
 export type SlackPlatformConfig = typeof SlackPlatformConfig.Type
 
+export const AdminConfig = Schema.Struct({
+  /** Stable Discord user IDs permitted to run administrative application commands. */
+  discordUserIds: IdentifierArray,
+})
+export type AdminConfig = typeof AdminConfig.Type
+
 export const AppConfig = Schema.Struct({
   installationId: Identifier,
   models: Schema.Struct({
@@ -118,8 +125,64 @@ export const AppConfig = Schema.Struct({
       Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
     ),
   }),
+  admin: AdminConfig,
 })
 export type AppConfig = typeof AppConfig.Type
+
+/** The Discord connection identity and resources that only restarts may change. */
+export type DiscordConnectionTopology = Pick<
+  DiscordPlatformConfig,
+  | 'connectionId'
+  | 'platform'
+  | 'name'
+  | 'credentials'
+  | 'respondToGlobalMentions'
+  | 'mentionRoleIds'
+  | 'activityDescription'
+>
+
+/**
+ * Merges a freshly validated configuration into the running snapshot for reload.
+ *
+ * Discord connection topology (identity, credentials, mention roles, application
+ * description) is pinned to the running snapshot because Discord resources are built
+ * once at startup; access policies, invocation policies, system channels, models,
+ * and agent settings come from the loaded configuration. Discord connections that
+ * are not currently running are ignored until restart, and the admin allow-list is
+ * pinned so a database edit cannot lock administrators out of running reloads.
+ */
+export const mergeReloadedAppConfig = (running: AppConfig, loaded: AppConfig): AppConfig => ({
+  ...loaded,
+  platforms: {
+    ...loaded.platforms,
+    discord: running.platforms.discord.map((connection) => {
+      const reloaded = loaded.platforms.discord.find(
+        (candidate) => candidate.connectionId === connection.connectionId,
+      )
+      if (reloaded === undefined) return connection
+      const topology: DiscordConnectionTopology = {
+        connectionId: connection.connectionId,
+        platform: connection.platform,
+        name: connection.name,
+        credentials: connection.credentials,
+        respondToGlobalMentions: connection.respondToGlobalMentions,
+        mentionRoleIds: connection.mentionRoleIds,
+        activityDescription: connection.activityDescription,
+      }
+      return { ...reloaded, ...topology }
+    }),
+  },
+  admin: running.admin,
+})
+
+/** Resolves one Discord connection from the current snapshot. */
+export const findDiscordConnection = (
+  configuration: AppConfig,
+  connectionId: DiscordPlatformConfig['connectionId'],
+): Option.Option<DiscordPlatformConfig> =>
+  Option.fromNullishOr(
+    configuration.platforms.discord.find((connection) => connection.connectionId === connectionId),
+  )
 
 export class AppConfigError extends Schema.Error<AppConfigError>('AppConfigError')({
   _tag: Schema.tag('AppConfigError'),
@@ -134,6 +197,8 @@ export class AppConfigError extends Schema.Error<AppConfigError>('AppConfigError
 }
 
 const InstallationRow = Schema.Struct({ installation_id: Schema.String })
+
+const AdminUserRow = Schema.Struct({ user_id: Schema.String })
 
 const AgentConfigRow = Schema.Struct({
   primary_provider: Schema.String,
@@ -197,6 +262,7 @@ const AccessSubjectRow = Schema.Struct({
 })
 
 const decodeInstallationRows = Schema.decodeUnknownEffect(Schema.Array(InstallationRow))
+const decodeAdminUserRows = Schema.decodeUnknownEffect(Schema.Array(AdminUserRow))
 const decodeAgentConfigRows = Schema.decodeUnknownEffect(Schema.Array(AgentConfigRow))
 const decodeSubagentProfileRows = Schema.decodeUnknownEffect(Schema.Array(SubagentProfileRow))
 const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
@@ -209,7 +275,7 @@ const decodeAccessSubjectRows = Schema.decodeUnknownEffect(Schema.Array(AccessSu
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
 const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
-const readRows = Effect.fn('AppConfig.readRows')(function* () {
+const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
   const sql = yield* SqlClient.SqlClient
   const installationRows = yield* sql<Record<string, unknown>>`
     SELECT installation_id FROM installation_config WHERE id = 1
@@ -277,6 +343,9 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
   const subjects = yield* sql<
     Record<string, unknown>
   >`SELECT * FROM platform_access_subjects ORDER BY connection_id, subject_type, platform_subject_id`
+  const adminUsers = yield* sql<
+    Record<string, unknown>
+  >`SELECT user_id FROM admin_discord_users ORDER BY user_id`
   return {
     installation,
     agent,
@@ -288,7 +357,16 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
     mentionRoles: yield* decodeDiscordMentionRoleRows(mentionRoles),
     policies: yield* decodeAccessPolicyRows(policies),
     subjects: yield* decodeAccessSubjectRows(subjects),
+    adminUsers: yield* decodeAdminUserRows(adminUsers),
   }
+})
+
+const readRows = Effect.fn('AppConfig.readRows')(function* () {
+  const sql = yield* SqlClient.SqlClient
+  // One coherent snapshot: every configuration read runs inside a single
+  // transaction so a concurrent writer can never produce a torn configuration
+  // (e.g. policies read before a CLI write, subjects read after it).
+  return yield* sql.withTransaction(readAllRows())
 })
 
 const resolveSecret = (
@@ -424,6 +502,9 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
       slack: [],
     },
     agent: { recentMessageCount: rows.agent.recent_message_count },
+    admin: {
+      discordUserIds: rows.adminUsers.map((user) => user.user_id),
+    },
   }
   return yield* decodeAppConfig(candidate).pipe(
     Effect.mapError(

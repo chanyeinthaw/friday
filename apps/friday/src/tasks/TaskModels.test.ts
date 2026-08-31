@@ -24,7 +24,7 @@ const review = decodeProfile({
 
 it.effect("resolves configured profiles and exposes 'primary' as default", () =>
   Effect.gen(function* () {
-    const models = makeTaskModels([review, primary])
+    const models = makeTaskModels(() => [review, primary])
 
     assert.deepStrictEqual(Option.getOrNull(yield* models.defaultProfile), primary)
     assert.deepStrictEqual(
@@ -37,8 +37,23 @@ it.effect("resolves configured profiles and exposes 'primary' as default", () =>
 
 it.effect("has no default without a 'primary' profile", () =>
   Effect.gen(function* () {
-    const models = makeTaskModels([review])
+    const models = makeTaskModels(() => [review])
 
     assert(Option.isNone(yield* models.defaultProfile))
+  }),
+)
+
+it.effect('re-reads the configured profiles on every resolution', () =>
+  Effect.gen(function* () {
+    let configured = [primary]
+    const models = makeTaskModels(() => configured)
+
+    assert(Option.isNone(yield* models.resolve(decodeProfileName('review'))))
+    // A configuration reload supplies the new profile list to the same service.
+    configured = [primary, review]
+    assert.deepStrictEqual(
+      Option.getOrNull(yield* models.resolve(decodeProfileName('review'))),
+      review,
+    )
   }),
 )

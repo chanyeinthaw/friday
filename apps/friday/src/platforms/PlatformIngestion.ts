@@ -62,7 +62,7 @@ export const PlatformIngestionLive = Layer.effect(
     const persistence = yield* ThreadPersistence
     const channelTurns = yield* ChannelTurns
     const textGeneration = yield* TextGeneration
-    const configuration = yield* AppConfig
+    const config = yield* AppConfig
     const conversationTitles = yield* ConversationTitles
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
 
@@ -117,12 +117,13 @@ export const PlatformIngestionLive = Layer.effect(
               }
               if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
               if (created && found.channelRole !== 'system') {
+                const currentModels = config.current().models
                 yield* textGeneration
                   .generateThreadTitle({
                     message: input.message.content.text,
                     workingDirectory: found.workingDirectory,
-                    model: configuration.models.utility,
-                    thinkingLevel: configuration.models.utility.thinkingLevel,
+                    model: currentModels.utility,
+                    thinkingLevel: currentModels.utility.thinkingLevel,
                   })
                   .pipe(
                     Effect.flatMap((title) => conversationTitles.generated(found, title)),
