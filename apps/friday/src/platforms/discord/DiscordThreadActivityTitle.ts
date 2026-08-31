@@ -8,7 +8,6 @@ import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 const activityPrefix = '⚡ '
 const activityPrefixPattern = /^⚡ /u
 const titleLimit = 100
-const operationTimeout = '5 seconds'
 
 interface ThreadActivityState {
   /** Active channel-agent turns; each begin/finalize (or discard) pair contributes one. */
@@ -27,6 +26,13 @@ interface DiscordThreadLocation {
   readonly threadId?: string | undefined
 }
 
+interface ConversationEntry {
+  readonly lock: Semaphore.Semaphore
+  readonly state: ThreadActivityState
+  users: number
+  evictWhenUnused: boolean
+}
+
 /** Narrow slice of the Discord adapter used for thread title reads and writes. */
 export interface DiscordThreadTitleAdapter {
   decodeThreadId(threadId: string): DiscordThreadLocation
@@ -37,47 +43,85 @@ export interface DiscordThreadTitleAdapter {
 
 const truncateTitle = (title: string): string => Array.from(title).slice(0, titleLimit).join('')
 
-const bestEffort = (conversationId: string, effect: Effect.Effect<void, ChatSdkPublicationError>) =>
+const bestEffort = <A>(
+  conversationId: string,
+  effect: Effect.Effect<A, ChatSdkPublicationError>,
+  fallback: A,
+): Effect.Effect<A> =>
   effect.pipe(
     Effect.tapError((cause) =>
       Effect.logWarning('discord.thread-activity-title.failed').pipe(
         Effect.annotateLogs({ conversationId, cause: String(cause) }),
       ),
     ),
-    Effect.ignore,
+    Effect.orElseSucceed(() => fallback),
   )
 
 /**
  * Prefixes a Discord thread title with `⚡ ` while its channel turn or background tasks are active.
- * Discord reads and writes are best-effort, bounded, and serialized per conversation.
+ * Discord reads and writes are best-effort and serialized per conversation.
  */
 export const withDiscordThreadActivityTitle = (
   discord: DiscordThreadTitleAdapter,
   platform: PlatformAdapter<ChatSdkPublicationError>,
 ): PlatformAdapter<ChatSdkPublicationError> => {
-  const locks = new Map<string, Semaphore.Semaphore>()
-  const states = new Map<string, ThreadActivityState>()
+  const entries = new Map<string, ConversationEntry>()
 
-  const lockFor = (conversationId: string): Semaphore.Semaphore => {
-    const existing = locks.get(conversationId)
+  const entryFor = (conversationId: string): ConversationEntry => {
+    const existing = entries.get(conversationId)
     if (existing) return existing
-    const created = Semaphore.makeUnsafe(1)
-    locks.set(conversationId, created)
-    return created
-  }
-
-  const stateFor = (conversationId: string): ThreadActivityState => {
-    const existing = states.get(conversationId)
-    if (existing) return existing
-    const created: ThreadActivityState = {
-      turns: 0,
-      tasks: new Set(),
-      baseName: null,
-      appliedName: null,
+    const created: ConversationEntry = {
+      lock: Semaphore.makeUnsafe(1),
+      state: {
+        turns: 0,
+        tasks: new Set(),
+        baseName: null,
+        appliedName: null,
+      },
+      users: 0,
+      evictWhenUnused: false,
     }
-    states.set(conversationId, created)
+    entries.set(conversationId, created)
     return created
   }
+
+  const serialized = (
+    conversationId: string,
+    operation: (entry: ConversationEntry) => Effect.Effect<boolean>,
+  ): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const entry = entryFor(conversationId)
+      entry.users += 1
+      return entry.lock
+        .withPermit(
+          // The adapter promises do not accept AbortSignal. Defer interruption after lock
+          // acquisition so an in-flight request settles before the next operation can start.
+          Effect.uninterruptible(
+            operation(entry).pipe(
+              Effect.tap((evictWhenUnused) =>
+                Effect.sync(() => {
+                  entry.evictWhenUnused = evictWhenUnused
+                }),
+              ),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              entry.users -= 1
+              if (
+                entry.users === 0 &&
+                entry.evictWhenUnused &&
+                entries.get(conversationId) === entry
+              ) {
+                entries.delete(conversationId)
+              }
+            }),
+          ),
+          Effect.asVoid,
+        )
+    })
 
   const locationFor = (conversationId: string): DiscordThreadLocation | null => {
     const location = discord.decodeThreadId(conversationId)
@@ -100,18 +144,7 @@ export const withDiscordThreadActivityTitle = (
           .then((thread) => thread.channelName ?? null),
       catch: (cause) =>
         new ChatSdkPublicationError({ operation: 'set-thread-activity-title', cause }),
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: operationTimeout,
-        orElse: () =>
-          Effect.fail(
-            new ChatSdkPublicationError({
-              operation: 'set-thread-activity-title',
-              cause: new Error(`Discord thread lookup timed out for '${conversationId}'`),
-            }),
-          ),
-      }),
-    )
+    })
 
   const renameThread = (
     conversationId: string,
@@ -121,18 +154,7 @@ export const withDiscordThreadActivityTitle = (
       try: () => discord.setThreadTitle(conversationId, name),
       catch: (cause) =>
         new ChatSdkPublicationError({ operation: 'set-thread-activity-title', cause }),
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: operationTimeout,
-        orElse: () =>
-          Effect.fail(
-            new ChatSdkPublicationError({
-              operation: 'set-thread-activity-title',
-              cause: new Error(`Discord thread rename timed out for '${conversationId}'`),
-            }),
-          ),
-      }),
-    )
+    })
 
   const refreshBaseName = (
     conversationId: string,
@@ -177,11 +199,11 @@ export const withDiscordThreadActivityTitle = (
     const conversationId = String(binding.conversationId)
     const location = locationFor(conversationId)
     if (location === null) return Effect.void
-    return lockFor(conversationId).withPermit(
+    return serialized(conversationId, (entry) =>
       bestEffort(
         conversationId,
         Effect.gen(function* () {
-          const state = stateFor(conversationId)
+          const state = entry.state
           const wasActive = state.turns > 0 || state.tasks.size > 0
           update(state)
           const active = state.turns > 0 || state.tasks.size > 0
@@ -189,7 +211,9 @@ export const withDiscordThreadActivityTitle = (
             yield* refreshBaseName(conversationId, location, state)
           }
           yield* applyActivityTitle(conversationId, state)
+          return !active
         }),
+        false,
       ),
     )
   }
@@ -222,15 +246,17 @@ export const withDiscordThreadActivityTitle = (
     setConversationTitle: (title) => {
       const conversationId = String(title.binding.conversationId)
       if (locationFor(conversationId) === null) return platform.setConversationTitle(title)
-      return lockFor(conversationId).withPermit(
+      return serialized(conversationId, (entry) =>
         bestEffort(
           conversationId,
           Effect.gen(function* () {
-            const state = stateFor(conversationId)
+            const state = entry.state
             state.baseName = title.title.replace(activityPrefixPattern, '')
             state.appliedName = null
             yield* applyActivityTitle(conversationId, state)
+            return state.turns === 0 && state.tasks.size === 0
           }),
+          false,
         ),
       )
     },

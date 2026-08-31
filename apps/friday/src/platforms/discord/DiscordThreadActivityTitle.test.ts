@@ -200,7 +200,7 @@ it.effect('applies generated titles under the active prefix', () =>
   }),
 )
 
-it.effect('preserves an external rename across later activity cycles', () =>
+it.effect('evicts idle state so a later activity cycle fetches the current title again', () =>
   Effect.gen(function* () {
     const stub = stubDiscord(initialThreadNames('Design Review'))
     const platform = makePlatform(stub, [])
@@ -213,9 +213,57 @@ it.effect('preserves an external rename across later activity cycles', () =>
     yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done again' })
 
     assert.deepStrictEqual(
+      stub.requests.filter((request) => request.startsWith('GET')),
+      [
+        'GET discord:guild-1:thread-1',
+        'GET discord:guild-1:thread-1',
+        'GET discord:guild-1:thread-1',
+        'GET discord:guild-1:thread-1',
+      ],
+    )
+    assert.deepStrictEqual(
       stub.renames.map(({ name }) => name),
       ['⚡ Design Review', 'Design Review', '⚡ Externally Renamed', 'Externally Renamed'],
     )
+  }),
+)
+
+it.effect('waits for a delayed active rename before restoring the idle title', () =>
+  Effect.gen(function* () {
+    const activeRenameStarted = Promise.withResolvers<void>()
+    const releaseActiveRename = Promise.withResolvers<void>()
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    const adapter: DiscordThreadTitleAdapter = {
+      ...stub,
+      setThreadTitle: (id, name) => {
+        if (name === '⚡ Design Review') {
+          activeRenameStarted.resolve()
+          return releaseActiveRename.promise.then(() => stub.setThreadTitle(id, name))
+        }
+        return stub.setThreadTitle(id, name)
+      },
+    }
+    const platform = makePlatform(adapter, [])
+
+    const begin = yield* platform
+      .beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+      .pipe(Effect.forkChild)
+    yield* Effect.promise(() => activeRenameStarted.promise)
+    const finalize = yield* platform
+      .finalizeWorking({ binding: threadBinding, text: 'Done' })
+      .pipe(Effect.forkChild)
+    yield* Effect.yieldNow
+
+    assert.deepStrictEqual(stub.renames, [])
+    releaseActiveRename.resolve()
+    yield* Fiber.join(begin)
+    yield* Fiber.join(finalize)
+
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review', 'Design Review'],
+    )
+    assert.strictEqual(stub.names.get('discord:guild-1:thread-1'), 'Design Review')
   }),
 )
 
@@ -256,7 +304,8 @@ it.effect('serializes per thread so a hanging lookup cannot block another thread
       { conversationId: String(secondThreadBinding.conversationId), name: '⚡ Second Thread' },
     ])
     assert.include(calls, `beginWorking:${secondThreadBinding.conversationId}`)
-    yield* Fiber.interrupt(stalled)
+    hangingLookup.resolve({ channelName: 'First Thread' })
+    yield* Fiber.join(stalled)
   }),
 )
 
