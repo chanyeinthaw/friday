@@ -131,7 +131,7 @@ test('starts a subagent task without waiting for its terminal result', async () 
     const tasks = makeTasks({
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday(promptedTurns),
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
@@ -201,7 +201,7 @@ test('publishes task lifecycle in order and cleans up once for an immediately te
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday,
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: { accept: () => Effect.die('terminal delivery failed') },
       conversationTitles: {
         generated: () => Effect.void,
@@ -263,7 +263,7 @@ test('finalizes initial task activity when awaitTerminal defects', async () => {
             drain: Effect.never,
           }),
       },
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: noChannelTurns,
       conversationTitles: {
         generated: () => Effect.void,
@@ -315,7 +315,7 @@ test('finalizes initial task activity once when watcher installation fails', asy
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: noChannelTurns,
       conversationTitles: {
         generated: () => Effect.void,
@@ -361,7 +361,7 @@ test('applies the selected subagent profile model and thinking level', async () 
     const tasks = makeTasks({
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday([]),
-      models: makeTaskModels([
+      models: makeTaskModels(() => [
         ...profilesFor(parent),
         {
           name: profileName,
@@ -408,7 +408,7 @@ test('starts a bootstrap task in the channel workspace with the bootstrap role',
     const tasks = makeTasks({
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday(promptedTurns),
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
@@ -474,7 +474,7 @@ test('delivers a completed task back to the parent channel Thread', async () => 
         closeThread: ({ threadId }) => Effect.sync(() => closed.push(threadId)),
       },
       friday,
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: {
         accept: ({ message }) =>
           Effect.sync(() => delivered.push({ source: message.source, text: message.content.text })),
@@ -549,7 +549,7 @@ test('delivers a bootstrap result back to the channel for a separate normal task
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday,
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: {
         accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
       },
@@ -605,7 +605,7 @@ test('lists tasks by the latest Turn status', async () => {
   const tasks = makeTasks({
     persistence: taskPersistence(parent, thread, first, latest),
     friday: makeFriday([]),
-    models: makeTaskModels(profilesFor(parent)),
+    models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
@@ -657,7 +657,7 @@ test('steers an active task and continues an idle task with a new Turn', async (
   const tasks = makeTasks({
     persistence: { ...persistence, getLatestTurn: () => Effect.succeedSome(latest) },
     friday,
-    models: makeTaskModels(profilesFor(parent)),
+    models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('continuation'),
@@ -710,7 +710,7 @@ test('does not prompt a continuation when metadata reads fail', async () => {
           drain: Effect.never,
         }),
     },
-    models: makeTaskModels(profilesFor(parent)),
+    models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('continuation-metadata-failure'),
@@ -755,7 +755,7 @@ test('marks an idle task active while its continuation runs', async () => {
     const tasks = makeTasks({
       persistence: taskPersistence(parent, thread, completed, completed),
       friday,
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: {
         accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
       },
@@ -801,7 +801,7 @@ test('finalizes continuation task activity once when watcher installation fails'
   const tasks = makeTasks({
     persistence: taskPersistence(parent, thread, completed, completed),
     friday: makeFriday([]),
-    models: makeTaskModels(profilesFor(parent)),
+    models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: noChannelTurns,
     conversationTitles: {
       generated: () => Effect.void,
@@ -870,7 +870,7 @@ test('keeps task activity active across overlapping continuation finalizers', as
     const tasks = makeTasks({
       persistence: { ...persistence, getLatestTurn: () => Effect.succeedSome(latest) },
       friday,
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: {
         accept: () => {
           deliveryCount += 1
@@ -959,7 +959,7 @@ test('cancels only an active owned task', async () => {
           drain: Effect.never,
         }),
     },
-    models: makeTaskModels(profilesFor(parent)),
+    models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: {
       accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
     },
@@ -1014,7 +1014,7 @@ test('rejects task operations from another channel', async () => {
         ),
     },
     friday: makeFriday([]),
-    models: makeTaskModels(profilesFor(owner)),
+    models: makeTaskModels(() => profilesFor(owner)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
@@ -1043,7 +1043,7 @@ test('rejects cancellation for a terminal task', async () => {
   const tasks = makeTasks({
     persistence: taskPersistence(parent, thread, completed, completed),
     friday: makeFriday([]),
-    models: makeTaskModels(profilesFor(parent)),
+    models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
@@ -1091,7 +1091,7 @@ test('allows concurrent read-only tasks sharing one canonical working directory'
     const tasks = makeTasks({
       persistence,
       friday: makeFriday([]),
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(randomUUID),
@@ -1127,7 +1127,7 @@ test('rejects an unconfigured task model', async () => {
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
-      models: makeTaskModels([]),
+      models: makeTaskModels(() => []),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
@@ -1230,7 +1230,7 @@ test('rejects directories outside the channel workspace for a normal task', asyn
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
-      models: makeTaskModels([]),
+      models: makeTaskModels(() => []),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
@@ -1265,7 +1265,7 @@ test('allows a normal non-repository task at the channel workspace root', async 
     const tasks = makeTasks({
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
-      models: makeTaskModels(profilesFor(parent)),
+      models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),

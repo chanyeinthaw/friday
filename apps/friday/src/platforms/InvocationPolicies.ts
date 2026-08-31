@@ -4,9 +4,7 @@ import { PlatformConnectionId } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
-import type * as Scope from 'effect/Scope'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 import { InvocationMode, type InvocationMode as InvocationModeType } from '../config/AppConfig.ts'
@@ -51,18 +49,28 @@ export const shouldInvoke = (input: {
   input.mode === 'all-messages' ||
   input.hasBinding
 
+/**
+ * Resolves a channel's invocation mode from a configuration snapshot: the channel
+ * override when present, otherwise the connection default. Pure — transports read
+ * this from the current snapshot instead of querying SQLite per message.
+ */
+export const effectiveInvocationMode = (
+  invocation: {
+    readonly defaultMode: InvocationModeType
+    readonly channels: ReadonlyArray<{
+      readonly channelId: string
+      readonly mode: InvocationModeType
+    }>
+  },
+  channelId: string,
+): InvocationModeType =>
+  invocation.channels.find((policy) => policy.channelId === channelId)?.mode ??
+  invocation.defaultMode
+
 export interface InvocationPoliciesContract {
   readonly configuration: (
     connectionId: PlatformConnectionId,
   ) => Effect.Effect<InvocationPolicyConfiguration, InvocationPolicyError>
-  readonly watch: (
-    connectionId: PlatformConnectionId,
-    onChange: (configuration: InvocationPolicyConfiguration) => Effect.Effect<void>,
-  ) => Effect.Effect<void, never, Scope.Scope>
-  readonly effectiveMode: (
-    connectionId: PlatformConnectionId,
-    channelId: string,
-  ) => Effect.Effect<InvocationMode, InvocationPolicyError>
   readonly setChannelMode: (
     policy: ChannelInvocationPolicy,
   ) => Effect.Effect<void, InvocationPolicyError>
@@ -123,46 +131,6 @@ export const InvocationPoliciesLive = Layer.effect(
 
     return InvocationPolicies.of({
       configuration: configured,
-      watch: (connectionId, onChange) => {
-        let previous = ''
-        const refresh = configured(connectionId).pipe(
-          Effect.flatMap((next) => {
-            const identity = `${next.defaultMode}:${next.channels.map(({ channelId, mode }) => `${channelId}=${mode}`).join(',')}`
-            if (identity === previous) return Effect.void
-            previous = identity
-            return onChange(next)
-          }),
-          Effect.tapError((cause) =>
-            Effect.logWarning('platform.invocation.refresh-failed').pipe(
-              Effect.annotateLogs({ connectionId, cause: String(cause) }),
-            ),
-          ),
-          Effect.ignore,
-        )
-        return refresh.pipe(
-          Effect.repeat(Schedule.spaced('5 seconds')),
-          Effect.forkScoped,
-          Effect.asVoid,
-        )
-      },
-      effectiveMode: (connectionId, channelId) =>
-        Effect.gen(function* () {
-          const channelRows = yield* sql<Record<string, unknown>>`
-            SELECT mode
-            FROM platform_channel_invocation_policies
-            WHERE connection_id = ${connectionId} AND channel_id = ${channelId}
-            LIMIT 1
-          `
-          const channel = (yield* decodeModeRows(channelRows))[0]
-          if (channel) return channel.mode
-          const defaultRows = yield* sql<Record<string, unknown>>`
-            SELECT mode
-            FROM platform_invocation_defaults
-            WHERE connection_id = ${connectionId}
-            LIMIT 1
-          `
-          return (yield* decodeModeRows(defaultRows))[0]?.mode ?? 'mention-only'
-        }).pipe(Effect.mapError(readError)),
       setChannelMode: ({ connectionId, channelId, mode }) =>
         sql`
           INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)

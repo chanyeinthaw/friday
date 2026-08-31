@@ -23,6 +23,13 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   `
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS admin_discord_users (
+      user_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
+    )
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS agent_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       primary_provider TEXT NOT NULL,

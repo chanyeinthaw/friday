@@ -11,7 +11,11 @@ interface DiscordGatewayMessageLocation {
 }
 
 export type FridayDiscordAdapterConfig = DiscordAdapterConfig & {
-  readonly systemChannelIds?: ReadonlyArray<string>
+  /**
+   * Provider for the configured system channel IDs, read on every check so
+   * configuration reloads apply without rebuilding the adapter.
+   */
+  readonly systemChannelIds?: () => ReadonlyArray<string>
   /**
    * Location allowlist consulted before the adapter takes any externally visible
    * action. The upstream adapter creates a Discord thread for every mention before
@@ -26,20 +30,25 @@ export type FridayDiscordAdapterConfig = DiscordAdapterConfig & {
  * It also drops messages from unconfigured guilds/channels before that thread creation happens.
  */
 export class FridayDiscordAdapter extends DiscordAdapter {
-  readonly systemChannelIds: ReadonlySet<string>
+  private readonly systemChannelIdsProvider: () => ReadonlyArray<string>
   private readonly isAllowedLocation: FridayDiscordAdapterConfig['isAllowedLocation']
 
   constructor(config: FridayDiscordAdapterConfig) {
     super(config)
-    this.systemChannelIds = new Set(config.systemChannelIds ?? [])
+    this.systemChannelIdsProvider = config.systemChannelIds ?? (() => [])
     this.isAllowedLocation = config.isAllowedLocation
+  }
+
+  /** Live view of the configured system channels for adapter-side thread routing. */
+  protected get systemChannelIdList(): ReadonlyArray<string> {
+    return this.systemChannelIdsProvider()
   }
 
   protected override createDiscordThread(
     channelId: string,
     messageId: string,
   ): Promise<{ id: string; name: string }> {
-    return this.systemChannelIds.has(channelId)
+    return this.systemChannelIdList.includes(channelId)
       ? Promise.resolve({ id: channelId, name: channelId })
       : super.createDiscordThread(channelId, messageId)
   }

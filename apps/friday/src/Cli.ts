@@ -4,6 +4,10 @@ import * as Schema from 'effect/Schema'
 import { PlatformConnectionId } from '@friday/contracts/conversation'
 
 import { InvocationMode, type InvocationMode as InvocationModeType } from './config/AppConfig.ts'
+import {
+  formatConfigReloadOutcome,
+  type ConfigReloadOutcome as ConfigReloadOutcomeType,
+} from './config/ConfigReload.ts'
 import { RepositoryUrl, type ManagedWorktree } from './repositories/RepositoryWorktrees.ts'
 import {
   WorkspaceCleanupProposalId,
@@ -16,6 +20,7 @@ export const helpText = `Friday — your personal agent
 
 Usage:
   friday [command]
+  friday config reload
   friday worktree ensure <repository-url> [--ref <ref>] [--workspace <path>] [--json]
   friday workspace cleanup apply <proposal-id> [--json]
   friday platform invocation set <connection-id> <channel-id> <mention-only|all-messages>
@@ -26,6 +31,7 @@ Usage:
 
 Commands:
   start             Start Friday (default)
+  config reload            Reload the running Friday's configuration
   worktree ensure          Ensure a reusable repository worktree for the current channel workspace
   workspace cleanup apply  Apply an approved workspace cleanup proposal
   platform invocation set          Set one channel's invocation mode
@@ -43,6 +49,7 @@ export type FridayCliAction =
   | { readonly type: 'help' }
   | { readonly type: 'start' }
   | { readonly type: 'version' }
+  | { readonly type: 'config-reload' }
   | {
       readonly type: 'platform-invocation-set'
       readonly connectionId: typeof PlatformConnectionId.Type
@@ -70,6 +77,17 @@ export type FridayCliAction =
       readonly ref?: string
       readonly json: boolean
     }
+
+export class ConfigReloadRejectedError extends Schema.Error<ConfigReloadRejectedError>(
+  'ConfigReloadRejectedError',
+)({
+  _tag: Schema.tag('ConfigReloadRejectedError'),
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return `Configuration reload rejected: ${this.detail}`
+  }
+}
 
 export class FridayCliError extends Schema.Error<FridayCliError>('FridayCliError')({
   _tag: Schema.tag('FridayCliError'),
@@ -216,6 +234,9 @@ export const parseFridayCli = (
   if (arguments_.length === 1 && (arguments_[0] === '--version' || arguments_[0] === '-v')) {
     return Effect.succeed({ type: 'version' })
   }
+  if (arguments_.length === 2 && arguments_[0] === 'config' && arguments_[1] === 'reload') {
+    return Effect.succeed({ type: 'config-reload' })
+  }
   if (arguments_[0] === 'worktree' && arguments_[1] === 'ensure') {
     return parseWorktreeEnsure(arguments_)
   }
@@ -253,10 +274,12 @@ export const runFridayCli = <
   InvocationError,
   ActivityDescriptionError,
   SystemChannelError,
+  ReloadError,
 >(
   arguments_: ReadonlyArray<string>,
   options: {
     readonly start: Effect.Effect<never, E>
+    readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ReloadError>
     readonly ensureWorktree: (
       action: Extract<FridayCliAction, { readonly type: 'worktree-ensure' }>,
     ) => Effect.Effect<ManagedWorktree, WorktreeError>
@@ -287,12 +310,14 @@ export const runFridayCli = <
 ): Effect.Effect<
   void,
   | FridayCliError
+  | ConfigReloadRejectedError
   | E
   | WorktreeError
   | CleanupError
   | InvocationError
   | ActivityDescriptionError
   | SystemChannelError
+  | ReloadError
 > =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
@@ -303,6 +328,14 @@ export const runFridayCli = <
       case 'version':
         yield* Console.log(FRIDAY_VERSION)
         return
+      case 'config-reload': {
+        const outcome = yield* options.reloadConfig
+        if (!outcome.ok) {
+          return yield* new ConfigReloadRejectedError({ detail: outcome.detail })
+        }
+        yield* Console.log(formatConfigReloadOutcome(outcome))
+        return
+      }
       case 'platform-invocation-set': {
         yield* options.setPlatformInvocation(action)
         yield* Console.log(

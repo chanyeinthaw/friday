@@ -25,7 +25,7 @@ export class ChatSdkCallbackError extends Schema.Error<ChatSdkCallbackError>(
   'ChatSdkCallbackError',
 )({
   _tag: Schema.tag('ChatSdkCallbackError'),
-  operation: Schema.Literal('inbound-message'),
+  operation: Schema.Literals(['inbound-message', 'slash-command']),
   cause: Schema.Defect(),
 }) {
   override get message(): string {
