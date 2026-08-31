@@ -32,6 +32,7 @@ const message = {
   id: 'message-1',
   text: 'inspect Friday',
   isMention: true,
+  raw: {},
   author: {
     userId: 'user-1',
     userName: 'chan',

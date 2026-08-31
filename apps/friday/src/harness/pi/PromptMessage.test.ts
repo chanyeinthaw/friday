@@ -80,6 +80,45 @@ it('renders attributed recent context before the trigger', () => {
   )
 })
 
+it('marks the message a trigger replies to', () => {
+  const message = decodeMessage({
+    source: 'user',
+    author: {
+      platformUserId: 'user-1',
+      mention: '<@user-1>',
+      username: 'chan',
+      displayName: 'Chan',
+    },
+    context: [
+      {
+        author: {
+          platformUserId: 'user-3',
+          mention: '<@user-3>',
+          username: 'carol',
+          displayName: 'Carol',
+        },
+        content: { text: 'Unrelated chatter.', images: [] },
+      },
+    ],
+    replyTo: {
+      author: {
+        platformUserId: 'user-2',
+        mention: '<@user-2>',
+        username: 'alice',
+        displayName: 'Alice',
+      },
+      content: { text: 'The deployment failed.', images: [] },
+      platformMessageId: 'discord-message-0',
+    },
+    content: { text: 'Friday, investigate this.', images: [] },
+  })
+
+  assert.strictEqual(
+    renderPromptMessage(message),
+    'Participants:\np1 = <@user-2> | alice | Alice\np2 = <@user-3> | carol | Carol\np3 = <@user-1> | chan | Chan\n\np1 [reply target]: The deployment failed.\np2 [context]: Unrelated chatter.\np3 [trigger] (replying to p1): Friday, investigate this.',
+  )
+})
+
 it('leaves internal messages unchanged', () => {
   const message = decodeMessage({
     source: 'agent',
