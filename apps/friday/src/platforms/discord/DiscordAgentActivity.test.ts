@@ -32,17 +32,19 @@ const discord = {
   }),
 }
 
-const makeDiscordFetch = () => {
+const makeDiscordFetch = (initialDescription = '', channelName = 'general') => {
   const patches: Array<string> = []
-  const state = { failDescriptionPatch: false }
+  const state = { failDescriptionPatch: false, description: initialDescription }
   const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
     if (url.endsWith('/applications/@me')) {
+      if (init?.body === undefined) return Response.json({ description: state.description })
       if (state.failDescriptionPatch) return new Response(null, { status: 500 })
-      const body = decodeDescriptionBody(init?.body ?? '')
+      const body = decodeDescriptionBody(init.body)
+      state.description = body.description
       patches.push(body.description)
       return new Response(null, { status: 200 })
     }
-    if (url.includes('/channels/')) return Response.json({ name: 'general' })
+    if (url.includes('/channels/')) return Response.json({ name: channelName })
     return new Response(null, { status: 404 })
   })
   return {
@@ -127,12 +129,37 @@ it('caps labels with an ellipsis', () => {
   assert.strictEqual(label.length, ActivityLabelLimit)
 })
 
+it('truncates labels at Unicode code-point boundaries', () => {
+  const label = sanitizeTaskLabel('🚀'.repeat(100))
+  assert.strictEqual(label, `${'🚀'.repeat(ActivityLabelLimit - 1)}…`)
+  assert.strictEqual(Array.from(label).length, ActivityLabelLimit)
+  assert.strictEqual(label.includes('\uFFFD'), false)
+})
+
+it.effect('clears a stale owned description but preserves a manual description', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      const owned = makeDiscordFetch('Friday task activity:\n[#general] Stale task')
+      vi.stubGlobal('fetch', owned.fetchMock)
+      yield* makeDiscordAgentActivity(discord, 'bot-token', { activityDescription: false })
+      assert.deepStrictEqual(owned.patches, [''])
+
+      vi.unstubAllGlobals()
+      const manual = makeDiscordFetch('Administrator-authored description')
+      vi.stubGlobal('fetch', manual.fetchMock)
+      yield* makeDiscordAgentActivity(discord, 'bot-token', { activityDescription: false })
+      assert.deepStrictEqual(manual.patches, [])
+    }),
+  ),
+)
+
 it.effect('coalesces task transitions into one debounced description patch', () =>
   withStubbedFetch(
     Effect.gen(function* () {
       const { fetchMock, patches } = makeDiscordFetch()
       vi.stubGlobal('fetch', fetchMock)
-      const activity = makeDiscordAgentActivity(discord, 'bot-token', {
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
         descriptionDebounce: '1 second',
       })
 
@@ -146,18 +173,20 @@ it.effect('coalesces task transitions into one debounced description patch', () 
       assert.deepStrictEqual(patches, [])
       yield* TestClock.adjust('1 second')
       assert.deepStrictEqual(patches, [
-        '[#general] Implement the packing tests\n[#general] Review the adapter',
+        'Friday task activity:\n[#general] Implement the packing tests\n[#general] Review the adapter',
       ])
       assert.strictEqual(
-        fetchMock.mock.calls.filter(([url]) => url.endsWith('/applications/@me')).length,
+        fetchMock.mock.calls.filter(
+          ([url, init]) => url.endsWith('/applications/@me') && init?.body !== undefined,
+        ).length,
         1,
       )
 
       yield* activity({ binding, taskId: 'task-1', active: false })
       yield* TestClock.adjust('1 second')
       assert.deepStrictEqual(patches, [
-        '[#general] Implement the packing tests\n[#general] Review the adapter',
-        '[#general] Review the adapter',
+        'Friday task activity:\n[#general] Implement the packing tests\n[#general] Review the adapter',
+        'Friday task activity:\n[#general] Review the adapter',
       ])
 
       // Finishing an unknown task changes nothing, so the unchanged output is skipped.
@@ -168,12 +197,34 @@ it.effect('coalesces task transitions into one debounced description patch', () 
   ),
 )
 
+it.effect('truncates channel names at Unicode code-point boundaries', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      const { fetchMock, patches } = makeDiscordFetch('', '🚀'.repeat(40))
+      vi.stubGlobal('fetch', fetchMock)
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
+        descriptionDebounce: '1 second',
+      })
+
+      yield* activity({ binding, taskId: 'task-1', active: true, task: 'Test emoji channel' })
+      yield* TestClock.adjust('1 second')
+      assert.strictEqual(
+        patches[0],
+        `Friday task activity:\n[#${'🚀'.repeat(32)}] Test emoji channel`,
+      )
+      assert.strictEqual(patches[0]?.includes('\uFFFD'), false)
+    }),
+  ),
+)
+
 it.effect('overflows with complete lines and an accurate hidden-task count', () =>
   withStubbedFetch(
     Effect.gen(function* () {
       const { fetchMock, patches } = makeDiscordFetch()
       vi.stubGlobal('fetch', fetchMock)
-      const activity = makeDiscordAgentActivity(discord, 'bot-token', {
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
         descriptionDebounce: '1 second',
       })
 
@@ -189,15 +240,55 @@ it.effect('overflows with complete lines and an accurate hidden-task count', () 
 
       const lines = patches[0]?.split('\n') ?? []
       assert.strictEqual(lines.length, 6)
-      assert.strictEqual(lines[0], `[#general] ${'x'.repeat(63)}…`)
+      assert.strictEqual(lines[0], 'Friday task activity:')
+      assert.strictEqual(lines[1], `[#general] ${'x'.repeat(63)}…`)
       assert.strictEqual(lines[4], `[#general] ${'x'.repeat(63)}…`)
-      assert.strictEqual(lines[5], '... 2 more tasks.')
-      assert.strictEqual(patches[0]?.length, 397)
+      assert.strictEqual(lines[5], '... 3 more tasks.')
+      assert(Array.from(patches[0] ?? '').length <= 400)
 
       yield* activity({ binding, taskId: 'task-7', active: false })
       yield* TestClock.adjust('1 second')
       const reflowed = patches[1]?.split('\n') ?? []
-      assert.strictEqual(reflowed[5], '... 1 more task.')
+      assert.strictEqual(reflowed[5], '... 2 more tasks.')
+    }),
+  ),
+)
+
+it.effect('honors Retry-After and publishes the newest desired state on retry', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      const attempted: Array<string> = []
+      let patchAttempt = 0
+      const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+        if (url.endsWith('/applications/@me') && init?.body === undefined) {
+          return Response.json({ description: '' })
+        }
+        if (url.endsWith('/applications/@me')) {
+          attempted.push(decodeDescriptionBody(init?.body ?? '').description)
+          patchAttempt += 1
+          return patchAttempt === 1
+            ? new Response(null, { status: 429, headers: { 'Retry-After': '2' } })
+            : new Response(null, { status: 200 })
+        }
+        if (url.includes('/channels/')) return Response.json({ name: 'general' })
+        return new Response(null, { status: 404 })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
+        descriptionDebounce: '1 second',
+      })
+
+      yield* activity({ binding, taskId: 'task-1', active: true, task: 'Old desired state' })
+      yield* TestClock.adjust('1 second')
+      yield* activity({ binding, taskId: 'task-1', active: false })
+      yield* activity({ binding, taskId: 'task-2', active: true, task: 'Newest desired state' })
+      yield* TestClock.adjust('2 seconds')
+
+      assert.deepStrictEqual(attempted, [
+        'Friday task activity:\n[#general] Old desired state',
+        'Friday task activity:\n[#general] Newest desired state',
+      ])
     }),
   ),
 )
@@ -207,7 +298,8 @@ it.effect('keeps going when the description patch fails and retries on the next 
     Effect.gen(function* () {
       const { fetchMock, patches, setFail } = makeDiscordFetch()
       vi.stubGlobal('fetch', fetchMock)
-      const activity = makeDiscordAgentActivity(discord, 'bot-token', {
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
         descriptionDebounce: '1 second',
       })
 
@@ -217,9 +309,15 @@ it.effect('keeps going when the description patch fails and retries on the next 
       assert.deepStrictEqual(patches, [])
 
       setFail(false)
+      yield* TestClock.adjust('1 second')
+      assert.deepStrictEqual(patches, ['Friday task activity:\n[#general] Implement the feature'])
+
       yield* activity({ binding, taskId: 'task-1', active: false })
       yield* TestClock.adjust('1 second')
-      assert.deepStrictEqual(patches, [''])
+      assert.deepStrictEqual(patches, [
+        'Friday task activity:\n[#general] Implement the feature',
+        '',
+      ])
     }),
   ),
 )
@@ -229,7 +327,7 @@ it.effect('skips description updates when disabled by configuration', () =>
     Effect.gen(function* () {
       const { fetchMock, patches } = makeDiscordFetch()
       vi.stubGlobal('fetch', fetchMock)
-      const activity = makeDiscordAgentActivity(discord, 'bot-token', {
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
         activityDescription: false,
         descriptionDebounce: '1 second',
       })
@@ -238,7 +336,9 @@ it.effect('skips description updates when disabled by configuration', () =>
       yield* TestClock.adjust('1 second')
       assert.deepStrictEqual(patches, [])
       assert.strictEqual(
-        fetchMock.mock.calls.filter(([url]) => url.includes('/applications/@me')).length,
+        fetchMock.mock.calls.filter(
+          ([url, init]) => url.includes('/applications/@me') && init?.body !== undefined,
+        ).length,
         0,
       )
     }),
@@ -250,13 +350,14 @@ it.effect('falls back to a placeholder when task text is missing', () =>
     Effect.gen(function* () {
       const { fetchMock, patches } = makeDiscordFetch()
       vi.stubGlobal('fetch', fetchMock)
-      const activity = makeDiscordAgentActivity(discord, 'bot-token', {
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
         descriptionDebounce: '1 second',
       })
 
       yield* activity({ binding, taskId: 'task-1', active: true })
       yield* TestClock.adjust('1 second')
-      assert.deepStrictEqual(patches, ['[#general] Working...'])
+      assert.deepStrictEqual(patches, ['Friday task activity:\n[#general] Working...'])
     }),
   ),
 )

@@ -54,7 +54,10 @@ export const DiscordPlatformConfig = Schema.Struct({
   }),
   respondToGlobalMentions: Schema.Boolean,
   mentionRoleIds: IdentifierArray,
-  /** Publish active task activity to the Discord application description. */
+  /**
+   * Explicit opt-in for a global, public Discord application description containing
+   * sanitized channel names and task labels.
+   */
   activityDescription: Schema.Boolean,
   invocation: Schema.Struct({
     defaultMode: InvocationMode,
@@ -154,7 +157,7 @@ const DiscordConnectionRow = Schema.Struct({
   public_key: Schema.String,
   bot_token_env: Schema.String,
   respond_to_global_mentions: Schema.Number,
-  activity_description: Schema.Number,
+  activity_description_public: Schema.Number,
 })
 
 const InvocationDefaultRow = Schema.Struct({
@@ -229,7 +232,7 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
       discord_connections.public_key,
       discord_connections.bot_token_env,
       discord_connections.respond_to_global_mentions,
-      discord_connections.activity_description
+      discord_connections.activity_description_public
     FROM platform_connections
     JOIN discord_connections USING (connection_id)
     WHERE platform_connections.platform = 'discord'
@@ -377,7 +380,7 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
               guilds: policyFor(connection.connection_id, 'guild', rows.policies, rows.subjects),
             },
             respondToGlobalMentions: connection.respond_to_global_mentions === 1,
-            activityDescription: connection.activity_description === 1,
+            activityDescription: connection.activity_description_public === 1,
             mentionRoleIds: rows.mentionRoles
               .filter((role) => role.connection_id === connection.connection_id)
               .map((role) => role.role_id),

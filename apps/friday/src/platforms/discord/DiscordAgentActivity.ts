@@ -1,25 +1,35 @@
 import type { DiscordAdapter } from '@chat-adapter/discord'
-import type * as Duration from 'effect/Duration'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
+import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
+import * as Schema from 'effect/Schema'
+import type * as Scope from 'effect/Scope'
 
 import type { PlatformAgentActivity } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 
 const activitySuffix = / ⚡️(?:x\d+)?$/u
 const discordApiBase = 'https://discord.com/api/v10'
+const descriptionMarker = 'Friday task activity:\n'
+const DescriptionDebounce: Duration.Input = '2 seconds'
+const RetryDelay: Duration.Input = '1 second'
+const MaximumPatchAttempts = 4
 
 /** Discord's documented application-description character limit. */
 export const ApplicationDescriptionLimit = 400
-/** Public activity line caps keep long prompts out of the global application description. */
+/** Caps for the public, global application description's sanitized labels. */
 export const ActivityLabelLimit = 64
 export const ActivityChannelLimit = 32
-const DescriptionDebounce: Duration.Input = '2 seconds'
 
 export interface DiscordAgentActivityOptions {
-  /** Publish active task activity to the Discord application description (default true). */
+  /**
+   * Opt in to a global, public Discord application description containing sanitized
+   * channel names and task labels. Disabled by default.
+   */
   readonly activityDescription?: boolean | undefined
   readonly descriptionDebounce?: Duration.Input | undefined
+  readonly retryDelay?: Duration.Input | undefined
 }
 
 interface ActiveTask {
@@ -27,10 +37,34 @@ interface ActiveTask {
   readonly label: string
 }
 
+class DescriptionPatchError extends Schema.Error<DescriptionPatchError>('DescriptionPatchError')({
+  _tag: Schema.tag('DescriptionPatchError'),
+  status: Schema.Number,
+  transient: Schema.Boolean,
+  retryAfterMs: Schema.optional(Schema.Number),
+}) {}
+
+const CurrentApplication = Schema.Struct({ description: Schema.String })
+const ChannelResponse = Schema.Struct({ name: Schema.NullOr(Schema.String) })
+const CurrentUserResponse = Schema.Struct({ id: Schema.String })
+const GuildMemberResponse = Schema.Struct({
+  nick: Schema.optional(Schema.NullOr(Schema.String)),
+  user: Schema.optional(Schema.Struct({ username: Schema.optional(Schema.String) })),
+})
+const decodeCurrentApplication = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(CurrentApplication),
+)
+const decodeChannelResponse = Schema.decodeEffect(Schema.fromJsonString(ChannelResponse))
+const decodeCurrentUserResponse = Schema.decodeUnknownSync(CurrentUserResponse)
+const decodeGuildMemberResponse = Schema.decodeUnknownSync(GuildMemberResponse)
+
+const truncateCodePoints = (value: string, maxLength: number): string =>
+  Array.from(value).slice(0, maxLength).join('')
+
 /**
- * Derives a concise single-line public label from a delegated task prompt.
- * Strips code fences, Discord mentions/timestamps, and Markdown markers so raw
- * prompts are never published verbatim.
+ * Derives a concise single-line public label from delegated task text. It removes
+ * code blocks, Discord mentions, timestamps, and Markdown markers before truncation.
+ * Ordinary text can remain unchanged, so enabling publication must be an explicit choice.
  */
 export const sanitizeTaskLabel = (task: string, maxLength: number = ActivityLabelLimit): string => {
   const prepared = task
@@ -47,21 +81,17 @@ export const sanitizeTaskLabel = (task: string, maxLength: number = ActivityLabe
     .replace(/^[#>*\-–\s]+/u, '')
     .replace(/\s+/gu, ' ')
     .trim()
-  if (label.length <= maxLength) return label
-  return `${label.slice(0, maxLength - 1).trimEnd()}…`
+  if (Array.from(label).length <= maxLength) return label
+  return `${truncateCodePoints(label, maxLength - 1).trimEnd()}…`
 }
 
 const overflowText = (hidden: number): string =>
   hidden === 1 ? '... 1 more task.' : `... ${hidden} more tasks.`
 
-// Discord measures description length in characters; count code points, not UTF-16 units.
 const renderedLength = (lines: ReadonlyArray<string>): number =>
   lines.reduce((total, line) => total + Array.from(line).length + 1, -1)
 
-/**
- * Packs activity lines into a description within the Discord limit, keeping only
- * complete lines and appending an accurate overflow count when tasks are hidden.
- */
+/** Packs complete activity lines within Discord's code-point limit. */
 export const packApplicationDescription = (
   lines: ReadonlyArray<string>,
   limit: number = ApplicationDescriptionLimit,
@@ -77,160 +107,273 @@ export const packApplicationDescription = (
   return [...lines.slice(0, kept), ...overflowSegment(lines.length - kept)].join('\n')
 }
 
+const retryAfterMilliseconds = (response: Response): number | undefined => {
+  const header = response.headers.get('Retry-After')
+  if (header === null) return undefined
+  const seconds = Number(header)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000)
+  const date = Date.parse(header)
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now())
+}
+
 export const makeDiscordAgentActivity = (
   discord: Pick<DiscordAdapter, 'decodeThreadId'>,
   botToken: string,
   options: DiscordAgentActivityOptions = {},
-): ((input: PlatformAgentActivity) => Effect.Effect<void, ChatSdkPublicationError>) => {
-  const baseNames = new Map<string, string>()
-  const activeTaskIds = new Map<string, Set<string>>()
-  const channelNames = new Map<string, string>()
-  const activeTasks = new Map<string, ActiveTask>()
-  const describeActivity = options.activityDescription !== false
-  let botUserId: string | null = null
-  let lastDescription: string | null = null
-  let scheduled: Fiber.Fiber<void, never> | null = null
+): Effect.Effect<
+  (input: PlatformAgentActivity) => Effect.Effect<void, ChatSdkPublicationError>,
+  never,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const baseNames = new Map<string, string>()
+    const activeTaskIds = new Map<string, Set<string>>()
+    const channelNames = new Map<string, string>()
+    const activeTasks = new Map<string, ActiveTask>()
+    const describeActivity = options.activityDescription === true
+    const changes = yield* Queue.sliding<void>(1)
+    let botUserId: string | null = null
+    let lastDescription: string | null = null
 
-  const channelName = (channelId: string): Effect.Effect<string, ChatSdkPublicationError> => {
-    const cached = channelNames.get(channelId)
-    if (cached !== undefined) return Effect.succeed(cached)
-    return Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(`${discordApiBase}/channels/${channelId}`, {
-          headers: { Authorization: `Bot ${botToken}` },
-        })
-        if (!response.ok) {
-          throw new Error(`Discord channel lookup failed: HTTP ${response.status}`)
-        }
-        // SAFETY: Discord's documented channel response exposes the optional name field.
-        const channel = (await response.json()) as { name?: string | null }
-        const name = channel.name ?? channelId
-        channelNames.set(channelId, name)
-        return name
-      },
-      catch: (cause) => new ChatSdkPublicationError({ operation: 'lookup-channel', cause }),
-    })
-  }
-
-  const patchDescription = (description: string): Effect.Effect<void, ChatSdkPublicationError> =>
-    Effect.tryPromise({
-      try: async () => {
-        const response = await fetch(`${discordApiBase}/applications/@me`, {
-          method: 'PATCH',
-          headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description }),
-        })
-        if (!response.ok) {
-          throw new Error(`Discord application description update failed: HTTP ${response.status}`)
-        }
-      },
-      catch: (cause) =>
-        new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-    })
-
-  const publishDescription = Effect.gen(function* () {
-    const names = new Map<string, string>()
-    for (const channelId of new Set([...activeTasks.values()].map((task) => task.channelId))) {
-      const name = yield* Effect.catch(channelName(channelId), () => Effect.succeed(channelId))
-      names.set(channelId, name)
-    }
-    const lines = [...activeTasks.values()].map((task) => {
-      const channel = (names.get(task.channelId) ?? task.channelId).slice(0, ActivityChannelLimit)
-      return `[#${channel}] ${task.label}`
-    })
-    const description = packApplicationDescription(lines)
-    if (description === lastDescription) return
-    yield* patchDescription(description)
-    lastDescription = description
-  })
-
-  const publishDescriptionSafely = Effect.catch(publishDescription, (cause) =>
-    Effect.logWarning('discord.application-description.failed').pipe(
-      Effect.annotateLogs({ cause: String(cause) }),
-    ),
-  )
-
-  // Coalesces bursts of task transitions into one PATCH per debounce window.
-  const scheduleDescription = Effect.gen(function* () {
-    if (scheduled !== null) return
-    scheduled = yield* Effect.forkDetach(
-      Effect.gen(function* () {
-        yield* Effect.sleep(options.descriptionDebounce ?? DescriptionDebounce)
-        scheduled = null
-        yield* publishDescriptionSafely
-      }),
-    )
-  })
-
-  return (input) =>
-    Effect.tryPromise({
-      try: async () => {
-        const location = discord.decodeThreadId(String(input.binding.conversationId))
-        if (describeActivity) {
-          if (input.active) {
-            // Continuations restart a finished task without its prompt text; keep the prior label.
-            const existing = activeTasks.get(input.taskId)
-            const label =
-              input.task !== undefined
-                ? sanitizeTaskLabel(input.task) || 'Working...'
-                : (existing?.label ?? 'Working...')
-            activeTasks.set(input.taskId, { channelId: location.channelId, label })
-          } else {
-            activeTasks.delete(input.taskId)
-          }
-        }
-        if (!location.guildId) return null
-        if (botUserId === null) {
-          const response = await fetch(`${discordApiBase}/users/@me`, {
+    const channelName = Effect.fn('DiscordAgentActivity.channelName')(function* (
+      channelId: string,
+    ) {
+      const cached = channelNames.get(channelId)
+      if (cached !== undefined) return cached
+      const response = yield* Effect.tryPromise({
+        try: (signal) =>
+          fetch(`${discordApiBase}/channels/${channelId}`, {
+            signal,
             headers: { Authorization: `Bot ${botToken}` },
-          })
-          if (!response.ok) {
-            throw new Error(`Discord bot user lookup failed: HTTP ${response.status}`)
-          }
-          // SAFETY: Discord's documented current-user response always includes the user's snowflake ID.
-          const user = (await response.json()) as { id: string }
-          botUserId = user.id
-        }
-        let baseName = baseNames.get(location.guildId)
-        if (!baseName) {
-          const response = await fetch(
-            `${discordApiBase}/guilds/${location.guildId}/members/${botUserId}`,
-            { headers: { Authorization: `Bot ${botToken}` } },
-          )
-          if (!response.ok) {
-            throw new Error(`Discord bot member lookup failed: HTTP ${response.status}`)
-          }
-          // SAFETY: Discord's documented guild-member response exposes optional nick and user fields.
-          const member = (await response.json()) as {
-            nick?: string | null
-            user?: { username?: string }
-          }
-          baseName = (member.nick ?? member.user?.username ?? 'Friday').replace(activitySuffix, '')
-          baseNames.set(location.guildId, baseName)
-        }
-        const tasks = activeTaskIds.get(location.guildId) ?? new Set<string>()
-        if (input.active) tasks.add(input.taskId)
-        else tasks.delete(input.taskId)
-        activeTaskIds.set(location.guildId, tasks)
-        const count = tasks.size
-        const suffix = count === 0 ? '' : count === 1 ? ' ⚡️' : ` ⚡️x${count}`
-        const nickname = `${baseName}${suffix}`.slice(0, 32)
-        const response = await fetch(`${discordApiBase}/guilds/${location.guildId}/members/@me`, {
-          method: 'PATCH',
-          headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nick: nickname }),
+          }),
+        catch: (cause) => new ChatSdkPublicationError({ operation: 'lookup-channel', cause }),
+      })
+      if (!response.ok) {
+        return yield* new ChatSdkPublicationError({
+          operation: 'lookup-channel',
+          cause: new Error(`Discord channel lookup failed: HTTP ${response.status}`),
         })
-        if (!response.ok)
-          throw new Error(`Discord bot nickname update failed: HTTP ${response.status}`)
-        return { guildId: location.guildId, nickname, activeTaskCount: count }
+      }
+      const body = yield* Effect.tryPromise({
+        try: () => response.text(),
+        catch: (cause) => new ChatSdkPublicationError({ operation: 'lookup-channel', cause }),
+      })
+      const channel = yield* decodeChannelResponse(body).pipe(
+        Effect.mapError(
+          (cause) => new ChatSdkPublicationError({ operation: 'lookup-channel', cause }),
+        ),
+      )
+      const name = channel.name ?? channelId
+      channelNames.set(channelId, name)
+      return name
+    })
+
+    const patchDescription = Effect.fn('DiscordAgentActivity.patchDescription')(function* (
+      description: string,
+    ) {
+      const response = yield* Effect.tryPromise({
+        try: (signal) =>
+          fetch(`${discordApiBase}/applications/@me`, {
+            signal,
+            method: 'PATCH',
+            headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description }),
+          }),
+        catch: () => new DescriptionPatchError({ status: 0, transient: true }),
+      })
+      if (response.ok) return
+      return yield* new DescriptionPatchError({
+        status: response.status,
+        transient: response.status === 429 || response.status >= 500,
+        retryAfterMs: retryAfterMilliseconds(response),
+      })
+    })
+
+    const desiredDescription = Effect.fn('DiscordAgentActivity.desiredDescription')(function* () {
+      const names = new Map<string, string>()
+      for (const channelId of new Set([...activeTasks.values()].map((task) => task.channelId))) {
+        const name = yield* Effect.catch(channelName(channelId), () => Effect.succeed(channelId))
+        names.set(channelId, name)
+      }
+      const lines = [...activeTasks.values()].map((task) => {
+        const channel = truncateCodePoints(
+          names.get(task.channelId) ?? task.channelId,
+          ActivityChannelLimit,
+        )
+        return `[#${channel}] ${task.label}`
+      })
+      const available = ApplicationDescriptionLimit - Array.from(descriptionMarker).length
+      const activity = packApplicationDescription(lines, available)
+      return activity.length === 0 ? '' : `${descriptionMarker}${activity}`
+    })
+
+    const publishLatest = Effect.fn('DiscordAgentActivity.publishLatest')(function* () {
+      let attempt = 0
+      while (attempt < MaximumPatchAttempts) {
+        const desired = yield* desiredDescription()
+        if (desired === lastDescription) return true
+        const result = yield* patchDescription(desired).pipe(
+          Effect.matchEffect({
+            onFailure: (error) => Effect.succeed({ success: false as const, error }),
+            onSuccess: () => Effect.succeed({ success: true as const }),
+          }),
+        )
+        if (result.success) {
+          lastDescription = desired
+          return true
+        }
+        attempt += 1
+        if (!result.error.transient || attempt >= MaximumPatchAttempts) {
+          yield* Effect.logWarning('discord.application-description.failed').pipe(
+            Effect.annotateLogs({ status: result.error.status, attempt }),
+          )
+          return false
+        }
+        yield* Effect.sleep(
+          result.error.retryAfterMs === undefined
+            ? (options.retryDelay ?? RetryDelay)
+            : Duration.millis(result.error.retryAfterMs),
+        )
+      }
+      return false
+    })
+
+    const cleanupOwnedDescription = Effect.fn('DiscordAgentActivity.cleanupOwnedDescription')(
+      function* () {
+        const response = yield* Effect.tryPromise({
+          try: (signal) =>
+            fetch(`${discordApiBase}/applications/@me`, {
+              signal,
+              headers: { Authorization: `Bot ${botToken}` },
+            }),
+          catch: (cause) =>
+            new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+        })
+        if (!response.ok) {
+          return yield* new ChatSdkPublicationError({
+            operation: 'set-application-description',
+            cause: new Error(`Discord application lookup failed: HTTP ${response.status}`),
+          })
+        }
+        const body = yield* Effect.tryPromise({
+          try: () => response.text(),
+          catch: (cause) =>
+            new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+        })
+        const application = yield* decodeCurrentApplication(body).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+          ),
+        )
+        if (!application.description.startsWith(descriptionMarker)) {
+          lastDescription = application.description
+          return
+        }
+        yield* patchDescription('').pipe(
+          Effect.mapError(
+            (cause) =>
+              new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+          ),
+        )
+        lastDescription = ''
       },
-      catch: (cause) => new ChatSdkPublicationError({ operation: 'set-agent-activity', cause }),
-    }).pipe(
-      Effect.tap((result) =>
-        result === null
-          ? Effect.void
-          : Effect.logInfo('discord.agent-activity.updated').pipe(Effect.annotateLogs(result)),
-      ),
-      Effect.ensuring(describeActivity ? scheduleDescription : Effect.void),
     )
-}
+
+    yield* cleanupOwnedDescription().pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning('discord.application-description.cleanup-failed').pipe(
+          Effect.annotateLogs({ cause: String(cause) }),
+        ),
+      ),
+    )
+
+    if (describeActivity) {
+      const awaitTrailingEdge = Effect.fn('DiscordAgentActivity.awaitTrailingEdge')(function* () {
+        while (true) {
+          const next = yield* Queue.take(changes).pipe(
+            Effect.timeoutOption(options.descriptionDebounce ?? DescriptionDebounce),
+          )
+          if (Option.isNone(next)) return
+        }
+      })
+      yield* Effect.gen(function* () {
+        while (true) {
+          yield* Queue.take(changes)
+          yield* awaitTrailingEdge()
+          const converged = yield* publishLatest()
+          if (!converged) {
+            yield* Effect.sleep(options.retryDelay ?? RetryDelay)
+            yield* Queue.offer(changes, undefined)
+          }
+        }
+      }).pipe(Effect.forkScoped)
+    }
+
+    return (input: PlatformAgentActivity): Effect.Effect<void, ChatSdkPublicationError> =>
+      Effect.tryPromise({
+        try: async () => {
+          const location = discord.decodeThreadId(String(input.binding.conversationId))
+          if (describeActivity) {
+            if (input.active) {
+              const existing = activeTasks.get(input.taskId)
+              const label =
+                input.task !== undefined
+                  ? sanitizeTaskLabel(input.task) || 'Working...'
+                  : (existing?.label ?? 'Working...')
+              activeTasks.set(input.taskId, { channelId: location.channelId, label })
+            } else {
+              activeTasks.delete(input.taskId)
+            }
+          }
+          if (!location.guildId) return null
+          if (botUserId === null) {
+            const response = await fetch(`${discordApiBase}/users/@me`, {
+              headers: { Authorization: `Bot ${botToken}` },
+            })
+            if (!response.ok)
+              throw new Error(`Discord bot user lookup failed: HTTP ${response.status}`)
+            const user = decodeCurrentUserResponse(await response.json())
+            botUserId = user.id
+          }
+          let baseName = baseNames.get(location.guildId)
+          if (!baseName) {
+            const response = await fetch(
+              `${discordApiBase}/guilds/${location.guildId}/members/${botUserId}`,
+              { headers: { Authorization: `Bot ${botToken}` } },
+            )
+            if (!response.ok)
+              throw new Error(`Discord bot member lookup failed: HTTP ${response.status}`)
+            const member = decodeGuildMemberResponse(await response.json())
+            baseName = (member.nick ?? member.user?.username ?? 'Friday').replace(
+              activitySuffix,
+              '',
+            )
+            baseNames.set(location.guildId, baseName)
+          }
+          const tasks = activeTaskIds.get(location.guildId) ?? new Set<string>()
+          if (input.active) tasks.add(input.taskId)
+          else tasks.delete(input.taskId)
+          activeTaskIds.set(location.guildId, tasks)
+          const count = tasks.size
+          const suffix = count === 0 ? '' : count === 1 ? ' ⚡️' : ` ⚡️x${count}`
+          const nickname = truncateCodePoints(`${baseName}${suffix}`, 32)
+          const response = await fetch(`${discordApiBase}/guilds/${location.guildId}/members/@me`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nick: nickname }),
+          })
+          if (!response.ok)
+            throw new Error(`Discord bot nickname update failed: HTTP ${response.status}`)
+          return { guildId: location.guildId, nickname, activeTaskCount: count }
+        },
+        catch: (cause) => new ChatSdkPublicationError({ operation: 'set-agent-activity', cause }),
+      }).pipe(
+        Effect.tap((result) =>
+          result === null
+            ? Effect.void
+            : Effect.logInfo('discord.agent-activity.updated').pipe(Effect.annotateLogs(result)),
+        ),
+        Effect.ensuring(describeActivity ? Queue.offer(changes, undefined) : Effect.void),
+      )
+  })

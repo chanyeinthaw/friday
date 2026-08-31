@@ -89,7 +89,8 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
       public_key TEXT NOT NULL,
       bot_token_env TEXT NOT NULL,
       respond_to_global_mentions INTEGER NOT NULL CHECK (respond_to_global_mentions IN (0, 1)),
-      activity_description INTEGER NOT NULL DEFAULT 1 CHECK (activity_description IN (0, 1)),
+      activity_description_public INTEGER NOT NULL DEFAULT 0
+        CHECK (activity_description_public IN (0, 1)),
       FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
     )
   `
@@ -97,11 +98,11 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   const columns = yield* sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info('discord_connections')
   `
-  if (!columns.some((column) => column.name === 'activity_description')) {
+  if (!columns.some((column) => column.name === 'activity_description_public')) {
     yield* sql`
       ALTER TABLE discord_connections
-      ADD COLUMN activity_description INTEGER NOT NULL DEFAULT 1
-        CHECK (activity_description IN (0, 1))
+      ADD COLUMN activity_description_public INTEGER NOT NULL DEFAULT 0
+        CHECK (activity_description_public IN (0, 1))
     `
   }
 

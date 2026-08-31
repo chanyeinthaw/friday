@@ -83,7 +83,7 @@ test('loads global agent configuration and enabled platform connections from SQL
       assert.deepStrictEqual(discord.access.guilds, { mode: 'deny', ids: ['guild-1'] })
       assert.deepStrictEqual(discord.mentionRoleIds, ['role-1'])
       assert.strictEqual(discord.respondToGlobalMentions, true)
-      assert.strictEqual(discord.activityDescription, true)
+      assert.strictEqual(discord.activityDescription, false)
       assert.deepStrictEqual(discord.systemChannelIds, ['system-channel'])
       assert.deepStrictEqual(discord.invocation, {
         defaultMode: 'mention-only',
