@@ -12,4 +12,17 @@ export const FRIDAY_HOME = resolve(process.env.FRIDAY_HOME ?? defaultFridayHome)
 export const FRIDAY_LOG_DIRECTORY = join(FRIDAY_HOME, 'logs')
 export const FRIDAY_LOG_PATH = join(FRIDAY_LOG_DIRECTORY, 'friday.jsonl')
 export const FRIDAY_BIN_DIRECTORY = join(FRIDAY_HOME, 'bin')
-export const FRIDAY_CLI_PATH = join(FRIDAY_BIN_DIRECTORY, 'friday')
+
+const BUN_VIRTUAL_FS_PREFIX = '/$bunfs/'
+
+// Compiled Bun builds expose import.meta.filename inside Bun's virtual
+// filesystem, where it cannot be re-executed; packaged binaries must be
+// invoked directly, while development runs the source through a shim command.
+export const isPackagedEntryFileName = (fileName: string | undefined): boolean =>
+  fileName?.startsWith(BUN_VIRTUAL_FS_PREFIX) ?? false
+
+export const isPackagedBuild = isPackagedEntryFileName(import.meta.filename)
+
+export const FRIDAY_CLI_PATH = isPackagedBuild
+  ? resolve(process.execPath)
+  : join(FRIDAY_BIN_DIRECTORY, 'friday')
