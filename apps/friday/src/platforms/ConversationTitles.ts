@@ -27,19 +27,32 @@ export const ConversationTitlesLive = Layer.effect(
       users: number
     }
 
-    const locks = new Map<string, ConversationLock>()
+    // Nested maps instead of a concatenated key so arbitrary connection/conversation
+    // identifiers can never collide (e.g. ('a','b:c') vs ('a:b','c')).
+    const locks = new Map<string, Map<string, ConversationLock>>()
     const serialized = <A>(thread: ChannelThread, effect: Effect.Effect<A>): Effect.Effect<A> =>
       Effect.suspend(() => {
         const binding = thread.conversationBinding
-        const key = `${binding.connectionId}:${binding.conversationId}`
-        const entry = locks.get(key) ?? { semaphore: Semaphore.makeUnsafe(1), users: 0 }
-        locks.set(key, entry)
+        const { connectionId, conversationId } = binding
+        let conversations = locks.get(connectionId)
+        if (conversations === undefined) {
+          conversations = new Map()
+          locks.set(connectionId, conversations)
+        }
+        const entry = conversations.get(conversationId) ?? {
+          semaphore: Semaphore.makeUnsafe(1),
+          users: 0,
+        }
+        conversations.set(conversationId, entry)
         entry.users += 1
         return entry.semaphore.withPermit(effect).pipe(
           Effect.ensuring(
             Effect.sync(() => {
               entry.users -= 1
-              if (entry.users === 0 && locks.get(key) === entry) locks.delete(key)
+              if (entry.users === 0 && conversations.get(conversationId) === entry) {
+                conversations.delete(conversationId)
+                if (conversations.size === 0) locks.delete(connectionId)
+              }
             }),
           ),
         )
