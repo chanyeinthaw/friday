@@ -94,6 +94,17 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   `
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS platform_system_channels (
+      connection_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (connection_id, channel_id),
+      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+    )
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS platform_invocation_defaults (
       connection_id TEXT PRIMARY KEY,
       mode TEXT NOT NULL CHECK (mode IN ('mention-only', 'all-messages')),
@@ -196,6 +207,13 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
     )
     WHERE audience = 'user'
       AND json_extract(payload_json, '$.conversationBinding.connectionId') IS NULL
+  `
+
+  yield* sql`
+    UPDATE threads
+    SET payload_json = json_set(payload_json, '$.channelRole', 'channel')
+    WHERE audience = 'user'
+      AND json_extract(payload_json, '$.channelRole') IS NULL
   `
 
   yield* sql`

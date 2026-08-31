@@ -19,12 +19,16 @@ Usage:
   friday worktree ensure <repository-url> [--ref <ref>] [--workspace <path>] [--json]
   friday workspace cleanup apply <proposal-id> [--json]
   friday platform invocation set <connection-id> <channel-id> <mention-only|all-messages>
+  friday platform system-channel set <connection-id> <channel-id>
+  friday platform system-channel reset <connection-id> <channel-id>
 
 Commands:
   start             Start Friday (default)
   worktree ensure          Ensure a reusable repository worktree for the current channel workspace
   workspace cleanup apply  Apply an approved workspace cleanup proposal
-  platform invocation set  Set one channel's invocation mode
+  platform invocation set      Set one channel's invocation mode
+  platform system-channel set  Configure a direct system-management channel
+  platform system-channel reset Remove system-management behavior from a channel
 
 Options:
   -h, --help     Show this help
@@ -40,6 +44,11 @@ export type FridayCliAction =
       readonly connectionId: typeof PlatformConnectionId.Type
       readonly channelId: string
       readonly mode: InvocationModeType
+    }
+  | {
+      readonly type: 'platform-system-channel-set' | 'platform-system-channel-reset'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly channelId: string
     }
   | {
       readonly type: 'workspace-cleanup-apply'
@@ -124,6 +133,30 @@ const parseWorkspaceCleanupApply = Effect.fn('Cli.parseWorkspaceCleanupApply')(f
   return { type: 'workspace-cleanup-apply' as const, proposalId, json: trailing[0] === '--json' }
 })
 
+const parsePlatformSystemChannel = Effect.fn('Cli.parsePlatformSystemChannel')(function* (
+  arguments_: ReadonlyArray<string>,
+) {
+  const operation = arguments_[2]
+  const connectionArgument = arguments_[3]
+  const channelId = arguments_[4]
+  if (
+    arguments_.length !== 5 ||
+    (operation !== 'set' && operation !== 'reset') ||
+    !connectionArgument ||
+    !channelId
+  ) {
+    return yield* new FridayCliError({ argument: arguments_.join(' ') })
+  }
+  const connectionId = yield* decodePlatformConnectionId(connectionArgument).pipe(
+    Effect.mapError(() => new FridayCliError({ argument: arguments_.join(' ') })),
+  )
+  return {
+    type: `platform-system-channel-${operation}` as const,
+    connectionId,
+    channelId,
+  }
+})
+
 const parsePlatformInvocationSet = Effect.fn('Cli.parsePlatformInvocationSet')(function* (
   arguments_: ReadonlyArray<string>,
 ) {
@@ -160,6 +193,9 @@ export const parseFridayCli = (
   if (arguments_[0] === 'platform' && arguments_[1] === 'invocation' && arguments_[2] === 'set') {
     return parsePlatformInvocationSet(arguments_)
   }
+  if (arguments_[0] === 'platform' && arguments_[1] === 'system-channel') {
+    return parsePlatformSystemChannel(arguments_)
+  }
   if (arguments_[0] === 'workspace' && arguments_[1] === 'cleanup' && arguments_[2] === 'apply') {
     return parseWorkspaceCleanupApply(arguments_)
   }
@@ -178,7 +214,7 @@ const renderWorktree = (worktree: ManagedWorktree): string => `Repository worktr
   Base: ${worktree.baseRef}
   Reused: ${worktree.reused ? 'yes' : 'no'}`
 
-export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError>(
+export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError, SystemChannelError>(
   arguments_: ReadonlyArray<string>,
   options: {
     readonly start: Effect.Effect<never, E>
@@ -188,12 +224,22 @@ export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError>(
     readonly setPlatformInvocation: (
       action: Extract<FridayCliAction, { readonly type: 'platform-invocation-set' }>,
     ) => Effect.Effect<void, InvocationError>
+    readonly setPlatformSystemChannel: (
+      action: Extract<
+        FridayCliAction,
+        { readonly type: 'platform-system-channel-set' | 'platform-system-channel-reset' }
+      >,
+      enabled: boolean,
+    ) => Effect.Effect<void, SystemChannelError>
     readonly applyWorkspaceCleanup: (
       action: Extract<FridayCliAction, { readonly type: 'workspace-cleanup-apply' }>,
       currentWorkingDirectory: string,
     ) => Effect.Effect<WorkspaceCleanupProposal, CleanupError>
   },
-): Effect.Effect<void, FridayCliError | E | WorktreeError | CleanupError | InvocationError> =>
+): Effect.Effect<
+  void,
+  FridayCliError | E | WorktreeError | CleanupError | InvocationError | SystemChannelError
+> =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
     switch (action.type) {
@@ -207,6 +253,15 @@ export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError>(
         yield* options.setPlatformInvocation(action)
         yield* Console.log(
           `Invocation mode for ${action.connectionId}:${action.channelId} set to ${action.mode}.`,
+        )
+        return
+      }
+      case 'platform-system-channel-set':
+      case 'platform-system-channel-reset': {
+        const enabled = action.type === 'platform-system-channel-set'
+        yield* options.setPlatformSystemChannel(action, enabled)
+        yield* Console.log(
+          `System channel ${action.connectionId}:${action.channelId} ${enabled ? 'configured' : 'removed'}.`,
         )
         return
       }

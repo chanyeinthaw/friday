@@ -81,6 +81,27 @@ it.effect('parses a channel invocation policy update', () =>
   }),
 )
 
+it.effect('parses system-channel configuration updates', () =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['platform', 'system-channel', 'set', 'discord', 'channel-1']),
+      {
+        type: 'platform-system-channel-set',
+        connectionId: decodeConnectionId('discord'),
+        channelId: 'channel-1',
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['platform', 'system-channel', 'reset', 'discord', 'channel-1']),
+      {
+        type: 'platform-system-channel-reset',
+        connectionId: decodeConnectionId('discord'),
+        channelId: 'channel-1',
+      },
+    )
+  }),
+)
+
 it.effect('parses an approved workspace cleanup proposal', () =>
   Effect.gen(function* () {
     assert.deepStrictEqual(

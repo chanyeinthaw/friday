@@ -58,6 +58,7 @@ export const DiscordPlatformConfig = Schema.Struct({
     defaultMode: InvocationMode,
     channels: Schema.Array(Schema.Struct({ channelId: Identifier, mode: InvocationMode })),
   }),
+  systemChannelIds: IdentifierArray,
 })
 export type DiscordPlatformConfig = typeof DiscordPlatformConfig.Type
 
@@ -164,6 +165,11 @@ const ChannelInvocationRow = Schema.Struct({
   mode: InvocationMode,
 })
 
+const SystemChannelRow = Schema.Struct({
+  connection_id: Schema.String,
+  channel_id: Schema.String,
+})
+
 const DiscordMentionRoleRow = Schema.Struct({
   connection_id: Schema.String,
   role_id: Schema.String,
@@ -186,6 +192,7 @@ const decodeSubagentProfileRows = Schema.decodeUnknownEffect(Schema.Array(Subage
 const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
 const decodeInvocationDefaultRows = Schema.decodeUnknownEffect(Schema.Array(InvocationDefaultRow))
 const decodeChannelInvocationRows = Schema.decodeUnknownEffect(Schema.Array(ChannelInvocationRow))
+const decodeSystemChannelRows = Schema.decodeUnknownEffect(Schema.Array(SystemChannelRow))
 const decodeDiscordMentionRoleRows = Schema.decodeUnknownEffect(Schema.Array(DiscordMentionRoleRow))
 const decodeAccessPolicyRows = Schema.decodeUnknownEffect(Schema.Array(AccessPolicyRow))
 const decodeAccessSubjectRows = Schema.decodeUnknownEffect(Schema.Array(AccessSubjectRow))
@@ -231,6 +238,9 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
   const channelInvocations = yield* sql<
     Record<string, unknown>
   >`SELECT * FROM platform_channel_invocation_policies ORDER BY connection_id, channel_id`
+  const systemChannels = yield* sql<
+    Record<string, unknown>
+  >`SELECT * FROM platform_system_channels ORDER BY connection_id, channel_id`
   const mentionRoles = yield* sql<
     Record<string, unknown>
   >`SELECT * FROM discord_mention_roles ORDER BY connection_id, role_id`
@@ -246,6 +256,7 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
     discord: yield* decodeDiscordConnectionRows(discord),
     invocationDefaults: yield* decodeInvocationDefaultRows(invocationDefaults),
     channelInvocations: yield* decodeChannelInvocationRows(channelInvocations),
+    systemChannels: yield* decodeSystemChannelRows(systemChannels),
     mentionRoles: yield* decodeDiscordMentionRoleRows(mentionRoles),
     policies: yield* decodeAccessPolicyRows(policies),
     subjects: yield* decodeAccessSubjectRows(subjects),
@@ -374,6 +385,9 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
                 .filter((policy) => policy.connection_id === connection.connection_id)
                 .map((policy) => ({ channelId: policy.channel_id, mode: policy.mode })),
             },
+            systemChannelIds: rows.systemChannels
+              .filter((channel) => channel.connection_id === connection.connection_id)
+              .map((channel) => channel.channel_id),
           })),
         ),
       ),

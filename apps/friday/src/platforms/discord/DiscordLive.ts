@@ -1,4 +1,4 @@
-import { createDiscordAdapter } from '@chat-adapter/discord'
+import type { DiscordAdapterConfig } from '@chat-adapter/discord'
 import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 
@@ -17,6 +17,11 @@ import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
+import { FridayDiscordAdapter } from './DiscordSystemChannelAdapter.ts'
+import {
+  isDiscordSystemChannel,
+  projectDiscordSystemChannelMessage,
+} from './DiscordSystemChannel.ts'
 import { searchDiscordMessages } from './DiscordMessageSearch.ts'
 import {
   makeDiscordThreadBootstrap,
@@ -45,7 +50,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         )
         const discord = yield* Effect.try({
           try: () =>
-            createDiscordAdapter({
+            new FridayDiscordAdapter({
               botToken: String(discordConfig.credentials.botToken),
               applicationId: String(discordConfig.credentials.applicationId),
               publicKey: String(discordConfig.credentials.publicKey),
@@ -53,6 +58,9 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               // Friday owns invocation policy and refreshes this selector from SQLite.
               respondToChannelIds: invocationChannels.channels,
               respondToGlobalMentions: true,
+              systemChannelIds: discordConfig.systemChannelIds,
+            } satisfies DiscordAdapterConfig & {
+              readonly systemChannelIds: ReadonlyArray<string>
             }),
           catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
         })
@@ -70,6 +78,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         })
         const bootstrapOptions: DiscordThreadBootstrapOptions = {
           discord,
+          systemChannelIds: discordConfig.systemChannelIds,
           model: configuration.models.primary,
           thinkingLevel: configuration.models.primary.thinkingLevel,
         }
@@ -88,11 +97,23 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           connectionId: discordConfig.connectionId,
           chat,
           normalizeInboundMessage: (thread, message) =>
-            projectDiscordMessage(discordConfig.connectionId, discord, thread, message),
+            isDiscordSystemChannel(discord, thread, discordConfig.systemChannelIds)
+              ? Effect.succeed(
+                  projectDiscordSystemChannelMessage(
+                    discordConfig.connectionId,
+                    discord,
+                    thread,
+                    message,
+                  ),
+                )
+              : projectDiscordMessage(discordConfig.connectionId, discord, thread, message),
           shouldHandleMessage: (kind, thread, message) =>
             Effect.try({
               try: () => {
                 const location = discord.decodeThreadId(thread.id)
+                const systemChannel =
+                  discordConfig.systemChannelIds.includes(location.channelId) &&
+                  (location.threadId === undefined || location.threadId === location.channelId)
                 const guildAllowed = isAllowedByPolicy(
                   location.guildId,
                   discordConfig.access.guilds,
@@ -107,22 +128,33 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
                       channelPolicy: discordConfig.access.channels,
                     }),
                   location,
+                  systemChannel,
                 }
               },
               catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
             }).pipe(
-              Effect.flatMap(({ accessAllowed, location }) =>
+              Effect.flatMap(({ accessAllowed, location, systemChannel }) =>
                 accessAllowed
                   ? Effect.all({
                       mode: invocationPolicies.effectiveMode(
                         discordConfig.connectionId,
                         location.channelId,
                       ),
-                      input: projectDiscordMessage(
-                        discordConfig.connectionId,
-                        discord,
-                        thread,
-                        message,
+                      input: (systemChannel
+                        ? Effect.succeed(
+                            projectDiscordSystemChannelMessage(
+                              discordConfig.connectionId,
+                              discord,
+                              thread,
+                              message,
+                            ),
+                          )
+                        : projectDiscordMessage(
+                            discordConfig.connectionId,
+                            discord,
+                            thread,
+                            message,
+                          )
                       ).pipe(
                         Effect.flatMap((input) => ingestion.hasBinding(input)),
                         Effect.mapError(
@@ -201,6 +233,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
             channelAccessCount: discordConfig.access.channels.ids.length,
             userAccessMode: discordConfig.access.users.mode,
             userAccessCount: discordConfig.access.users.ids.length,
+            systemChannelCount: discordConfig.systemChannelIds.length,
           }),
         )
         return { connectionId: discordConfig.connectionId, platform }

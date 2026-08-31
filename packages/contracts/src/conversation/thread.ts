@@ -50,6 +50,7 @@ export const ChannelThread = Schema.Struct({
   ...ThreadFields,
   audience: Schema.Literal('user'),
   parent: Schema.Null,
+  channelRole: Schema.optionalKey(Schema.Literals(['channel', 'system'])),
   channelContext: ChannelContext,
   conversationBinding: ConversationBinding,
 })

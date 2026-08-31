@@ -171,6 +171,20 @@ it.effect('ends the progress lifecycle when a turn delegates work', () =>
   ),
 )
 
+it.effect('does not publish a duplicate after successful finalization', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const progress = yield* makeProgress(makePlatform(events))
+
+      yield* progress.accept(thread, userMessage('Do work.'))
+      yield* progress.finalize(thread, 'Done.')
+
+      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'finalize:Done.'])
+    }),
+  ),
+)
+
 it.effect('continues the lifecycle when acknowledgement fails', () =>
   Effect.scoped(
     Effect.gen(function* () {

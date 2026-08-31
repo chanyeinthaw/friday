@@ -130,7 +130,7 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
                 Effect.annotateLogs({ operation, cause: String(cause) }),
                 Effect.as(false),
               ),
-            onSuccess: Effect.succeed,
+            onSuccess: () => Effect.succeed(true),
           }),
         )
 

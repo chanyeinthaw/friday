@@ -1,5 +1,10 @@
 import { assert, it } from '@effect/vitest'
-import { ChannelThread, ModelSelection, SubagentProfileName } from '@friday/contracts/conversation'
+import {
+  ChannelThread,
+  ModelSelection,
+  SubagentProfileName,
+  WorkingDirectory,
+} from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
@@ -11,6 +16,7 @@ import {
 
 const decodeModel = Schema.decodeSync(ModelSelection)
 const decodeProfileName = Schema.decodeSync(SubagentProfileName)
+const decodeWorkingDirectory = Schema.decodeSync(WorkingDirectory)
 
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-system-prompt',
@@ -87,6 +93,28 @@ it.effect('renders the channel agent system prompt from thread context and confi
     )
     assert.include(prompt, 'even if other people have spoken since they made the request')
     assert.include(prompt, 'respond as one coherent agent')
+    assert.notInclude(prompt, '{{')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('renders the system-management prompt for system channels', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread: {
+        ...thread,
+        channelRole: 'system',
+        workingDirectory: decodeWorkingDirectory('/home/chan/.friday'),
+      },
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, "Friday's system management agent")
+    assert.include(prompt, '/home/chan/.friday')
+    assert.include(prompt, 'Do not reveal credentials')
+    assert.include(prompt, 'Deployment changes and service restarts require an explicit request')
+    assert.notInclude(prompt, 'Reply directly')
+    assert.notInclude(prompt, 'platform threads')
     assert.notInclude(prompt, '{{')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )

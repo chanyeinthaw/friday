@@ -83,7 +83,13 @@ export const WorkspaceCleanupNotificationsLive = Layer.effect(
           decodeThreadId(threadId).pipe(
             Effect.flatMap((id) => persistence.getThread(id)),
             Effect.flatMap((thread) => {
-              if (Option.isNone(thread) || thread.value.audience !== 'user') return Effect.void
+              if (
+                Option.isNone(thread) ||
+                thread.value.audience !== 'user' ||
+                thread.value.channelRole === 'system'
+              ) {
+                return Effect.void
+              }
               const channelThread = thread.value
               return cleanup.propose(channelThread).pipe(
                 Effect.flatMap((proposal) => {

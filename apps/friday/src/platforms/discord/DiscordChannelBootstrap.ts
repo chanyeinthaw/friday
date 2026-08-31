@@ -35,6 +35,7 @@ export class DiscordThreadBootstrapError extends Schema.Error<DiscordThreadBoots
 
 export interface DiscordThreadBootstrapOptions {
   discord: DiscordAdapter
+  systemChannelIds?: ReadonlyArray<string>
   workingDirectoryRoot?: string
   model?: AppConfig['models']['primary']
   thinkingLevel?: ChannelThreadType['thinkingLevel']
@@ -47,6 +48,9 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
   const fileSystem = yield* FileSystem.FileSystem
 
   return Effect.fn('DiscordThreadBootstrap.create')(function* (inbound: PlatformInput) {
+    const systemChannel = (options.systemChannelIds ?? []).includes(
+      String(inbound.binding.channelId),
+    )
     const channel = yield* Effect.tryPromise({
       try: () => options.discord.fetchChannelInfo(String(inbound.binding.channelId)),
       catch: (cause) => new DiscordThreadBootstrapError({ operation: 'channel-context', cause }),
@@ -55,10 +59,9 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
     const channelName = channel.name ?? String(inbound.binding.channelId)
     const channelDescription = metadata?.topic ?? ''
     const workspaceName = String(inbound.binding.conversationId).replaceAll(':', '-')
-    const workingDirectory = join(
-      options.workingDirectoryRoot ?? join(FRIDAY_HOME, 'workspaces'),
-      workspaceName,
-    )
+    const workingDirectory = systemChannel
+      ? FRIDAY_HOME
+      : join(options.workingDirectoryRoot ?? join(FRIDAY_HOME, 'workspaces'), workspaceName)
     yield* fileSystem
       .makeDirectory(workingDirectory, { recursive: true })
       .pipe(
@@ -71,6 +74,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
       id: decodeThreadId(yield* crypto.randomUUIDv4),
       audience: 'user',
       parent: null,
+      channelRole: systemChannel ? 'system' : 'channel',
       harness: 'pi',
       harnessSession: null,
       workingDirectory,
