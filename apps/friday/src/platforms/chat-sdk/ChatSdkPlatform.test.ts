@@ -115,6 +115,28 @@ it('does not split a Unicode surrogate pair at the hard boundary', () => {
   assert.strictEqual(chunks.join(''), text)
 })
 
+it('closes and reopens fenced code blocks across chunks', () => {
+  const text = `Before\n\n\`\`\`typescript\n${'const value = 1;\n'.repeat(4)}\`\`\`\n\nAfter`
+  const chunks = splitMessage(text, 50)
+
+  assert.deepStrictEqual(chunks, [
+    `Before\n\n\`\`\`typescript\nconst value = 1;\n\`\`\``,
+    `\`\`\`typescript\nconst value = 1;\n\`\`\``,
+    `\`\`\`typescript\nconst value = 1;\n\`\`\``,
+    `\`\`\`typescript\nconst value = 1;\n\`\`\`\n\nAfter`,
+  ])
+  assert(chunks.every((chunk) => chunk.length <= 50))
+})
+
+it('preserves tilde fences and embedded backticks', () => {
+  const text = `~~~text\n${'value with ``` inline\n'.repeat(3)}~~~`
+  const chunks = splitMessage(text, 40)
+
+  assert(chunks.length > 1)
+  assert(chunks.every((chunk) => chunk.length <= 40))
+  assert(chunks.every((chunk) => chunk.startsWith('~~~text') && chunk.endsWith('~~~')))
+})
+
 it.effect('acknowledges an accepted user message', () =>
   Effect.gen(function* () {
     const test = makeSource()
