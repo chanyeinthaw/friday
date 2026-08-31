@@ -28,6 +28,7 @@ import {
   projectDiscordSystemChannelMessage,
 } from './DiscordSystemChannel.ts'
 import { searchDiscordMessages } from './DiscordMessageSearch.ts'
+import { withDiscordThreadActivityTitle } from './DiscordThreadActivityTitle.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
@@ -94,11 +95,17 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         }
         const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
         const botToken = String(discordConfig.credentials.botToken)
-        const platform = yield* makeChatSdkPlatform(discordConfig.connectionId, 'discord', chat, {
-          setConversationTitle: (title) => setDiscordConversationTitle(discord, botToken, title),
-          setAgentActivity: makeDiscordAgentActivity(discord, botToken),
-          searchMessages: (query) => searchDiscordMessages(discord, query),
-        })
+        const chatSdkPlatform = yield* makeChatSdkPlatform(
+          discordConfig.connectionId,
+          'discord',
+          chat,
+          {
+            setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
+            setAgentActivity: makeDiscordAgentActivity(discord, botToken),
+            searchMessages: (query) => searchDiscordMessages(discord, query),
+          },
+        )
+        const platform = withDiscordThreadActivityTitle(discord, chatSdkPlatform)
         yield* platforms.register(platform)
         yield* invocationPolicies.watch(discordConfig.connectionId, (configuration) =>
           Effect.sync(() => invocationChannels.update(configuration)),

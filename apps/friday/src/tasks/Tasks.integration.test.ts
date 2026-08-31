@@ -164,6 +164,73 @@ test('starts a subagent task without waiting for its terminal result', async () 
   expect(promptedTurns[0]?.input.content.text).toBe('Inspect the repository and report the result.')
 })
 
+test('publishes task lifecycle in order and cleans up once for an immediately terminal task', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-lifecycle-'))
+  const channelWorkspace = join(root, 'channel')
+  const projectDirectory = join(channelWorkspace, 'project')
+  await Promise.all([
+    Bun.write(join(channelWorkspace, '.keep'), ''),
+    Bun.write(join(projectDirectory, '.keep'), ''),
+  ])
+
+  const parent = parentThread(channelWorkspace)
+  const activity: Array<string> = []
+  const identifiers = ['immediate-task', 'immediate-turn']
+  const friday: FridayContract = {
+    openThread: () =>
+      Effect.succeed({
+        prompt: (turn) =>
+          Effect.succeed({
+            turnId: turn.id,
+            awaitTerminal: Effect.succeed({
+              status: 'completed' as const,
+              turnId: turn.id,
+              agentMessage: 'Immediate result.',
+              usage: null,
+            }),
+          }),
+        steer: () => Effect.void,
+        cancel: () => Effect.void,
+        onEvent: () => Effect.void,
+        start: Effect.void,
+        drain: Effect.never,
+      }),
+  }
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence: makePersistence(parent, []),
+      friday,
+      models: makeTaskModels(profilesFor(parent)),
+      channelTurns: { accept: () => Effect.die('terminal delivery failed') },
+      conversationTitles: {
+        generated: () => Effect.void,
+        taskStarted: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`started:${String(taskId)}`)),
+        taskFinished: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`finished:${String(taskId)}`)),
+      },
+      fileSystem,
+      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
+    })
+
+    yield* tasks.start({
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Finish immediately.',
+      workingDirectory: decodeWorkingDirectory(projectDirectory),
+    })
+    yield* Effect.yieldNow
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  expect(activity).toEqual(['started:task-immediate-task', 'finished:task-immediate-task'])
+})
+
 test('applies the selected subagent profile model and thinking level', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-profile-'))
   const channelWorkspace = join(root, 'channel')
@@ -566,6 +633,117 @@ test('marks an idle task active while its continuation runs', async () => {
   expect(activity).toEqual([`started:${thread.id}`, `finished:${thread.id}`])
   expect(delivered).toHaveLength(1)
 })
+
+test('keeps task activity active across overlapping continuation finalizers', async () => {
+  const parent = parentThread('/tmp/channel')
+  const thread = taskThread(parent)
+  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
+  let latest = completed
+  const activity: Array<string> = []
+
+  const program = Effect.gen(function* () {
+    type CompletedTerminal = {
+      readonly status: 'completed'
+      readonly turnId: ReturnType<typeof decodeTurnId>
+      readonly agentMessage: string
+      readonly usage: null
+    }
+    const firstTerminal = yield* Deferred.make<CompletedTerminal>()
+    const secondTerminal = yield* Deferred.make<CompletedTerminal>()
+    const firstDeliveryStarted = yield* Deferred.make<void>()
+    const releaseFirstDelivery = yield* Deferred.make<void>()
+    const secondDelivered = yield* Deferred.make<void>()
+    const terminals: Array<Deferred.Deferred<CompletedTerminal>> = [firstTerminal, secondTerminal]
+    let deliveryCount = 0
+    const friday: FridayContract = {
+      openThread: () =>
+        Effect.succeed({
+          prompt: (turn) => {
+            const terminal = terminals.shift()
+            return terminal === undefined
+              ? Effect.die('unexpected continuation')
+              : Effect.succeed({ turnId: turn.id, awaitTerminal: Deferred.await(terminal) })
+          },
+          steer: () => Effect.void,
+          cancel: () => Effect.void,
+          onEvent: () => Effect.void,
+          start: Effect.void,
+          drain: Effect.never,
+        }),
+    }
+    const persistence = taskPersistence(parent, thread, completed, completed)
+    const identifiers = ['continuation-one', 'continuation-two']
+    const tasks = makeTasks({
+      persistence: { ...persistence, getLatestTurn: () => Effect.succeedSome(latest) },
+      friday,
+      models: makeTaskModels(profilesFor(parent)),
+      channelTurns: {
+        accept: () => {
+          deliveryCount += 1
+          return deliveryCount === 1
+            ? Deferred.succeed(firstDeliveryStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirstDelivery)),
+              )
+            : Deferred.succeed(secondDelivered, undefined).pipe(Effect.asVoid)
+        },
+      },
+      conversationTitles: {
+        generated: () => Effect.void,
+        taskStarted: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`started:${String(taskId)}`)),
+        taskFinished: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`finished:${String(taskId)}`)),
+      },
+      fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
+    })
+
+    yield* tasks.steer({
+      parentThreadId: parent.id,
+      taskId: decodeTaskId(thread.id),
+      message: 'First continuation.',
+    })
+    const firstResult: CompletedTerminal = {
+      status: 'completed',
+      turnId: decodeTurnId('turn-first-terminal'),
+      agentMessage: 'First result.',
+      usage: null,
+    }
+    yield* Deferred.succeed(firstTerminal, firstResult)
+    yield* Deferred.await(firstDeliveryStarted)
+
+    latest = taskTurn(thread, 'turn-first-terminal', 2, 'completed', 'First continuation.')
+    yield* tasks.steer({
+      parentThreadId: parent.id,
+      taskId: decodeTaskId(thread.id),
+      message: 'Second continuation.',
+    })
+    assertActivity(activity, [`started:${thread.id}`])
+
+    yield* Deferred.succeed(releaseFirstDelivery, undefined)
+    yield* Effect.yieldNow
+    assertActivity(activity, [`started:${thread.id}`])
+
+    const secondResult: CompletedTerminal = {
+      status: 'completed',
+      turnId: decodeTurnId('turn-second-terminal'),
+      agentMessage: 'Second result.',
+      usage: null,
+    }
+    yield* Deferred.succeed(secondTerminal, secondResult)
+    yield* Deferred.await(secondDelivered)
+    yield* Effect.yieldNow
+  })
+
+  await Effect.runPromise(program)
+  expect(activity).toEqual([`started:${thread.id}`, `finished:${thread.id}`])
+})
+
+const assertActivity = (actual: ReadonlyArray<string>, expected: ReadonlyArray<string>) => {
+  expect(actual).toEqual(expected)
+}
 
 test('cancels only an active owned task', async () => {
   const parent = parentThread('/tmp/channel')
