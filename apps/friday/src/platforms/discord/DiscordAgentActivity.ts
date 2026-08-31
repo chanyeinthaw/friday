@@ -5,6 +5,7 @@ import * as Option from 'effect/Option'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
+import * as Semaphore from 'effect/Semaphore'
 
 import type { PlatformAgentActivity } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
@@ -16,6 +17,11 @@ const DescriptionDebounce: Duration.Input = '2 seconds'
 const RetryDelay: Duration.Input = '1 second'
 const ConservativeRetryDelayMs = 5_000
 const MaximumPatchAttempts = 4
+
+const logCleanupFailure = (cause: unknown) =>
+  Effect.logWarning('discord.application-description.cleanup-failed').pipe(
+    Effect.annotateLogs({ cause: String(cause) }),
+  )
 
 /** Discord's documented application-description character limit. */
 export const ApplicationDescriptionLimit = 400
@@ -29,9 +35,15 @@ export interface DiscordAgentActivityOptions {
    * channel names and task labels. Disabled by default.
    */
   readonly activityDescription?: boolean | undefined
+  readonly watchActivityDescription?:
+    | ((
+        onChange: (enabled: boolean) => Effect.Effect<void>,
+      ) => Effect.Effect<void, never, Scope.Scope>)
+    | undefined
   readonly installationId?: string | undefined
   readonly descriptionDebounce?: Duration.Input | undefined
   readonly retryDelay?: Duration.Input | undefined
+  readonly cleanupTimeout?: Duration.Input | undefined
 }
 
 interface ActiveTask {
@@ -147,14 +159,23 @@ export const findDuplicateDiscordApplications = (
     readonly botToken: string
   }>,
 ): ReadonlyArray<ReadonlyArray<string>> => {
-  const identities = new Map<string, Array<string>>()
-  for (const connection of connections) {
-    const identity = `${connection.applicationId}\u0000${connection.botToken}`
-    const existing = identities.get(identity) ?? []
-    existing.push(connection.connectionId)
-    identities.set(identity, existing)
+  const duplicates = new Map<string, Set<string>>()
+  const collect = (key: string, connectionId: string) => {
+    const existing = duplicates.get(key) ?? new Set<string>()
+    existing.add(connectionId)
+    duplicates.set(key, existing)
   }
-  return [...identities.values()].filter((connectionIds) => connectionIds.length > 1)
+  for (const connection of connections) {
+    collect(`application:${connection.applicationId}`, connection.connectionId)
+    collect(`token:${connection.botToken}`, connection.connectionId)
+  }
+  const groups = [...duplicates.values()]
+    .filter((connectionIds) => connectionIds.size > 1)
+    .map((connectionIds) => [...connectionIds].toSorted())
+  const unique = new Map(
+    groups.map((connectionIds) => [connectionIds.join('\u0000'), connectionIds]),
+  )
+  return [...unique.values()].toSorted((left, right) => left.join().localeCompare(right.join()))
 }
 
 export const makeDiscordAgentActivity = (
@@ -171,10 +192,11 @@ export const makeDiscordAgentActivity = (
     const activeTaskIds = new Map<string, Set<string>>()
     const channelNames = new Map<string, string>()
     const activeTasks = new Map<string, ActiveTask>()
-    const describeActivity = options.activityDescription === true
+    let describeActivity = options.activityDescription === true
     const installationId = options.installationId ?? 'unknown-installation'
     const marker = ownershipMarker(installationId)
     const changes = yield* Queue.sliding<void>(1)
+    const descriptionWrites = yield* Semaphore.make(1)
     let botUserId: string | null = null
     let lastDescription: string | null = null
 
@@ -243,16 +265,12 @@ export const makeDiscordAgentActivity = (
     const patchDescription = Effect.fn('DiscordAgentActivity.patchDescription')(function* (
       description: string,
     ) {
-      if (description.length > 0) {
-        const current = yield* currentApplication().pipe(
-          Effect.mapError(() => new DescriptionPatchError({ status: 0, transient: true })),
-        )
-        if (
-          current.description.length > 0 &&
-          !hasOwnedDescription(current.description, installationId)
-        ) {
-          return yield* new DescriptionPatchError({ status: 409, transient: false })
-        }
+      const current = yield* currentApplication().pipe(
+        Effect.mapError(() => new DescriptionPatchError({ status: 0, transient: true })),
+      )
+      const owned = hasOwnedDescription(current.description, installationId)
+      if (description.length === 0 ? !owned : current.description.length > 0 && !owned) {
+        return yield* new DescriptionPatchError({ status: 409, transient: false })
       }
       const response = yield* Effect.tryPromise({
         try: (signal) =>
@@ -300,95 +318,115 @@ export const makeDiscordAgentActivity = (
       return activity.length === 0 ? '' : `${marker}${activity}`
     })
 
-    const publishLatest = Effect.fn('DiscordAgentActivity.publishLatest')(function* () {
-      let attempt = 0
-      while (attempt < MaximumPatchAttempts) {
-        const desired = yield* desiredDescription()
-        if (desired === lastDescription) return true
-        const result = yield* patchDescription(desired).pipe(
-          Effect.matchEffect({
-            onFailure: (error) => Effect.succeed({ success: false as const, error }),
-            onSuccess: () => Effect.succeed({ success: true as const }),
-          }),
-        )
-        if (result.success) {
-          lastDescription = desired
-          return true
-        }
-        attempt += 1
-        if (!result.error.transient || attempt >= MaximumPatchAttempts) {
-          yield* Effect.logWarning('discord.application-description.failed').pipe(
-            Effect.annotateLogs({ status: result.error.status, attempt }),
-          )
+    const publishLatest = Effect.fn('DiscordAgentActivity.publishLatest')(() =>
+      descriptionWrites.withPermit(
+        Effect.gen(function* () {
+          let attempt = 0
+          while (attempt < MaximumPatchAttempts) {
+            if (!describeActivity) return true
+            const desired = yield* desiredDescription()
+            if (desired === lastDescription) return true
+            const result = yield* patchDescription(desired).pipe(
+              Effect.matchEffect({
+                onFailure: (error) => Effect.succeed({ success: false as const, error }),
+                onSuccess: () => Effect.succeed({ success: true as const }),
+              }),
+            )
+            if (result.success) {
+              lastDescription = desired
+              return true
+            }
+            attempt += 1
+            if (!result.error.transient || attempt >= MaximumPatchAttempts) {
+              yield* Effect.logWarning('discord.application-description.failed').pipe(
+                Effect.annotateLogs({ status: result.error.status, attempt }),
+              )
+              return false
+            }
+            yield* Effect.sleep(
+              result.error.retryAfterMs === undefined
+                ? (options.retryDelay ?? RetryDelay)
+                : Duration.millis(result.error.retryAfterMs),
+            )
+          }
           return false
-        }
-        yield* Effect.sleep(
-          result.error.retryAfterMs === undefined
-            ? (options.retryDelay ?? RetryDelay)
-            : Duration.millis(result.error.retryAfterMs),
-        )
-      }
-      return false
-    })
-
-    const cleanupOwnedDescription = Effect.fn('DiscordAgentActivity.cleanupOwnedDescription')(
-      function* () {
-        const application = yield* currentApplication()
-        if (!hasOwnedDescription(application.description, installationId)) {
-          lastDescription = application.description
-          return
-        }
-        yield* patchDescription('').pipe(
-          Effect.mapError(
-            (cause) =>
-              new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-          ),
-        )
-        lastDescription = ''
-      },
+        }),
+      ),
     )
 
-    yield* cleanupOwnedDescription().pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning('discord.application-description.cleanup-failed').pipe(
-          Effect.annotateLogs({ cause: String(cause) }),
+    const cleanupOwnedDescription = Effect.fn('DiscordAgentActivity.cleanupOwnedDescription')(() =>
+      descriptionWrites.withPermit(
+        Effect.gen(function* () {
+          const application = yield* currentApplication()
+          if (!hasOwnedDescription(application.description, installationId)) {
+            lastDescription = application.description
+            return
+          }
+          yield* patchDescription('').pipe(
+            Effect.mapError(
+              (cause) =>
+                new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+            ),
+          )
+          lastDescription = ''
+        }),
+      ),
+    )
+
+    const cleanup = cleanupOwnedDescription().pipe(Effect.catch(logCleanupFailure))
+
+    yield* cleanup
+    yield* Effect.addFinalizer(() =>
+      cleanup.pipe(
+        Effect.timeoutOption(options.cleanupTimeout ?? '3 seconds'),
+        Effect.flatMap((result) =>
+          Option.isSome(result)
+            ? Effect.void
+            : Effect.logWarning('discord.application-description.cleanup-timeout'),
         ),
       ),
     )
 
-    if (describeActivity) {
-      const awaitTrailingEdge = Effect.fn('DiscordAgentActivity.awaitTrailingEdge')(function* () {
-        while (true) {
-          const next = yield* Queue.take(changes).pipe(
-            Effect.timeoutOption(options.descriptionDebounce ?? DescriptionDebounce),
-          )
-          if (Option.isNone(next)) return
-        }
-      })
-      yield* Effect.gen(function* () {
-        while (true) {
-          yield* Queue.take(changes)
-          yield* awaitTrailingEdge()
-          yield* publishLatest()
-        }
-      }).pipe(Effect.forkScoped)
+    const awaitTrailingEdge = Effect.fn('DiscordAgentActivity.awaitTrailingEdge')(function* () {
+      while (true) {
+        const next = yield* Queue.take(changes).pipe(
+          Effect.timeoutOption(options.descriptionDebounce ?? DescriptionDebounce),
+        )
+        if (Option.isNone(next)) return
+      }
+    })
+    yield* Effect.gen(function* () {
+      while (true) {
+        yield* Queue.take(changes)
+        yield* awaitTrailingEdge()
+        yield* publishLatest()
+      }
+    }).pipe(Effect.forkScoped)
+
+    if (options.watchActivityDescription !== undefined) {
+      yield* options.watchActivityDescription((enabled) =>
+        Effect.gen(function* () {
+          if (enabled === describeActivity) return
+          describeActivity = enabled
+          if (!enabled) yield* cleanup
+          yield* Queue.offer(changes, undefined)
+        }),
+      )
     }
 
     return (input: PlatformAgentActivity): Effect.Effect<void, ChatSdkPublicationError> =>
       Effect.tryPromise({
         try: async () => {
           const location = discord.decodeThreadId(String(input.binding.conversationId))
-          if (describeActivity) {
-            if (input.active) {
-              const existing = activeTasks.get(input.taskId)
-              const label =
-                input.task !== undefined
-                  ? sanitizeTaskLabel(input.task) || 'Working...'
-                  : (existing?.label ?? 'Working...')
-              activeTasks.set(input.taskId, { channelId: location.channelId, label })
-            } else {
-              activeTasks.delete(input.taskId)
-            }
+          if (input.active) {
+            const existing = activeTasks.get(input.taskId)
+            const label =
+              input.task !== undefined
+                ? sanitizeTaskLabel(input.task) || 'Working...'
+                : (existing?.label ?? 'Working...')
+            activeTasks.set(input.taskId, { channelId: location.channelId, label })
+          } else {
+            activeTasks.delete(input.taskId)
           }
           if (!location.guildId) return null
           if (botUserId === null) {
@@ -438,6 +476,6 @@ export const makeDiscordAgentActivity = (
             ? Effect.void
             : Effect.logInfo('discord.agent-activity.updated').pipe(Effect.annotateLogs(result)),
         ),
-        Effect.ensuring(describeActivity ? Queue.offer(changes, undefined) : Effect.void),
+        Effect.ensuring(Queue.offer(changes, undefined)),
       )
   })

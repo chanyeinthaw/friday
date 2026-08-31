@@ -29,8 +29,8 @@ Commands:
   worktree ensure          Ensure a reusable repository worktree for the current channel workspace
   workspace cleanup apply  Apply an approved workspace cleanup proposal
   platform invocation set          Set one channel's invocation mode
-  platform activity-description set   Publish task activity in the Discord app description
-  platform activity-description reset Stop publishing task activity in the Discord app description
+  platform activity-description set   Enable public task activity now, without restarting Friday
+  platform activity-description reset Disable it now and clear only Friday-owned description text
   platform system-channel set      Configure a direct system-management channel
   platform system-channel reset Remove system-management behavior from a channel
 
@@ -315,7 +315,9 @@ export const runFridayCli = <
         const enabled = action.type === 'platform-activity-description-set'
         yield* options.setDiscordActivityDescription(action, enabled)
         yield* Console.log(
-          `Discord activity description for ${action.connectionId} ${enabled ? 'enabled' : 'disabled'}.`,
+          enabled
+            ? `Discord activity description for ${action.connectionId} enabled. The running process will publish current task activity.`
+            : `Discord activity description for ${action.connectionId} disabled. Friday-owned text will be cleared.`,
         )
         return
       }

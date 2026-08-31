@@ -1,6 +1,7 @@
 import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 
+import { DiscordActivityDescriptions } from '../DiscordActivityDescriptions.ts'
 import { InvocationPolicies, shouldInvoke } from '../InvocationPolicies.ts'
 import { PlatformIngestion } from '../PlatformIngestion.ts'
 import { isAllowedByAccess, isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
@@ -38,6 +39,7 @@ import {
 
 export const startDiscord = Effect.fn('startDiscord')(function* () {
   const platforms = yield* PlatformRegistry
+  const activityDescriptions = yield* DiscordActivityDescriptions
   const invocationPolicies = yield* InvocationPolicies
   const ingestion = yield* PlatformIngestion
   const configuration = yield* AppConfig
@@ -116,6 +118,8 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         const botToken = String(discordConfig.credentials.botToken)
         const setAgentActivity = yield* makeDiscordAgentActivity(discord, botToken, {
           activityDescription: discordConfig.activityDescription,
+          watchActivityDescription: (onChange) =>
+            activityDescriptions.watch(discordConfig.connectionId, onChange),
           installationId: configuration.installationId,
         })
         const platform = yield* makeChatSdkPlatform(discordConfig.connectionId, 'discord', chat, {

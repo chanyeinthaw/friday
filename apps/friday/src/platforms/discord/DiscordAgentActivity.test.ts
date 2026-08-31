@@ -1,7 +1,9 @@
 import { assert, it } from '@effect/vitest'
 import { ConversationBinding } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import { TestClock } from 'effect/testing'
 import { vi } from 'vitest'
 
@@ -54,6 +56,8 @@ const makeDiscordFetch = (initialDescription = '', channelName = 'general') => {
   return {
     fetchMock,
     patches,
+    description: () => state.description,
+    replaceDescription: (description: string) => void (state.description = description),
     setFail: (fail: boolean) => void (state.failDescriptionPatch = fail),
   }
 }
@@ -154,12 +158,23 @@ it('uses a conservative fallback for malformed Discord 429 timing', () => {
   assert.strictEqual(retryAfterMilliseconds(null, '', 0), 5_000)
 })
 
-it('detects duplicate connections without exposing their token identity', () => {
+it('detects duplicate Discord application IDs and reports only connection IDs', () => {
   assert.deepStrictEqual(
     findDuplicateDiscordApplications([
-      { connectionId: 'discord-a', applicationId: 'app-1', botToken: 'secret' },
-      { connectionId: 'discord-b', applicationId: 'app-1', botToken: 'secret' },
-      { connectionId: 'discord-c', applicationId: 'app-1', botToken: 'other-secret' },
+      { connectionId: 'discord-a', applicationId: 'app-1', botToken: 'token-a' },
+      { connectionId: 'discord-b', applicationId: 'app-1', botToken: 'token-b' },
+      { connectionId: 'discord-c', applicationId: 'app-2', botToken: 'token-c' },
+    ]),
+    [['discord-a', 'discord-b']],
+  )
+})
+
+it('detects duplicate Discord bot tokens and reports only connection IDs', () => {
+  assert.deepStrictEqual(
+    findDuplicateDiscordApplications([
+      { connectionId: 'discord-a', applicationId: 'app-1', botToken: 'shared-secret' },
+      { connectionId: 'discord-b', applicationId: 'app-2', botToken: 'shared-secret' },
+      { connectionId: 'discord-c', applicationId: 'app-3', botToken: 'other-secret' },
     ]),
     [['discord-a', 'discord-b']],
   )
@@ -430,6 +445,175 @@ it.effect('falls back to a placeholder when task text is missing', () =>
       yield* TestClock.adjust('1 second')
       assert.deepStrictEqual(patches, [
         'Friday task activity [unknown-installation]:\n[#general] Working...',
+      ])
+    }),
+  ),
+)
+
+it.effect('re-reads ownership immediately before a publish PATCH', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      let applicationReads = 0
+      const patches: Array<string> = []
+      const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+        if (url.endsWith('/applications/@me') && init?.body === undefined) {
+          applicationReads += 1
+          return Response.json({
+            id: 'application-1',
+            description: applicationReads >= 2 ? 'Administrator replacement' : '',
+          })
+        }
+        if (url.endsWith('/applications/@me')) {
+          patches.push(decodeDescriptionBody(init?.body ?? '').description)
+          return new Response(null, { status: 200 })
+        }
+        if (url.includes('/channels/')) return Response.json({ name: 'general' })
+        return new Response(null, { status: 404 })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
+        installationId: 'this-installation',
+        descriptionDebounce: '1 second',
+      })
+      yield* activity({ binding, taskId: 'task-1', active: true, task: 'New work' })
+      yield* TestClock.adjust('1 second')
+      assert.deepStrictEqual(patches, [])
+      assert.strictEqual(applicationReads, 2)
+    }),
+  ),
+)
+
+it.effect('does not clear a description replaced during startup cleanup', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      let applicationReads = 0
+      const patches: Array<string> = []
+      const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+        if (url.endsWith('/applications/@me') && init?.body === undefined) {
+          applicationReads += 1
+          return Response.json({
+            id: 'application-1',
+            description:
+              applicationReads === 1
+                ? 'Friday task activity [this-installation]:\n[#general] Stale'
+                : 'Administrator replacement',
+          })
+        }
+        if (url.endsWith('/applications/@me')) {
+          patches.push(decodeDescriptionBody(init?.body ?? '').description)
+          return new Response(null, { status: 200 })
+        }
+        return new Response(null, { status: 404 })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        installationId: 'this-installation',
+      })
+      assert.deepStrictEqual(patches, [])
+      assert.strictEqual(applicationReads, 2)
+    }),
+  ),
+)
+
+it.effect('preserves a remote replacement when the final task completes', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      const remote = makeDiscordFetch()
+      vi.stubGlobal('fetch', remote.fetchMock)
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
+        installationId: 'this-installation',
+        descriptionDebounce: '1 second',
+      })
+      yield* activity({ binding, taskId: 'task-1', active: true, task: 'Finishing work' })
+      yield* TestClock.adjust('1 second')
+      remote.replaceDescription('Administrator replacement')
+      yield* activity({ binding, taskId: 'task-1', active: false })
+      yield* TestClock.adjust('1 second')
+      assert.strictEqual(remote.description(), 'Administrator replacement')
+      assert.deepStrictEqual(remote.patches, [
+        'Friday task activity [this-installation]:\n[#general] Finishing work',
+      ])
+    }),
+  ),
+)
+
+it.effect('applies activity-description set and reset without restarting', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      const remote = makeDiscordFetch()
+      let updateFlag: ((enabled: boolean) => Effect.Effect<void>) | undefined
+      vi.stubGlobal('fetch', remote.fetchMock)
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: false,
+        descriptionDebounce: '1 second',
+        watchActivityDescription: (onChange) =>
+          Effect.sync(() => {
+            updateFlag = onChange
+          }),
+      })
+      yield* activity({ binding, taskId: 'task-1', active: true, task: 'Live setting' })
+      yield* TestClock.adjust('1 second')
+      assert.deepStrictEqual(remote.patches, [])
+
+      assert(updateFlag !== undefined)
+      yield* updateFlag(true)
+      yield* TestClock.adjust('1 second')
+      assert.deepStrictEqual(remote.patches, [
+        'Friday task activity [unknown-installation]:\n[#general] Live setting',
+      ])
+
+      yield* updateFlag(false)
+      assert.deepStrictEqual(remote.patches, [
+        'Friday task activity [unknown-installation]:\n[#general] Live setting',
+        '',
+      ])
+      yield* TestClock.adjust('10 seconds')
+      assert.strictEqual(remote.patches.length, 2)
+    }),
+  ),
+)
+
+it.effect('clears its owned description during normal scope shutdown', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      const remote = makeDiscordFetch()
+      vi.stubGlobal('fetch', remote.fetchMock)
+      const scope = yield* Scope.make()
+      const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+        activityDescription: true,
+        descriptionDebounce: '1 second',
+      }).pipe(Effect.provideService(Scope.Scope, scope))
+      yield* activity({ binding, taskId: 'task-1', active: true, task: 'Shutdown cleanup' })
+      yield* TestClock.adjust('1 second')
+      assert(remote.description().includes('Shutdown cleanup'))
+      yield* Scope.close(scope, Exit.void)
+      assert.strictEqual(remote.description(), '')
+    }),
+  ),
+)
+
+it.effect('clears publication when the owning scope unwinds after failure', () =>
+  withStubbedFetch(
+    Effect.gen(function* () {
+      const remote = makeDiscordFetch()
+      vi.stubGlobal('fetch', remote.fetchMock)
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const activity = yield* makeDiscordAgentActivity(discord, 'bot-token', {
+            activityDescription: true,
+            descriptionDebounce: '1 second',
+          })
+          yield* activity({ binding, taskId: 'task-1', active: true, task: 'Failure cleanup' })
+          yield* TestClock.adjust('1 second')
+          return yield* Effect.fail('startup-failed')
+        }),
+      ).pipe(Effect.flip)
+      assert.strictEqual(remote.description(), '')
+      assert.deepStrictEqual(remote.patches, [
+        'Friday task activity [unknown-installation]:\n[#general] Failure cleanup',
+        '',
       ])
     }),
   ),
