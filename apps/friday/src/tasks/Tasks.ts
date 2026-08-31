@@ -662,6 +662,9 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         ),
       )
     const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    if (options.conversationTitles) {
+      yield* options.conversationTitles.taskStarted(parent, request.taskId)
+    }
     yield* options.fork(
       handle.awaitTerminal.pipe(
         Effect.flatMap((terminal) =>
@@ -680,6 +683,11 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           }),
         ),
         Effect.catchCause((cause) => Effect.logError('Task continuation delivery failed', cause)),
+        Effect.ensuring(
+          options.conversationTitles
+            ? options.conversationTitles.taskFinished(parent, request.taskId)
+            : Effect.void,
+        ),
       ),
     )
   })

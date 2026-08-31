@@ -506,6 +506,67 @@ test('steers an active task and continues an idle task with a new Turn', async (
   expect(prompted[0]?.input.content.text).toBe('Continue.')
 })
 
+test('marks an idle task active while its continuation runs', async () => {
+  const parent = parentThread('/tmp/channel')
+  const thread = taskThread(parent)
+  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
+  const terminal = yieldableDeferred()
+  const activity: Array<string> = []
+  const delivered: Array<string> = []
+  const friday: FridayContract = {
+    openThread: () =>
+      Effect.succeed({
+        prompt: (turn) =>
+          Effect.succeed({ turnId: turn.id, awaitTerminal: Deferred.await(terminal.deferred) }),
+        steer: () => Effect.void,
+        cancel: () => Effect.void,
+        onEvent: () => Effect.void,
+        start: Effect.void,
+        drain: Effect.never,
+      }),
+  }
+  const program = Effect.gen(function* () {
+    const tasks = makeTasks({
+      persistence: taskPersistence(parent, thread, completed, completed),
+      friday,
+      models: makeTaskModels(profilesFor(parent)),
+      channelTurns: {
+        accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
+      },
+      conversationTitles: {
+        generated: () => Effect.void,
+        taskStarted: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`started:${String(taskId)}`)),
+        taskFinished: (_parent, taskId) =>
+          Effect.sync(() => activity.push(`finished:${String(taskId)}`)),
+      },
+      fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+      randomUUID: Effect.succeed('continuation-activity'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
+    })
+
+    yield* tasks.steer({
+      parentThreadId: parent.id,
+      taskId: decodeTaskId(thread.id),
+      message: 'Continue.',
+    })
+    expect(activity).toEqual([`started:${thread.id}`])
+
+    yield* Deferred.succeed(terminal.deferred, {
+      status: 'completed' as const,
+      turnId: decodeTurnId('turn-continuation-terminal'),
+      agentMessage: 'Continuation result.',
+      usage: null,
+    })
+    yield* Effect.yieldNow
+  })
+
+  await Effect.runPromise(program)
+  expect(activity).toEqual([`started:${thread.id}`, `finished:${thread.id}`])
+  expect(delivered).toHaveLength(1)
+})
+
 test('cancels only an active owned task', async () => {
   const parent = parentThread('/tmp/channel')
   const thread = taskThread(parent)
