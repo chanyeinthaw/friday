@@ -793,6 +793,41 @@ test('marks an idle task active while its continuation runs', async () => {
   expect(delivered).toHaveLength(1)
 })
 
+test('finalizes continuation task activity once when watcher installation fails', async () => {
+  const parent = parentThread('/tmp/channel')
+  const thread = taskThread(parent)
+  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
+  const activity: Array<string> = []
+  const tasks = makeTasks({
+    persistence: taskPersistence(parent, thread, completed, completed),
+    friday: makeFriday([]),
+    models: makeTaskModels(profilesFor(parent)),
+    channelTurns: noChannelTurns,
+    conversationTitles: {
+      generated: () => Effect.void,
+      taskStarted: () => Effect.sync(() => activity.push('started')),
+      taskFinished: () => Effect.sync(() => activity.push('finished')),
+    },
+    fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+    randomUUID: Effect.succeed('continuation-watcher-failure'),
+    now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+    fork: () => Effect.die('watcher installation failed'),
+  })
+
+  const exit = await Effect.runPromise(
+    Effect.exit(
+      tasks.steer({
+        parentThreadId: parent.id,
+        taskId: decodeTaskId(thread.id),
+        message: 'Continue and fail watcher installation.',
+      }),
+    ),
+  )
+
+  expect(exit._tag).toBe('Failure')
+  expect(activity).toEqual(['started', 'finished'])
+})
+
 test('keeps task activity active across overlapping continuation finalizers', async () => {
   const parent = parentThread('/tmp/channel')
   const thread = taskThread(parent)
