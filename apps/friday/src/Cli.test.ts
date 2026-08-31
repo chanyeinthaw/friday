@@ -81,6 +81,25 @@ it.effect('parses a channel invocation policy update', () =>
   }),
 )
 
+it.effect('parses Discord activity-description configuration updates', () =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['platform', 'activity-description', 'set', 'discord']),
+      {
+        type: 'platform-activity-description-set',
+        connectionId: decodeConnectionId('discord'),
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['platform', 'activity-description', 'reset', 'discord']),
+      {
+        type: 'platform-activity-description-reset',
+        connectionId: decodeConnectionId('discord'),
+      },
+    )
+  }),
+)
+
 it.effect('parses system-channel configuration updates', () =>
   Effect.gen(function* () {
     assert.deepStrictEqual(

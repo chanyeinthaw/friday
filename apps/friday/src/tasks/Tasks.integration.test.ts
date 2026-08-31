@@ -573,6 +573,51 @@ test('steers an active task and continues an idle task with a new Turn', async (
   expect(prompted[0]?.input.content.text).toBe('Continue.')
 })
 
+test('does not prompt a continuation when metadata reads fail', async () => {
+  const parent = parentThread('/tmp/channel')
+  const thread = taskThread(parent)
+  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
+  let prompted = false
+  const base = taskPersistence(parent, thread, completed, completed)
+  const tasks = makeTasks({
+    persistence: {
+      ...base,
+      getFirstTurn: () => Effect.die('metadata read failed'),
+    },
+    friday: {
+      openThread: () =>
+        Effect.succeed({
+          prompt: () =>
+            Effect.sync(() => void (prompted = true)).pipe(Effect.andThen(Effect.never)),
+          steer: () => Effect.void,
+          cancel: () => Effect.void,
+          onEvent: () => Effect.void,
+          start: Effect.void,
+          drain: Effect.never,
+        }),
+    },
+    models: makeTaskModels(profilesFor(parent)),
+    channelTurns: noChannelTurns,
+    fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+    randomUUID: Effect.succeed('continuation-metadata-failure'),
+    now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+    fork: () => Effect.void,
+  })
+
+  const exit = await Effect.runPromise(
+    Effect.exit(
+      tasks.steer({
+        parentThreadId: parent.id,
+        taskId: decodeTaskId(thread.id),
+        message: 'Continue.',
+      }),
+    ),
+  )
+
+  expect(exit._tag).toBe('Failure')
+  expect(prompted).toBe(false)
+})
+
 test('marks an idle task active while its continuation runs', async () => {
   const parent = parentThread('/tmp/channel')
   const thread = taskThread(parent)

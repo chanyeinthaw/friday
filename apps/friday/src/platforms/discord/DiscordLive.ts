@@ -10,7 +10,10 @@ import { PlatformRegistry } from '../PlatformRegistry.ts'
 import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
 import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
-import { makeDiscordAgentActivity } from './DiscordAgentActivity.ts'
+import {
+  findDuplicateDiscordApplications,
+  makeDiscordAgentActivity,
+} from './DiscordAgentActivity.ts'
 import {
   makeDiscordInvocationChannelSelector,
   makeDiscordLocationGate,
@@ -28,7 +31,6 @@ import {
   projectDiscordSystemChannelMessage,
 } from './DiscordSystemChannel.ts'
 import { searchDiscordMessages } from './DiscordMessageSearch.ts'
-import { withDiscordThreadActivityTitle } from './DiscordThreadActivityTitle.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
@@ -43,6 +45,23 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   if (connections.length === 0) {
     yield* Effect.logDebug('discord.disabled').pipe(Effect.annotateLogs({ component: 'discord' }))
     return []
+  }
+  const duplicateApplications = findDuplicateDiscordApplications(
+    connections.map((connection) => ({
+      connectionId: String(connection.connectionId),
+      applicationId: String(connection.credentials.applicationId),
+      botToken: String(connection.credentials.botToken),
+    })),
+  )
+  if (duplicateApplications.length > 0) {
+    return yield* new ChatSdkLifecycleError({
+      operation: 'create-adapter',
+      cause: new Error(
+        `Duplicate Discord application connections: ${duplicateApplications
+          .map((connectionIds) => connectionIds.join(', '))
+          .join('; ')}`,
+      ),
+    })
   }
 
   return yield* Effect.forEach(
@@ -95,19 +114,15 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         }
         const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
         const botToken = String(discordConfig.credentials.botToken)
-        const chatSdkPlatform = yield* makeChatSdkPlatform(
-          discordConfig.connectionId,
-          'discord',
-          chat,
-          {
-            setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
-            setAgentActivity: makeDiscordAgentActivity(discord, botToken, {
-              activityDescription: discordConfig.activityDescription,
-            }),
-            searchMessages: (query) => searchDiscordMessages(discord, query),
-          },
-        )
-        const platform = withDiscordThreadActivityTitle(discord, chatSdkPlatform)
+        const setAgentActivity = yield* makeDiscordAgentActivity(discord, botToken, {
+          activityDescription: discordConfig.activityDescription,
+          installationId: configuration.installationId,
+        })
+        const platform = yield* makeChatSdkPlatform(discordConfig.connectionId, 'discord', chat, {
+          setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
+          setAgentActivity,
+          searchMessages: (query) => searchDiscordMessages(discord, query),
+        })
         yield* platforms.register(platform)
         yield* invocationPolicies.watch(discordConfig.connectionId, (configuration) =>
           Effect.sync(() => invocationChannels.update(configuration)),

@@ -103,6 +103,7 @@ export const SlackPlatformConfig = Schema.Union([
 export type SlackPlatformConfig = typeof SlackPlatformConfig.Type
 
 export const AppConfig = Schema.Struct({
+  installationId: Identifier,
   models: Schema.Struct({
     primary: ConfiguredModel,
     utility: ConfiguredModel,
@@ -131,6 +132,8 @@ export class AppConfigError extends Schema.Error<AppConfigError>('AppConfigError
     return `Friday configuration ${this.operation} failed at ${this.path}: ${this.detail}`
   }
 }
+
+const InstallationRow = Schema.Struct({ installation_id: Schema.String })
 
 const AgentConfigRow = Schema.Struct({
   primary_provider: Schema.String,
@@ -193,6 +196,7 @@ const AccessSubjectRow = Schema.Struct({
   platform_subject_id: Schema.String,
 })
 
+const decodeInstallationRows = Schema.decodeUnknownEffect(Schema.Array(InstallationRow))
 const decodeAgentConfigRows = Schema.decodeUnknownEffect(Schema.Array(AgentConfigRow))
 const decodeSubagentProfileRows = Schema.decodeUnknownEffect(Schema.Array(SubagentProfileRow))
 const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
@@ -207,6 +211,22 @@ const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
 const readRows = Effect.fn('AppConfig.readRows')(function* () {
   const sql = yield* SqlClient.SqlClient
+  const installationRows = yield* sql<Record<string, unknown>>`
+    SELECT installation_id FROM installation_config WHERE id = 1
+  `
+  const installation = yield* decodeInstallationRows(installationRows).pipe(
+    Effect.flatMap((rows) =>
+      rows[0] === undefined
+        ? Effect.fail(
+            new AppConfigError({
+              operation: 'read',
+              path: 'installation_config',
+              detail: 'Friday installation identity has not been initialized.',
+            }),
+          )
+        : Effect.succeed(rows[0]),
+    ),
+  )
   const agentRows = yield* sql<Record<string, unknown>>`SELECT * FROM agent_config WHERE id = 1`
   const agent = yield* decodeAgentConfigRows(agentRows).pipe(
     Effect.flatMap((rows) =>
@@ -258,6 +278,7 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
     Record<string, unknown>
   >`SELECT * FROM platform_access_subjects ORDER BY connection_id, subject_type, platform_subject_id`
   return {
+    installation,
     agent,
     profiles: yield* decodeSubagentProfileRows(profiles),
     discord: yield* decodeDiscordConnectionRows(discord),
@@ -335,6 +356,7 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
     ),
   )
   const candidate = {
+    installationId: rows.installation.installation_id,
     models: {
       primary: {
         provider: rows.agent.primary_provider,

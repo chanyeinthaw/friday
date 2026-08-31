@@ -10,6 +10,19 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   yield* runChatSdkStateMigrations()
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS installation_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      installation_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `
+
+  yield* sql`
+    INSERT OR IGNORE INTO installation_config (id, installation_id, created_at)
+    VALUES (1, lower(hex(randomblob(16))), CURRENT_TIMESTAMP)
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS agent_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       primary_provider TEXT NOT NULL,

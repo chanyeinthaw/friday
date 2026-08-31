@@ -20,6 +20,10 @@ import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
 import { withFridayLogging } from './logging/Live.ts'
 import { InvocationPolicies, InvocationPoliciesLive } from './platforms/InvocationPolicies.ts'
+import {
+  DiscordActivityDescriptions,
+  DiscordActivityDescriptionsLive,
+} from './platforms/DiscordActivityDescriptions.ts'
 import { SystemChannels, SystemChannelsLive } from './platforms/SystemChannels.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
@@ -44,6 +48,9 @@ const WorkspaceCleanupNotificationsConfiguredLive = WorkspaceCleanupNotification
 )
 
 const InvocationPoliciesConfiguredLive = InvocationPoliciesLive.pipe(
+  Layer.provide(FridaySqliteLive),
+)
+const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
 const SystemChannelsConfiguredLive = SystemChannelsLive.pipe(Layer.provide(FridaySqliteLive))
@@ -76,6 +83,15 @@ const application = Effect.scoped(
   withFridayLogging(
     runFridayCli(process.argv.slice(2), {
       start,
+      setDiscordActivityDescription: (action, enabled) =>
+        DiscordActivityDescriptions.pipe(
+          Effect.flatMap((descriptions) =>
+            enabled
+              ? descriptions.set(action.connectionId)
+              : descriptions.reset(action.connectionId),
+          ),
+          Effect.provide(DiscordActivityDescriptionsConfiguredLive),
+        ),
       setPlatformSystemChannel: (action, enabled) =>
         SystemChannels.pipe(
           Effect.flatMap((channels) =>

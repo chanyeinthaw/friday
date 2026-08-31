@@ -1,6 +1,7 @@
 /* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/async-function, effecttsgo/strict-effect-provide -- Bun runs SQLite integration tests; Effect execution is the explicit test boundary. */
 
 import { test } from 'bun:test'
+import { PlatformConnectionId } from '@friday/contracts/conversation'
 import { strict as assert } from 'node:assert'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -9,9 +10,14 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 import { AppConfigError, loadAppConfig } from './AppConfig.ts'
 import { runMigrations } from '../persistence/Migrations.ts'
+import {
+  DiscordActivityDescriptions,
+  DiscordActivityDescriptionsLive,
+} from '../platforms/DiscordActivityDescriptions.ts'
 
 const database = SqliteClient.layer({ filename: ':memory:' })
 const isAppConfigError = Schema.is(AppConfigError)
+const decodePlatformConnectionId = Schema.decodeSync(PlatformConnectionId)
 
 const configured = Effect.gen(function* () {
   yield* runMigrations()
@@ -67,6 +73,10 @@ test('loads global agent configuration and enabled platform connections from SQL
   Effect.runPromise(
     Effect.gen(function* () {
       const config = yield* configured
+      assert(config.installationId.length > 0)
+      yield* runMigrations()
+      const reloaded = yield* loadAppConfig({ environment: { DISCORD_BOT_TOKEN: 'discord-token' } })
+      assert.strictEqual(reloaded.installationId, config.installationId)
       assert.strictEqual(config.models.primary.provider, 'openai-multi')
       assert.strictEqual(config.models.primary.modelId, 'gpt-5.6-terra')
       assert.strictEqual(config.models.primary.thinkingLevel, 'medium')
@@ -90,6 +100,40 @@ test('loads global agent configuration and enabled platform connections from SQL
         channels: [{ channelId: 'channel-1', mode: 'all-messages' }],
       })
     }).pipe(Effect.provide(database)),
+  ))
+
+test('enables and resets Discord activity-description publication through typed configuration', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* runMigrations()
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO platform_connections (
+          connection_id, platform, name, enabled, created_at, updated_at
+        ) VALUES (
+          'discord-personal', 'discord', 'Personal Discord', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `
+      yield* sql`
+        INSERT INTO discord_connections (
+          connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions
+        ) VALUES (
+          'discord-personal', 'application-id', 'public-key', 'DISCORD_BOT_TOKEN', 0
+        )
+      `
+      const descriptions = yield* DiscordActivityDescriptions
+      yield* descriptions.set(decodePlatformConnectionId('discord-personal'))
+      const enabled = yield* loadAppConfig({
+        environment: { DISCORD_BOT_TOKEN: 'discord-token' },
+      })
+      assert.strictEqual(enabled.platforms.discord[0]?.activityDescription, true)
+
+      yield* descriptions.reset(decodePlatformConnectionId('discord-personal'))
+      const reset = yield* loadAppConfig({
+        environment: { DISCORD_BOT_TOKEN: 'discord-token' },
+      })
+      assert.strictEqual(reset.platforms.discord[0]?.activityDescription, false)
+    }).pipe(Effect.provide(DiscordActivityDescriptionsLive), Effect.provide(database)),
   ))
 
 test('supports multiple connections for the same platform', async () =>

@@ -11,9 +11,10 @@ import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 
 const activitySuffix = / ⚡️(?:x\d+)?$/u
 const discordApiBase = 'https://discord.com/api/v10'
-const descriptionMarker = 'Friday task activity:\n'
+const descriptionPrefix = 'Friday task activity ['
 const DescriptionDebounce: Duration.Input = '2 seconds'
 const RetryDelay: Duration.Input = '1 second'
+const ConservativeRetryDelayMs = 5_000
 const MaximumPatchAttempts = 4
 
 /** Discord's documented application-description character limit. */
@@ -28,6 +29,7 @@ export interface DiscordAgentActivityOptions {
    * channel names and task labels. Disabled by default.
    */
   readonly activityDescription?: boolean | undefined
+  readonly installationId?: string | undefined
   readonly descriptionDebounce?: Duration.Input | undefined
   readonly retryDelay?: Duration.Input | undefined
 }
@@ -44,7 +46,8 @@ class DescriptionPatchError extends Schema.Error<DescriptionPatchError>('Descrip
   retryAfterMs: Schema.optional(Schema.Number),
 }) {}
 
-const CurrentApplication = Schema.Struct({ description: Schema.String })
+const CurrentApplication = Schema.Struct({ id: Schema.String, description: Schema.String })
+const RateLimitBody = Schema.Struct({ retry_after: Schema.Number })
 const ChannelResponse = Schema.Struct({ name: Schema.NullOr(Schema.String) })
 const CurrentUserResponse = Schema.Struct({ id: Schema.String })
 const GuildMemberResponse = Schema.Struct({
@@ -55,6 +58,7 @@ const decodeCurrentApplication = Schema.decodeUnknownEffect(
   Schema.fromJsonString(CurrentApplication),
 )
 const decodeChannelResponse = Schema.decodeEffect(Schema.fromJsonString(ChannelResponse))
+const decodeRateLimitBody = Schema.decodeUnknownOption(Schema.fromJsonString(RateLimitBody))
 const decodeCurrentUserResponse = Schema.decodeUnknownSync(CurrentUserResponse)
 const decodeGuildMemberResponse = Schema.decodeUnknownSync(GuildMemberResponse)
 
@@ -107,13 +111,50 @@ export const packApplicationDescription = (
   return [...lines.slice(0, kept), ...overflowSegment(lines.length - kept)].join('\n')
 }
 
-const retryAfterMilliseconds = (response: Response): number | undefined => {
-  const header = response.headers.get('Retry-After')
-  if (header === null) return undefined
-  const seconds = Number(header)
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000)
-  const date = Date.parse(header)
-  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now())
+const parseRetryAfterHeader = (value: string | null, now: number): number | undefined => {
+  if (value === null) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000
+  const date = Date.parse(value)
+  return Number.isNaN(date) ? undefined : Math.max(0, date - now)
+}
+
+export const retryAfterMilliseconds = (
+  header: string | null,
+  body: string,
+  now: number = Date.now(),
+): number => {
+  const headerDelay = parseRetryAfterHeader(header, now)
+  const decodedBody = decodeRateLimitBody(body)
+  const bodyDelay =
+    Option.isSome(decodedBody) && decodedBody.value.retry_after >= 0
+      ? decodedBody.value.retry_after * 1_000
+      : undefined
+  const valid = [headerDelay, bodyDelay].filter((delay): delay is number => delay !== undefined)
+  return valid.length === 0 ? ConservativeRetryDelayMs : Math.max(...valid)
+}
+
+const ownershipMarker = (installationId: string): string =>
+  `${descriptionPrefix}${truncateCodePoints(installationId, 64)}]:\n`
+
+export const hasOwnedDescription = (description: string, installationId: string): boolean =>
+  description.startsWith(ownershipMarker(installationId))
+
+export const findDuplicateDiscordApplications = (
+  connections: ReadonlyArray<{
+    readonly connectionId: string
+    readonly applicationId: string
+    readonly botToken: string
+  }>,
+): ReadonlyArray<ReadonlyArray<string>> => {
+  const identities = new Map<string, Array<string>>()
+  for (const connection of connections) {
+    const identity = `${connection.applicationId}\u0000${connection.botToken}`
+    const existing = identities.get(identity) ?? []
+    existing.push(connection.connectionId)
+    identities.set(identity, existing)
+  }
+  return [...identities.values()].filter((connectionIds) => connectionIds.length > 1)
 }
 
 export const makeDiscordAgentActivity = (
@@ -131,6 +172,8 @@ export const makeDiscordAgentActivity = (
     const channelNames = new Map<string, string>()
     const activeTasks = new Map<string, ActiveTask>()
     const describeActivity = options.activityDescription === true
+    const installationId = options.installationId ?? 'unknown-installation'
+    const marker = ownershipMarker(installationId)
     const changes = yield* Queue.sliding<void>(1)
     let botUserId: string | null = null
     let lastDescription: string | null = null
@@ -168,9 +211,49 @@ export const makeDiscordAgentActivity = (
       return name
     })
 
+    const currentApplication = Effect.fn('DiscordAgentActivity.currentApplication')(function* () {
+      const response = yield* Effect.tryPromise({
+        try: (signal) =>
+          fetch(`${discordApiBase}/applications/@me`, {
+            signal,
+            headers: { Authorization: `Bot ${botToken}` },
+          }),
+        catch: (cause) =>
+          new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+      })
+      if (!response.ok) {
+        return yield* new ChatSdkPublicationError({
+          operation: 'set-application-description',
+          cause: new Error(`Discord application lookup failed: HTTP ${response.status}`),
+        })
+      }
+      const body = yield* Effect.tryPromise({
+        try: () => response.text(),
+        catch: (cause) =>
+          new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+      })
+      return yield* decodeCurrentApplication(body).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
+        ),
+      )
+    })
+
     const patchDescription = Effect.fn('DiscordAgentActivity.patchDescription')(function* (
       description: string,
     ) {
+      if (description.length > 0) {
+        const current = yield* currentApplication().pipe(
+          Effect.mapError(() => new DescriptionPatchError({ status: 0, transient: true })),
+        )
+        if (
+          current.description.length > 0 &&
+          !hasOwnedDescription(current.description, installationId)
+        ) {
+          return yield* new DescriptionPatchError({ status: 409, transient: false })
+        }
+      }
       const response = yield* Effect.tryPromise({
         try: (signal) =>
           fetch(`${discordApiBase}/applications/@me`, {
@@ -182,10 +265,20 @@ export const makeDiscordAgentActivity = (
         catch: () => new DescriptionPatchError({ status: 0, transient: true }),
       })
       if (response.ok) return
+      const body =
+        response.status === 429
+          ? yield* Effect.tryPromise({
+              try: () => response.text(),
+              catch: () => new DescriptionPatchError({ status: 429, transient: true }),
+            }).pipe(Effect.orElseSucceed(() => ''))
+          : ''
       return yield* new DescriptionPatchError({
         status: response.status,
         transient: response.status === 429 || response.status >= 500,
-        retryAfterMs: retryAfterMilliseconds(response),
+        retryAfterMs:
+          response.status === 429
+            ? retryAfterMilliseconds(response.headers.get('Retry-After'), body)
+            : undefined,
       })
     })
 
@@ -202,9 +295,9 @@ export const makeDiscordAgentActivity = (
         )
         return `[#${channel}] ${task.label}`
       })
-      const available = ApplicationDescriptionLimit - Array.from(descriptionMarker).length
+      const available = ApplicationDescriptionLimit - Array.from(marker).length
       const activity = packApplicationDescription(lines, available)
-      return activity.length === 0 ? '' : `${descriptionMarker}${activity}`
+      return activity.length === 0 ? '' : `${marker}${activity}`
     })
 
     const publishLatest = Effect.fn('DiscordAgentActivity.publishLatest')(function* () {
@@ -240,33 +333,8 @@ export const makeDiscordAgentActivity = (
 
     const cleanupOwnedDescription = Effect.fn('DiscordAgentActivity.cleanupOwnedDescription')(
       function* () {
-        const response = yield* Effect.tryPromise({
-          try: (signal) =>
-            fetch(`${discordApiBase}/applications/@me`, {
-              signal,
-              headers: { Authorization: `Bot ${botToken}` },
-            }),
-          catch: (cause) =>
-            new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-        })
-        if (!response.ok) {
-          return yield* new ChatSdkPublicationError({
-            operation: 'set-application-description',
-            cause: new Error(`Discord application lookup failed: HTTP ${response.status}`),
-          })
-        }
-        const body = yield* Effect.tryPromise({
-          try: () => response.text(),
-          catch: (cause) =>
-            new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-        })
-        const application = yield* decodeCurrentApplication(body).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-          ),
-        )
-        if (!application.description.startsWith(descriptionMarker)) {
+        const application = yield* currentApplication()
+        if (!hasOwnedDescription(application.description, installationId)) {
           lastDescription = application.description
           return
         }
@@ -301,11 +369,7 @@ export const makeDiscordAgentActivity = (
         while (true) {
           yield* Queue.take(changes)
           yield* awaitTrailingEdge()
-          const converged = yield* publishLatest()
-          if (!converged) {
-            yield* Effect.sleep(options.retryDelay ?? RetryDelay)
-            yield* Queue.offer(changes, undefined)
-          }
+          yield* publishLatest()
         }
       }).pipe(Effect.forkScoped)
     }
