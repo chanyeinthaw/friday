@@ -51,7 +51,11 @@ the list is a restart-based operation.
 
 `/friday reload` is registered as a global application command for the
 application, so it is available in every guild (including newly invited ones)
-without per-guild registration. It responds ephemerally:
+without per-guild registration. Registration is idempotent and single-command:
+the existing global commands are listed first, then `/friday` is created via
+POST when missing or updated via PATCH by command ID when present — never a
+bulk overwrite, so unrelated commands and other deployments are untouched. The
+command responds ephemerally:
 
 - Non-admins receive an authorization failure.
 - Unknown subcommands receive usage guidance.
@@ -64,13 +68,21 @@ friday config reload
 ```
 
 The CLI sends a single structured request over a local Unix control socket at
-`$FRIDAY_HOME/friday.sock` (permissions `0600`, owner-only). There is no remote
-control API. The socket:
+`$FRIDAY_HOME/friday.sock` (permissions `0600`, owner-only, inside an owner-only
+`$FRIDAY_HOME`). There is no remote control API. The socket and its lifecycle
+lock:
 
-- is created by the running Friday process and removed on shutdown
-- replaces a stale socket file left by a killed process
-- refuses to start when another live Friday already owns the socket
-- returns structured outcomes: `{ ok: true, version }` on success and
+- are created by the running Friday process and removed on shutdown
+- are guarded by an exclusive lock directory (`friday.sock.lock`): exactly one
+  Friday process can start serving; a lock whose owner process is dead is
+  recovered safely
+- replace a stale socket file left by a killed process
+- refuse to start when another live Friday already owns the socket
+- accept one request per connection, reject oversized (over 4 KB) or
+  trailing/multiple requests, and drop idle or stalled clients after a timeout
+- are destroyed together with live connections on shutdown so finalization
+  cannot hang
+- return structured outcomes: `{ ok: true, version }` on success and
   `{ ok: false, reason, detail }` on failure
 
 CLI configuration commands that write SQLite (`platform invocation set`,

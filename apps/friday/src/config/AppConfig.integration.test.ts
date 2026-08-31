@@ -21,6 +21,29 @@ const database = SqliteClient.layer({ filename: ':memory:' })
 const isAppConfigError = Schema.is(AppConfigError)
 const decodePlatformConnectionId = Schema.decodeSync(PlatformConnectionId)
 
+/**
+ * Wraps the real SQLite client so tests can observe transaction usage without
+ * changing query behavior. SAFETY: the tracked delegate re-exposes the inner
+ * client's own properties; only `withTransaction` is intercepted to count
+ * transactional reads.
+ */
+const trackingDatabase = (log: { transactionCount: number }) =>
+  Layer.effect(
+    SqlClient.SqlClient,
+    Effect.map(SqlClient.SqlClient, (inner) => {
+      // SAFETY: the delegate forwards every call to the real client; only
+      // `withTransaction` is intercepted to count transactional reads.
+      const delegate = ((...arguments_: Parameters<SqlClient.SqlClient>) =>
+        inner(...arguments_)) as SqlClient.SqlClient
+      return Object.assign(delegate, {
+        withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+          log.transactionCount += 1
+          return inner.withTransaction(effect)
+        },
+      })
+    }),
+  )
+
 const configured = Effect.gen(function* () {
   yield* runMigrations()
   const sql = yield* SqlClient.SqlClient
@@ -207,6 +230,37 @@ test('fails safely when an enabled connection secret is missing', async () =>
       assert.strictEqual(error.operation, 'secret')
       assert.strictEqual(error.path, 'platforms.discord-personal.credentials.botToken')
       assert(error.detail.includes('DISCORD_BOT_TOKEN'))
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('reads the complete configuration inside a single coherent transaction', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const log = { transactionCount: 0 }
+      yield* runMigrations()
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO platform_connections (
+          connection_id, platform, name, enabled, created_at, updated_at
+        ) VALUES (
+          'discord-personal', 'discord', 'Personal Discord', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `
+      yield* sql`
+        INSERT INTO discord_connections (
+          connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions
+        ) VALUES (
+          'discord-personal', 'application-id', 'public-key', 'DISCORD_BOT_TOKEN', 1
+        )
+      `
+      // loadAppConfig issues many separate queries (installation, agent,
+      // profiles, connections, policies, ...); they must all run inside one
+      // transaction so a concurrent writer can never tear the snapshot.
+      const config = yield* loadAppConfig({
+        environment: { DISCORD_BOT_TOKEN: 'discord-token' },
+      }).pipe(Effect.provide(trackingDatabase(log).pipe(Layer.provide(database))))
+      assert.strictEqual(config.platforms.discord[0]?.connectionId, 'discord-personal')
+      assert.strictEqual(log.transactionCount, 1)
     }).pipe(Effect.provide(database)),
   ))
 

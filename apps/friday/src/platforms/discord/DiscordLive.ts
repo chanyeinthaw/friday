@@ -31,7 +31,7 @@ import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
 import {
-  FRIDAY_COMMAND_NAME,
+  FRIDAY_COMMAND_PATHS,
   decideFridayCommand,
   decodeFridayInteraction,
   fridayCommandReply,
@@ -128,8 +128,11 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               // The adapter must ignore unconfigured guilds/channels before it
               // creates any Discord thread on Friday's behalf.
               isAllowedLocation,
+              // The adapter flattens (or drops) subcommands in the command
+              // path depending on arguments; match every produced path and
+              // make the reload reply ephemeral.
               interactionFlags: (context) =>
-                context.command === `/${FRIDAY_COMMAND_NAME}`
+                FRIDAY_COMMAND_PATHS.includes(context.command)
                   ? DiscordInteractionResponseFlag.Ephemeral
                   : undefined,
             } satisfies FridayDiscordAdapterConfig),
@@ -197,7 +200,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           }).pipe(
             Effect.catchCause((cause) => Effect.logError('Friday slash command failed', cause)),
           )
-        chat.onSlashCommand(`/${FRIDAY_COMMAND_NAME}`, (event) =>
+        chat.onSlashCommand(FRIDAY_COMMAND_PATHS, (event) =>
           Effect.runPromise(runFridayCommand(event)).then(() => undefined),
         )
         yield* startChatSdkLifecycle({
@@ -324,11 +327,13 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               ),
             ),
         })
-        yield* startDiscordGateway(discord)
+        // Register the application command before the gateway starts so a
+        // registration failure cannot leave partially started Discord resources.
         yield* registerGlobalFridayCommand({
           botToken,
           applicationId: String(discordConfig.credentials.applicationId),
         })
+        yield* startDiscordGateway(discord)
         yield* Effect.logInfo('discord.started').pipe(
           Effect.annotateLogs({
             component: 'discord',

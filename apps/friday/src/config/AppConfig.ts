@@ -275,7 +275,7 @@ const decodeAccessSubjectRows = Schema.decodeUnknownEffect(Schema.Array(AccessSu
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
 const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
-const readRows = Effect.fn('AppConfig.readRows')(function* () {
+const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
   const sql = yield* SqlClient.SqlClient
   const installationRows = yield* sql<Record<string, unknown>>`
     SELECT installation_id FROM installation_config WHERE id = 1
@@ -359,6 +359,14 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
     subjects: yield* decodeAccessSubjectRows(subjects),
     adminUsers: yield* decodeAdminUserRows(adminUsers),
   }
+})
+
+const readRows = Effect.fn('AppConfig.readRows')(function* () {
+  const sql = yield* SqlClient.SqlClient
+  // One coherent snapshot: every configuration read runs inside a single
+  // transaction so a concurrent writer can never produce a torn configuration
+  // (e.g. policies read before a CLI write, subjects read after it).
+  return yield* sql.withTransaction(readAllRows())
 })
 
 const resolveSecret = (

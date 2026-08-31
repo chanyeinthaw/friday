@@ -8,6 +8,23 @@ export const FRIDAY_COMMAND_NAME = 'friday'
 export const FRIDAY_RELOAD_SUBCOMMAND = 'reload'
 
 /**
+ * Full Chat SDK command path the Discord adapter produces when the reload
+ * subcommand carries leaf arguments (the adapter appends subcommand names to
+ * the command path, e.g. "/project issue create").
+ */
+export const FRIDAY_COMMAND_PATH = `/${FRIDAY_COMMAND_NAME} ${FRIDAY_RELOAD_SUBCOMMAND}`
+
+/**
+ * Command paths the Discord adapter produces for `/friday reload` events.
+ * The adapter (chat SDK 4.38) only appends a subcommand name when that
+ * subcommand carries leaf options — `reload` takes none, so real invocations
+ * keep the parent-only "/friday" path. Handlers and interaction flags must
+ * match every path the adapter can produce; authorization still reads the
+ * subcommand from the raw interaction, never from the command path.
+ */
+export const FRIDAY_COMMAND_PATHS = [`/${FRIDAY_COMMAND_NAME}`, FRIDAY_COMMAND_PATH]
+
+/**
  * Decision for one `/friday` application command interaction. The Discord
  * transport applies the decision; authorization uses stable Discord user IDs
  * from the pinned startup admin allow-list.

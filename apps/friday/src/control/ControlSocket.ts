@@ -2,7 +2,9 @@
 
 import * as fs from 'node:fs/promises'
 import * as net from 'node:net'
+import { dirname } from 'node:path'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
@@ -43,42 +45,110 @@ export interface ControlSocketServerOptions {
   readonly path: string
   /** The shared reload operation served for `config.reload` requests. */
   readonly reload: Effect.Effect<ConfigReloadOutcome>
+  /** Destroys clients that send more than this many bytes without a full request. */
+  readonly requestByteLimit?: number
+  /** Destroys clients that idle or stall (incomplete request) for this long. */
+  readonly connectionTimeoutMs?: number
 }
+
+const DEFAULT_REQUEST_BYTE_LIMIT = 4096
+const DEFAULT_CONNECTION_TIMEOUT_MS = 5000
+
+interface ConnectionLimits {
+  readonly requestByteLimit: number
+  readonly connectionTimeoutMs: number
+}
+
+/** Reads an errno-style `code` field off an unknown Node.js error. */
+const ErrnoCode = Schema.Struct({ code: Schema.String })
+const decodeErrnoCode = Schema.decodeUnknownOption(ErrnoCode)
+const isErrno = (cause: unknown, code: string): boolean =>
+  Option.getOrElse(
+    Option.map(decodeErrnoCode(cause), (decoded) => decoded.code === code),
+    () => false,
+  )
 
 /** One request per connection: a JSON line in, a JSON line out. */
 const serveConnection = (
   connection: net.Socket,
   respond: (line: string) => Promise<string>,
+  limits: ConnectionLimits,
+  liveConnections: Set<net.Socket>,
 ): void => {
+  liveConnections.add(connection)
+  connection.on('close', () => {
+    liveConnections.delete(connection)
+  })
   let buffered = ''
+  let received = false
+  let idleTimer: ReturnType<typeof setTimeout> | undefined
+  const armIdleTimer = () => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => connection.destroy(), limits.connectionTimeoutMs)
+  }
+  const stopIdleTimer = () => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer)
+  }
+  armIdleTimer()
   connection.on('data', (chunk) => {
+    armIdleTimer()
     buffered += String(chunk)
+    // Oversized clients are destroyed instead of buffered without bound.
+    if (buffered.length > limits.requestByteLimit) {
+      connection.destroy()
+      return
+    }
     const newline = buffered.indexOf('\n')
     if (newline === -1) return
+    // Exactly one request per connection: a second line or trailing bytes after
+    // the first request is a protocol violation, so drop the client.
+    if (received || buffered.slice(newline + 1).trim().length > 0) {
+      connection.destroy()
+      return
+    }
+    received = true
     const line = buffered.slice(0, newline)
-    buffered = buffered.slice(newline + 1)
     void respond(line)
       .then((response) => {
+        stopIdleTimer()
         connection.end(response)
       })
       .catch(() => {
-        connection.end()
+        stopIdleTimer()
+        connection.destroy()
       })
   })
   connection.on('error', () => {
+    stopIdleTimer()
     connection.destroy()
   })
+  connection.on('close', stopIdleTimer)
 }
 
+/**
+ * Binds the Unix socket while the process umask is temporarily restricted, so
+ * the socket file is owner-only from creation. The umask is restored as soon
+ * as the bind completes (or fails); this single startup path is the only code
+ * running file creation during that window.
+ */
 const listen = (
   path: string,
   respond: (line: string) => Promise<string>,
+  limits: ConnectionLimits,
+  liveConnections: Set<net.Socket>,
 ): Effect.Effect<net.Server, ControlSocketError> =>
   Effect.callback((resume) => {
+    let settled = false
+    const previousUmask = process.umask(0o077)
+    const restoreUmask = () => {
+      if (!settled) process.umask(previousUmask)
+    }
     const server = net.createServer((connection) => {
-      serveConnection(connection, respond)
+      serveConnection(connection, respond, limits, liveConnections)
     })
     const fail = (cause: Error) => {
+      settled = true
+      restoreUmask()
       server.close()
       resume(
         Effect.fail(
@@ -93,10 +163,13 @@ const listen = (
     }
     server.once('error', fail)
     server.listen(path, () => {
+      settled = true
+      restoreUmask()
       server.removeListener('error', fail)
       resume(Effect.succeed(server))
     })
     return Effect.sync(() => {
+      restoreUmask()
       server.close()
     })
   })
@@ -138,9 +211,150 @@ const removeSocket = (path: string) =>
       }),
   })
 
+/**
+ * The socket directory must be owner-only so no other local user can reach the
+ * socket or race the restrictive bind. Creates the directory when missing.
+ */
+const ensureOwnerOnlyDirectory = (path: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const directory = dirname(path)
+      await fs.mkdir(directory, { recursive: true })
+      await fs.chmod(directory, 0o700)
+    },
+    catch: (cause) =>
+      new ControlSocketError({
+        operation: 'listen',
+        path,
+        detail: 'Could not restrict the control socket directory to the owning user.',
+        cause,
+      }),
+  })
+
+const lockDirectoryFor = (socketPath: string): string => `${socketPath}.lock`
+const lockOwnerFileFor = (lockPath: string): string => `${lockPath}/owner.pid`
+
+type LockAttempt =
+  | { readonly kind: 'acquired' }
+  | { readonly kind: 'already-held' }
+  | { readonly kind: 'failed'; readonly cause: unknown }
+
+/** mkdir is atomic: exactly one concurrent starter can create the lock directory. */
+const attemptLock = (socketPath: string): Effect.Effect<LockAttempt> =>
+  Effect.promise(() => {
+    const lockPath = lockDirectoryFor(socketPath)
+    return fs
+      .mkdir(lockPath, { mode: 0o700 })
+      .then(() => fs.writeFile(lockOwnerFileFor(lockPath), `${process.pid}\n`, { mode: 0o600 }))
+      .then((): LockAttempt => ({ kind: 'acquired' }))
+      .catch((cause: unknown) =>
+        isErrno(cause, 'EEXIST') ? { kind: 'already-held' } : { kind: 'failed', cause },
+      )
+  })
+
+const readOwnerPid = (lockPath: string): Effect.Effect<number | undefined> =>
+  Effect.promise(() =>
+    fs
+      .readFile(lockOwnerFileFor(lockPath), 'utf8')
+      .then((raw) => {
+        const pid = Number.parseInt(raw, 10)
+        return Number.isInteger(pid) && pid > 0 ? pid : undefined
+      })
+      .catch(() => undefined),
+  )
+
+/** A live owner is any process that still exists (EPERM means another user's process). */
+const pidIsAlive = (pid: number): Effect.Effect<boolean> =>
+  Effect.promise(() =>
+    Promise.resolve()
+      .then(() => {
+        process.kill(pid, 0)
+        return true
+      })
+      .catch((cause: unknown) => isErrno(cause, 'EPERM')),
+  )
+
+/**
+ * A lock without a readable owner is only stale once it has aged: a fresh
+ * ownerless lock means a concurrent starter is between creating the lock
+ * directory and recording its PID, so it must not be stolen.
+ */
+const STALE_LOCK_AGE_MS = 10_000
+
+const lockIsStaleAge = (lockPath: string): Effect.Effect<boolean> =>
+  Effect.promise(() =>
+    fs
+      .stat(lockPath)
+      .then((stats) => Date.now() - stats.mtimeMs > STALE_LOCK_AGE_MS)
+      .catch(() => false),
+  )
+
+const removeStaleLock = (lockPath: string): Effect.Effect<boolean> =>
+  Effect.promise(() =>
+    fs.rm(lockPath, { recursive: true, force: true }).then(
+      () => true,
+      () => false,
+    ),
+  )
+
+/**
+ * Atomically acquires the Friday lifecycle lock (an owner-only lock directory
+ * next to the socket) for the server's lifetime. Recovery rules keep stale
+ * locks from blocking startup while never stealing a live owner's lock:
+ *
+ * - a lock whose recorded owner process no longer exists is stale
+ * - an ownerless lock is stale only once it has aged past STALE_LOCK_AGE_MS
+ * - anything else means another Friday already owns this socket
+ */
+const acquireLifecycleLock = Effect.fn('acquireLifecycleLock')(function* (
+  socketPath: string,
+): Effect.fn.Return<string, ControlSocketError> {
+  const lockPath = lockDirectoryFor(socketPath)
+  const alreadyRunning = new ControlSocketError({
+    operation: 'already-running',
+    path: socketPath,
+    detail: 'Another Friday process holds the lifecycle lock for this socket.',
+  })
+  const first = yield* attemptLock(socketPath)
+  if (first.kind === 'acquired') return lockPath
+  if (first.kind === 'failed') {
+    return yield* new ControlSocketError({
+      operation: 'listen',
+      path: socketPath,
+      detail: 'Could not acquire the Friday lifecycle lock.',
+      cause: first.cause,
+    })
+  }
+  const ownerPid = yield* readOwnerPid(lockPath)
+  const ownerIsDead =
+    ownerPid === undefined ? yield* lockIsStaleAge(lockPath) : !(yield* pidIsAlive(ownerPid))
+  if (!ownerIsDead) return yield* alreadyRunning
+  const removed = yield* removeStaleLock(lockPath)
+  const second = removed ? yield* attemptLock(socketPath) : ({ kind: 'already-held' } as const)
+  if (second.kind !== 'acquired') return yield* alreadyRunning
+  return lockPath
+})
+
+/** Releases the lock only when the recorded owner is still this process. */
+const releaseLifecycleLock = Effect.fn('releaseLifecycleLock')(function* (lockPath: string) {
+  const ownerPid = yield* readOwnerPid(lockPath)
+  if (ownerPid !== process.pid) return
+  yield* Effect.promise(() =>
+    fs.rm(lockPath, { recursive: true, force: true }).catch(() => undefined),
+  )
+})
+
 export const serveControlSocket = Effect.fn('serveControlSocket')(function* (
   options: ControlSocketServerOptions,
 ): Effect.fn.Return<ControlSocketServerContract, ControlSocketError, Scope.Scope> {
+  const limits: ConnectionLimits = {
+    requestByteLimit: options.requestByteLimit ?? DEFAULT_REQUEST_BYTE_LIMIT,
+    connectionTimeoutMs: options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
+  }
+  yield* ensureOwnerOnlyDirectory(options.path)
+  const lockPath = yield* acquireLifecycleLock(options.path)
+  // The lifecycle lock is held until the scope closes (server lifetime).
+  yield* Effect.addFinalizer(() => releaseLifecycleLock(lockPath))
   // A socket file from a previous run may remain; only treat it as stale when no
   // process accepts connections, otherwise refuse to shadow the running Friday.
   const existing = yield* statIsSocket(options.path)
@@ -155,7 +369,7 @@ export const serveControlSocket = Effect.fn('serveControlSocket')(function* (
     }
     yield* removeSocket(options.path)
   }
-  const server = yield* listen(options.path, (line) =>
+  const respond = (line: string): Promise<string> =>
     Effect.runPromise(
       decodeRequestLine(line).pipe(
         Effect.flatMap((request) =>
@@ -163,10 +377,16 @@ export const serveControlSocket = Effect.fn('serveControlSocket')(function* (
             ? options.reload.pipe(Effect.map(encodeOutcomeLine))
             : Effect.succeed(encodeOutcomeLine(reloadFailed('Unknown control operation.'))),
         ),
+        // Unparseable requests still receive a structured failure outcome.
+        Effect.catch(() =>
+          Effect.succeed(encodeOutcomeLine(reloadFailed('Invalid control request.'))),
+        ),
       ),
-    ),
-  )
-  // Only the owning user may talk to the control socket.
+    )
+  const liveConnections = new Set<net.Socket>()
+  const server = yield* listen(options.path, respond, limits, liveConnections)
+  // Only the owning user may talk to the control socket; the restrictive bind
+  // umask already enforces this, the chmod keeps it explicit.
   yield* Effect.tryPromise({
     try: () => fs.chmod(options.path, 0o600),
     catch: (cause) =>
@@ -177,18 +397,43 @@ export const serveControlSocket = Effect.fn('serveControlSocket')(function* (
         cause,
       }),
   })
+  const boundSocketIdentity = yield* Effect.tryPromise({
+    try: async () => {
+      const stats = await fs.stat(options.path)
+      return { dev: stats.dev, ino: stats.ino }
+    },
+    catch: (cause) =>
+      new ControlSocketError({
+        operation: 'listen',
+        path: options.path,
+        detail: 'Could not inspect the bound control socket.',
+        cause,
+      }),
+  })
   yield* Effect.addFinalizer(() =>
     Effect.promise(
       () =>
         new Promise<void>((resolve) => {
+          // Tracked live connections are destroyed so shutdown cannot hang on
+          // clients that idle or stall; close() then completes immediately.
           server.close(() => resolve())
+          for (const connection of liveConnections) connection.destroy()
         }),
     ).pipe(
       Effect.andThen(
-        Effect.tryPromise({
-          try: () => fs.rm(options.path, { force: true }),
-          catch: () => undefined,
-        }).pipe(Effect.ignore),
+        Effect.promise(async () => {
+          // Remove the socket file only when it is still the one we bound, so
+          // a raced shutdown can never delete another server's socket.
+          const current = await fs.stat(options.path).catch(() => undefined)
+          if (
+            current === undefined ||
+            current.dev !== boundSocketIdentity.dev ||
+            current.ino !== boundSocketIdentity.ino
+          ) {
+            return
+          }
+          await fs.rm(options.path, { force: true }).catch(() => undefined)
+        }),
       ),
     ),
   )
