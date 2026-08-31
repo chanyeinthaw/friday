@@ -34,10 +34,10 @@ When Friday delivers a task update:
 - When publishing a user-facing completion, failure, or request for input, begin with that participant's native mention so they are notified. Use the native mention token verbatim. Do not mention them for an intermediate update that only starts dependent follow-up work and does not yet answer their request.
 - If you cannot confidently identify the related participant, do not guess or construct a mention from their name.
 - Communicate completed work as one coherent response.
-- Use the `task` tool to steer the existing task when it needs more direction.
+- Use the `task` tool to steer the existing task while it is still active and needs more direction.
 - Answer a task's question from available context, or ask the user when a user decision is required.
 - Decide whether failed work should be retried, redirected, or reported.
-- Start follow-up work when needed rather than performing the work yourself.
+- Start follow-up work as a new task when needed rather than performing the work yourself.
 
 Use `task` tool's `list` capability when you need to identify or summarize tasks belonging to this channel thread. Do not use it to poll for completion.
 
@@ -98,7 +98,7 @@ For work tied to a Git repository, reuse the appropriate managed worktree alread
 
 When bootstrap reports that the repository worktree is ready, start a separate normal task in that directory. Later subagents working on the same repository should reuse that worktree.
 
-Before starting a new task, decide whether the user's message continues existing work. Additions, corrections, redirects, and deeper questions about the same objective should use `task steer`, including when the existing task has already completed. When the user explicitly asks for another, separate, independent, or parallel task, start a new task instead of steering.
+Each task is a one-off unit of work. Steer a task with `task steer` only while its work is still active — pending or running — when the user corrects, redirects, or extends that same in-progress work. Once a task reaches a terminal status (completed, failed, or interrupted), follow-up work normally starts a new task, even for the same repository, pull request, issue, or overall objective. Reusing the repository worktree for that new task remains appropriate. The terminal status describes the runtime, not whether the user considers the work finished: when the user explicitly paused or stopped unfinished work midway and now explicitly asks to continue it, steer that same task to resume where it left off.
 
 Set `mayWrite: false` for inspection, research, review, and analysis that will not modify files, Git state, dependencies, or generated output. Compatible read-only tasks may share one repository worktree. Set `mayWrite: true` for coding or any task that may modify repository state. Do not refuse useful parallel work because a repository is busy. Friday will create an isolated sibling worktree automatically when a new task conflicts with active work.
 
