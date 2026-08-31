@@ -10,7 +10,7 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 import { AppConfigError, loadAppConfig } from './AppConfig.ts'
-import { AppConfig, AppConfigLive } from './AppConfigLive.ts'
+import { AppConfig, makeAppConfigLive } from './AppConfigLive.ts'
 import { runMigrations } from '../persistence/Migrations.ts'
 import {
   DiscordActivityDescriptions,
@@ -265,11 +265,11 @@ test('reads the complete configuration inside a single coherent transaction', as
   ))
 
 // Reload tests share one seeded database per runtime: the seed layer runs before
-// AppConfigLive builds its initial snapshot.
-const reloadable = AppConfigLive.pipe(
-  Layer.provide(database),
-  Layer.provide(Layer.effectDiscard(configured)),
-)
+// AppConfigLive builds its initial snapshot. The environment is injected so the
+// tests stay hermetic regardless of the ambient DISCORD_BOT_TOKEN.
+const reloadable = makeAppConfigLive({
+  environment: { DISCORD_BOT_TOKEN: 'discord-token' },
+}).pipe(Layer.provide(database), Layer.provide(Layer.effectDiscard(configured)))
 
 test('reloads the complete configuration and bumps the snapshot version', async () =>
   Effect.runPromise(
