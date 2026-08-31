@@ -1,6 +1,9 @@
 import { assert, it } from '@effect/vitest'
 
-import { makeDiscordInvocationChannelSelector } from './DiscordChannelAccess.ts'
+import {
+  makeDiscordInvocationChannelSelector,
+  makeDiscordLocationGate,
+} from './DiscordChannelAccess.ts'
 
 it('selects all-message channels while leaving mention-only channels to mention routing', () => {
   const selector = makeDiscordInvocationChannelSelector(
@@ -37,4 +40,34 @@ it('never selects channels rejected by access policy', () => {
   )
   assert.strictEqual(selector.channels.includes('allowed'), true)
   assert.strictEqual(selector.channels.includes('blocked'), false)
+})
+
+it('allows locations only when both guild and channel pass their policies', () => {
+  const gate = makeDiscordLocationGate(
+    { mode: 'allow', ids: ['guild-1'] },
+    { mode: 'allow', ids: ['channel-1'] },
+  )
+  assert.strictEqual(gate('guild-1', 'channel-1'), true)
+  assert.strictEqual(gate('guild-2', 'channel-1'), false)
+  assert.strictEqual(gate('guild-1', 'channel-2'), false)
+})
+
+it('ignores guilds and channels omitted from an allow policy', () => {
+  const gate = makeDiscordLocationGate(
+    { mode: 'allow', ids: ['guild-1'] },
+    { mode: 'allow', ids: [] },
+  )
+  assert.strictEqual(gate('guild-1', 'channel-1'), false)
+  assert.strictEqual(gate('guild-1', 'channel-2'), false)
+})
+
+it('keeps deny-policy and all-policy guild locations allowed', () => {
+  const denyGate = makeDiscordLocationGate(
+    { mode: 'deny', ids: ['blocked'] },
+    { mode: 'all', ids: [] },
+  )
+  assert.strictEqual(denyGate('guild-1', 'channel-1'), true)
+  assert.strictEqual(denyGate('blocked', 'channel-1'), false)
+  const allGate = makeDiscordLocationGate({ mode: 'all', ids: [] }, { mode: 'all', ids: [] })
+  assert.strictEqual(allGate('guild-1', 'channel-1'), true)
 })
