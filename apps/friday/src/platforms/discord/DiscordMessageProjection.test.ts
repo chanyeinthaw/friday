@@ -6,6 +6,7 @@ import { projectDiscordMessage } from './DiscordMessageProjection.ts'
 const message = {
   id: 'thread-1',
   text: 'Hello Friday',
+  raw: {},
   author: {
     userId: 'user-1',
     userName: 'user',

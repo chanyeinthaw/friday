@@ -67,6 +67,7 @@ it.effect('keeps effectful authorization failures inside the callback error chan
             },
             {
               id: 'message-1',
+              raw: {},
               text: 'hello',
               author: {
                 userId: 'user-1',
@@ -119,6 +120,7 @@ it.effect('classifies mentions inside subscribed threads as mention invocations'
               { adapter: { name: 'discord' }, channelId: 'channel-1', id: 'thread-1' },
               {
                 id: 'message-1',
+                raw: {},
                 text: 'hello',
                 isMention: true,
                 author: {
@@ -177,6 +179,7 @@ it.effect('uses platform-specific inbound normalization before ingestion', () =>
               { adapter: { name: 'discord' }, channelId: 'channel-1', id: 'thread-1' },
               {
                 id: 'message-1',
+                raw: {},
                 text: 'hello',
                 author: {
                   userId: 'user-1',
@@ -237,6 +240,7 @@ it.effect('owns Chat SDK initialization, callbacks, and shutdown in scope', () =
               },
               {
                 id: 'message-1',
+                raw: {},
                 text: 'hello',
                 author: {
                   userId: 'user-1',
@@ -339,6 +343,7 @@ it.effect(
               },
               {
                 id: 'message-1',
+                raw: {},
                 text: 'hello',
                 author: {
                   userId: 'user-1',

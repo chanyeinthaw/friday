@@ -58,5 +58,7 @@ export const InputMessage = Schema.Struct({
   content: MessageContent,
   platformMessageId: Schema.optionalKey(PlatformMessageId),
   context: Schema.optionalKey(Schema.Array(ContextMessage)),
+  /** The Platform message this input replies to, when the Platform embeds it. */
+  replyTo: Schema.optionalKey(ContextMessage),
 })
 export type InputMessage = typeof InputMessage.Type
