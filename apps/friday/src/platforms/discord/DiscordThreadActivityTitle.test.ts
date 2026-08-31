@@ -330,6 +330,28 @@ it.effect('leaves non-thread conversations untouched', () =>
   }),
 )
 
+it.effect('evicts failed idle state so a later cycle retries the Discord lookup', () =>
+  Effect.gen(function* () {
+    let failLookup = true
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    const adapter: DiscordThreadTitleAdapter = {
+      ...stub,
+      fetchThread: (id) =>
+        failLookup ? Promise.reject(new Error('lookup failed')) : stub.fetchThread(id),
+    }
+    const platform = makePlatform(adapter, [])
+
+    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done' })
+    failLookup = false
+    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review'],
+    )
+  }),
+)
+
 it.effect('keeps wrapped operations working when Discord title calls fail', () =>
   Effect.gen(function* () {
     const calls: Array<string> = []

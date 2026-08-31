@@ -1,78 +1,144 @@
-import type { DiscordAdapter } from '@chat-adapter/discord'
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Semaphore from 'effect/Semaphore'
 
 import type { PlatformAgentActivity } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 
 const activitySuffix = / ⚡️(?:x\d+)?$/u
+const DiscordCurrentUser = Schema.Struct({ id: Schema.String })
+const DiscordGuildMember = Schema.Struct({
+  nick: Schema.optional(Schema.NullOr(Schema.String)),
+  user: Schema.optional(Schema.Struct({ username: Schema.optional(Schema.String) })),
+})
+const decodeCurrentUser = Schema.decodeUnknownPromise(DiscordCurrentUser)
+const decodeGuildMember = Schema.decodeUnknownPromise(DiscordGuildMember)
+
+interface GuildActivityState {
+  readonly lock: Semaphore.Semaphore
+  readonly activeTaskIds: Set<string>
+  baseName: string | null
+  users: number
+}
+
+export interface DiscordAgentActivityAdapter {
+  decodeThreadId(threadId: string): { readonly guildId?: string | undefined }
+}
 
 export const makeDiscordAgentActivity = (
-  discord: DiscordAdapter,
+  discord: DiscordAgentActivityAdapter,
   botToken: string,
 ): ((input: PlatformAgentActivity) => Effect.Effect<void, ChatSdkPublicationError>) => {
-  const baseNames = new Map<string, string>()
-  const activeTaskIds = new Map<string, Set<string>>()
+  const guilds = new Map<string, GuildActivityState>()
   let botUserId: string | null = null
+  let botUserLookup: Promise<string> | null = null
 
-  return (input) =>
-    Effect.tryPromise({
-      try: async () => {
-        const location = discord.decodeThreadId(String(input.binding.conversationId))
-        if (!location.guildId) return null
-        if (botUserId === null) {
-          const response = await fetch('https://discord.com/api/v10/users/@me', {
-            headers: { Authorization: `Bot ${botToken}` },
-          })
-          if (!response.ok) {
-            throw new Error(`Discord bot user lookup failed: HTTP ${response.status}`)
-          }
-          // SAFETY: Discord's documented current-user response always includes the user's snowflake ID.
-          const user = (await response.json()) as { id: string }
-          botUserId = user.id
+  const fetchBotUserId = (): Promise<string> => {
+    if (botUserId !== null) return Promise.resolve(botUserId)
+    if (botUserLookup !== null) return botUserLookup
+    botUserLookup = fetch('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: `Bot ${botToken}` },
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Discord bot user lookup failed: HTTP ${response.status}`)
         }
-        let baseName = baseNames.get(location.guildId)
-        if (!baseName) {
-          const response = await fetch(
-            `https://discord.com/api/v10/guilds/${location.guildId}/members/${botUserId}`,
-            { headers: { Authorization: `Bot ${botToken}` } },
-          )
-          if (!response.ok) {
-            throw new Error(`Discord bot member lookup failed: HTTP ${response.status}`)
-          }
-          // SAFETY: Discord's documented guild-member response exposes optional nick and user fields.
-          const member = (await response.json()) as {
-            nick?: string | null
-            user?: { username?: string }
-          }
-          baseName = (member.nick ?? member.user?.username ?? 'Friday').replace(activitySuffix, '')
-          baseNames.set(location.guildId, baseName)
-        }
-        const tasks = activeTaskIds.get(location.guildId) ?? new Set<string>()
-        if (input.active) tasks.add(input.taskId)
-        else tasks.delete(input.taskId)
-        activeTaskIds.set(location.guildId, tasks)
-        const count = tasks.size
-        const suffix = count === 0 ? '' : count === 1 ? ' ⚡️' : ` ⚡️x${count}`
-        const nickname = `${baseName}${suffix}`.slice(0, 32)
-        const response = await fetch(
-          `https://discord.com/api/v10/guilds/${location.guildId}/members/@me`,
-          {
-            method: 'PATCH',
-            headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nick: nickname }),
-          },
+        return response.json()
+      })
+      .then(decodeCurrentUser)
+      .then((user) => {
+        botUserId = user.id
+        return user.id
+      })
+      .finally(() => {
+        botUserLookup = null
+      })
+    return botUserLookup
+  }
+
+  const guildStateFor = (guildId: string): GuildActivityState => {
+    const existing = guilds.get(guildId)
+    if (existing) return existing
+    const created: GuildActivityState = {
+      lock: Semaphore.makeUnsafe(1),
+      activeTaskIds: new Set(),
+      baseName: null,
+      users: 0,
+    }
+    guilds.set(guildId, created)
+    return created
+  }
+
+  const updateGuild = (
+    guildId: string,
+    input: PlatformAgentActivity,
+  ): Effect.Effect<void, ChatSdkPublicationError> =>
+    Effect.suspend(() => {
+      const state = guildStateFor(guildId)
+      state.users += 1
+      return state.lock
+        .withPermit(
+          Effect.tryPromise({
+            try: async () => {
+              const userId = await fetchBotUserId()
+              if (state.baseName === null) {
+                const response = await fetch(
+                  `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`,
+                  { headers: { Authorization: `Bot ${botToken}` } },
+                )
+                if (!response.ok) {
+                  throw new Error(`Discord bot member lookup failed: HTTP ${response.status}`)
+                }
+                const member = await response.json().then(decodeGuildMember)
+                state.baseName = (member.nick ?? member.user?.username ?? 'Friday').replace(
+                  activitySuffix,
+                  '',
+                )
+              }
+              if (input.active) state.activeTaskIds.add(input.taskId)
+              else state.activeTaskIds.delete(input.taskId)
+              const count = state.activeTaskIds.size
+              const suffix = count === 0 ? '' : count === 1 ? ' ⚡️' : ` ⚡️x${count}`
+              const nickname = `${state.baseName}${suffix}`.slice(0, 32)
+              const response = await fetch(
+                `https://discord.com/api/v10/guilds/${guildId}/members/@me`,
+                {
+                  method: 'PATCH',
+                  headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ nick: nickname }),
+                },
+              )
+              if (!response.ok) {
+                throw new Error(`Discord bot nickname update failed: HTTP ${response.status}`)
+              }
+              return { guildId, nickname, activeTaskCount: count }
+            },
+            catch: (cause) =>
+              new ChatSdkPublicationError({ operation: 'set-agent-activity', cause }),
+          }),
         )
-        if (!response.ok)
-          throw new Error(`Discord bot nickname update failed: HTTP ${response.status}`)
-        return { guildId: location.guildId, nickname, activeTaskCount: count }
-      },
-      catch: (cause) => new ChatSdkPublicationError({ operation: 'set-agent-activity', cause }),
-    }).pipe(
-      Effect.tap((result) =>
-        result === null
-          ? Effect.void
-          : Effect.logInfo('discord.agent-activity.updated').pipe(Effect.annotateLogs(result)),
-      ),
-      Effect.asVoid,
-    )
+        .pipe(
+          Effect.tap((result) =>
+            Effect.logInfo('discord.agent-activity.updated').pipe(Effect.annotateLogs(result)),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              state.users -= 1
+              if (
+                state.users === 0 &&
+                state.activeTaskIds.size === 0 &&
+                guilds.get(guildId) === state
+              ) {
+                guilds.delete(guildId)
+              }
+            }),
+          ),
+          Effect.asVoid,
+        )
+    })
+
+  return (input) => {
+    const location = discord.decodeThreadId(String(input.binding.conversationId))
+    return location.guildId ? updateGuild(location.guildId, input) : Effect.void
+  }
 }

@@ -46,7 +46,7 @@ const truncateTitle = (title: string): string => Array.from(title).slice(0, titl
 const bestEffort = <A>(
   conversationId: string,
   effect: Effect.Effect<A, ChatSdkPublicationError>,
-  fallback: A,
+  fallback: () => A,
 ): Effect.Effect<A> =>
   effect.pipe(
     Effect.tapError((cause) =>
@@ -54,7 +54,7 @@ const bestEffort = <A>(
         Effect.annotateLogs({ conversationId, cause: String(cause) }),
       ),
     ),
-    Effect.orElseSucceed(() => fallback),
+    Effect.orElseSucceed(fallback),
   )
 
 /**
@@ -213,7 +213,7 @@ export const withDiscordThreadActivityTitle = (
           yield* applyActivityTitle(conversationId, state)
           return !active
         }),
-        false,
+        () => entry.state.turns === 0 && entry.state.tasks.size === 0,
       ),
     )
   }
@@ -256,7 +256,7 @@ export const withDiscordThreadActivityTitle = (
             yield* applyActivityTitle(conversationId, state)
             return state.turns === 0 && state.tasks.size === 0
           }),
-          false,
+          () => entry.state.turns === 0 && entry.state.tasks.size === 0,
         ),
       )
     },

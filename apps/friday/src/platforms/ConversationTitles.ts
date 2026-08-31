@@ -21,9 +21,33 @@ export const ConversationTitlesLive = Layer.effect(
   ConversationTitles,
   Effect.gen(function* () {
     const platforms = yield* PlatformRegistry
-    const lock = yield* Semaphore.make(1)
+
+    interface ConversationLock {
+      readonly semaphore: Semaphore.Semaphore
+      users: number
+    }
+
+    const locks = new Map<string, ConversationLock>()
+    const serialized = <A>(thread: ChannelThread, effect: Effect.Effect<A>): Effect.Effect<A> =>
+      Effect.suspend(() => {
+        const binding = thread.conversationBinding
+        const key = `${binding.connectionId}:${binding.conversationId}`
+        const entry = locks.get(key) ?? { semaphore: Semaphore.makeUnsafe(1), users: 0 }
+        locks.set(key, entry)
+        entry.users += 1
+        return entry.semaphore.withPermit(effect).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              entry.users -= 1
+              if (entry.users === 0 && locks.get(key) === entry) locks.delete(key)
+            }),
+          ),
+        )
+      })
+
     const updateActivity = (thread: ChannelThread, taskId: TaskId, active: boolean) =>
-      lock.withPermit(
+      serialized(
+        thread,
         platforms.setAgentActivity({ binding: thread.conversationBinding, taskId, active }).pipe(
           Effect.matchEffect({
             onFailure: (cause) =>
@@ -42,9 +66,12 @@ export const ConversationTitlesLive = Layer.effect(
 
     return ConversationTitles.of({
       generated: (thread, title) =>
-        platforms
-          .setConversationTitle({ binding: thread.conversationBinding, title })
-          .pipe(Effect.ignore),
+        serialized(
+          thread,
+          platforms
+            .setConversationTitle({ binding: thread.conversationBinding, title })
+            .pipe(Effect.ignore),
+        ),
       taskStarted: (thread, taskId) => updateActivity(thread, taskId, true),
       taskFinished: (thread, taskId) => updateActivity(thread, taskId, false),
     })
