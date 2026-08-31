@@ -1,4 +1,3 @@
-import type { DiscordAdapterConfig } from '@chat-adapter/discord'
 import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 
@@ -12,12 +11,18 @@ import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
 import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
 import { makeDiscordAgentActivity } from './DiscordAgentActivity.ts'
-import { makeDiscordInvocationChannelSelector } from './DiscordChannelAccess.ts'
+import {
+  makeDiscordInvocationChannelSelector,
+  makeDiscordLocationGate,
+} from './DiscordChannelAccess.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
-import { FridayDiscordAdapter } from './DiscordSystemChannelAdapter.ts'
+import {
+  FridayDiscordAdapter,
+  type FridayDiscordAdapterConfig,
+} from './DiscordSystemChannelAdapter.ts'
 import {
   isDiscordSystemChannel,
   projectDiscordSystemChannelMessage,
@@ -48,6 +53,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           discordConfig.access.channels,
           discordConfig.invocation,
         )
+        const isAllowedLocation = makeDiscordLocationGate(
+          discordConfig.access.guilds,
+          discordConfig.access.channels,
+        )
         const discord = yield* Effect.try({
           try: () =>
             new FridayDiscordAdapter({
@@ -59,9 +68,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               respondToChannelIds: invocationChannels.channels,
               respondToGlobalMentions: true,
               systemChannelIds: discordConfig.systemChannelIds,
-            } satisfies DiscordAdapterConfig & {
-              readonly systemChannelIds: ReadonlyArray<string>
-            }),
+              // The adapter must ignore unconfigured guilds/channels before it
+              // creates any Discord thread on Friday's behalf.
+              isAllowedLocation,
+            } satisfies FridayDiscordAdapterConfig),
           catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
         })
         const chat = yield* Effect.try({
