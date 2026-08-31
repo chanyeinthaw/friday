@@ -352,7 +352,11 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
     )
   }
 
-  const taskStarted = (parent: ChannelThread, taskId: TaskId): Effect.Effect<TaskLifecycle> =>
+  const taskStarted = (
+    parent: ChannelThread,
+    taskId: TaskId,
+    task?: string,
+  ): Effect.Effect<TaskLifecycle> =>
     withTaskLifecycle(taskId, (record) =>
       Effect.gen(function* () {
         const lifecycle: TaskLifecycle = {
@@ -362,7 +366,21 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         record.nextGeneration += 1
         const wasIdle = record.active.size === 0
         record.active.add(lifecycle)
-        if (wasIdle) yield* publishTaskActivity('started', parent, taskId)
+        if (wasIdle) {
+          yield* options.conversationTitles
+            ? options.conversationTitles.taskStarted(parent, taskId, task).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning('Task title activity publication failed', cause).pipe(
+                    Effect.annotateLogs({
+                      operation: 'started',
+                      taskId,
+                      parentThreadId: parent.id,
+                    }),
+                  ),
+                ),
+              )
+            : Effect.void
+        }
         return lifecycle
       }),
     )
@@ -553,7 +571,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           ),
         ),
       )
-    const lifecycle = yield* taskStarted(input.parent, taskId)
+    const lifecycle = yield* taskStarted(input.parent, taskId, input.task)
     yield* options.fork(
       handle.awaitTerminal.pipe(
         Effect.flatMap((terminal) =>

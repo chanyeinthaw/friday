@@ -101,7 +101,9 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           chat,
           {
             setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
-            setAgentActivity: makeDiscordAgentActivity(discord, botToken),
+            setAgentActivity: makeDiscordAgentActivity(discord, botToken, {
+              activityDescription: discordConfig.activityDescription,
+            }),
             searchMessages: (query) => searchDiscordMessages(discord, query),
           },
         )

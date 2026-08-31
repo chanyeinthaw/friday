@@ -47,6 +47,8 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
     'set-conversation-title',
     'set-agent-activity',
     'set-thread-activity-title',
+    'lookup-channel',
+    'set-application-description',
   ]),
   cause: Schema.Defect(),
 }) {

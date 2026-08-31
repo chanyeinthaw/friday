@@ -61,6 +61,8 @@ export interface PlatformAgentActivity {
   readonly binding: ConversationBinding
   readonly taskId: string
   readonly active: boolean
+  /** Raw delegated task text; platforms derive their own concise public labels. */
+  readonly task?: string
 }
 
 export interface PlatformAdapter<PlatformError> {
