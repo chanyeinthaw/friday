@@ -8,6 +8,11 @@ import {
   formatConfigReloadOutcome,
   type ConfigReloadOutcome as ConfigReloadOutcomeType,
 } from './config/ConfigReload.ts'
+import {
+  DiscordUserId,
+  type DiscordAdminAddOutcome,
+  type DiscordAdminRemoveOutcome,
+} from './config/DiscordAdmins.ts'
 import { RepositoryUrl, type ManagedWorktree } from './repositories/RepositoryWorktrees.ts'
 import {
   WorkspaceCleanupProposalId,
@@ -21,6 +26,9 @@ export const helpText = `Friday — your personal agent
 Usage:
   friday [command]
   friday config reload
+  friday config admin discord add <user-id>
+  friday config admin discord remove <user-id>
+  friday config admin discord list [--json]
   friday worktree ensure <repository-url> [--ref <ref>] [--workspace <path>] [--json]
   friday workspace cleanup apply <proposal-id> [--json]
   friday platform invocation set <connection-id> <channel-id> <mention-only|all-messages>
@@ -32,6 +40,9 @@ Usage:
 Commands:
   start             Start Friday (default)
   config reload            Reload the running Friday's configuration
+  config admin discord add      Add a Discord administrator (needs a restart)
+  config admin discord remove   Remove a Discord administrator (needs a restart)
+  config admin discord list     List configured Discord administrators
   worktree ensure          Ensure a reusable repository worktree for the current channel workspace
   workspace cleanup apply  Apply an approved workspace cleanup proposal
   platform invocation set          Set one channel's invocation mode
@@ -50,6 +61,11 @@ export type FridayCliAction =
   | { readonly type: 'start' }
   | { readonly type: 'version' }
   | { readonly type: 'config-reload' }
+  | {
+      readonly type: 'config-admin-discord-add' | 'config-admin-discord-remove'
+      readonly userId: typeof DiscordUserId.Type
+    }
+  | { readonly type: 'config-admin-discord-list'; readonly json: boolean }
   | {
       readonly type: 'platform-invocation-set'
       readonly connectionId: typeof PlatformConnectionId.Type
@@ -102,6 +118,7 @@ const decodeRepositoryUrl = Schema.decodeUnknownEffect(RepositoryUrl)
 const decodeWorkspaceCleanupProposalId = Schema.decodeUnknownEffect(WorkspaceCleanupProposalId)
 const decodePlatformConnectionId = Schema.decodeUnknownEffect(PlatformConnectionId)
 const decodeInvocationMode = Schema.decodeUnknownEffect(InvocationMode)
+const decodeDiscordUserId = Schema.decodeUnknownEffect(DiscordUserId)
 
 const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
   arguments_: ReadonlyArray<string>,
@@ -157,6 +174,32 @@ const parseWorkspaceCleanupApply = Effect.fn('Cli.parseWorkspaceCleanupApply')(f
     return yield* new FridayCliError({ argument: arguments_.join(' ') })
   }
   return { type: 'workspace-cleanup-apply' as const, proposalId, json: trailing[0] === '--json' }
+})
+
+const parseConfigAdminDiscord = Effect.fn('Cli.parseConfigAdminDiscord')(function* (
+  arguments_: ReadonlyArray<string>,
+) {
+  const operation = arguments_[3]
+  if (operation === 'add' || operation === 'remove') {
+    const userIdArgument = arguments_[4]
+    if (arguments_.length !== 5 || !userIdArgument) {
+      return yield* new FridayCliError({ argument: arguments_.join(' ') })
+    }
+    const userId = yield* decodeDiscordUserId(userIdArgument).pipe(
+      Effect.mapError(() => new FridayCliError({ argument: arguments_.join(' ') })),
+    )
+    return operation === 'add'
+      ? { type: 'config-admin-discord-add' as const, userId }
+      : { type: 'config-admin-discord-remove' as const, userId }
+  }
+  if (operation === 'list') {
+    const trailing = arguments_.slice(4)
+    if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
+      return yield* new FridayCliError({ argument: arguments_.join(' ') })
+    }
+    return { type: 'config-admin-discord-list' as const, json: trailing[0] === '--json' }
+  }
+  return yield* new FridayCliError({ argument: arguments_.join(' ') })
 })
 
 const parsePlatformActivityDescription = Effect.fn('Cli.parsePlatformActivityDescription')(
@@ -237,6 +280,9 @@ export const parseFridayCli = (
   if (arguments_.length === 2 && arguments_[0] === 'config' && arguments_[1] === 'reload') {
     return Effect.succeed({ type: 'config-reload' })
   }
+  if (arguments_[0] === 'config' && arguments_[1] === 'admin' && arguments_[2] === 'discord') {
+    return parseConfigAdminDiscord(arguments_)
+  }
   if (arguments_[0] === 'worktree' && arguments_[1] === 'ensure') {
     return parseWorktreeEnsure(arguments_)
   }
@@ -260,6 +306,30 @@ const renderCleanup = (proposal: WorkspaceCleanupProposal): string => `Workspace
   Worktrees: ${proposal.resources.length}
   Reclaimed: ${proposal.estimatedBytes} bytes`
 
+/** Human-readable add outcome; the restart note reflects startup-pinned admins. */
+export const formatDiscordAdminAdd = (
+  userId: typeof DiscordUserId.Type,
+  outcome: DiscordAdminAddOutcome,
+): string =>
+  outcome === 'added'
+    ? `Discord admin ${userId} added. Restart Friday to apply it: the admin allow-list is pinned at startup.`
+    : `Discord admin ${userId} is already configured.`
+
+/** Human-readable remove outcome; the restart note reflects startup-pinned admins. */
+export const formatDiscordAdminRemove = (
+  userId: typeof DiscordUserId.Type,
+  outcome: DiscordAdminRemoveOutcome,
+): string =>
+  outcome === 'removed'
+    ? `Discord admin ${userId} removed. Restart Friday to apply it: the admin allow-list is pinned at startup.`
+    : `Discord admin ${userId} is not configured.`
+
+/** Human-readable administrator list in stable sorted order. */
+export const renderDiscordAdminList = (userIds: ReadonlyArray<string>): string =>
+  userIds.length === 0
+    ? 'No Discord administrators are configured.'
+    : ['Discord administrators:', ...userIds.map((id) => `  ${id}`)].join('\n')
+
 const renderWorktree = (worktree: ManagedWorktree): string => `Repository worktree ready
   URL: ${worktree.url}
   Path: ${worktree.path}
@@ -275,11 +345,19 @@ export const runFridayCli = <
   ActivityDescriptionError,
   SystemChannelError,
   ReloadError,
+  AdminError,
 >(
   arguments_: ReadonlyArray<string>,
   options: {
     readonly start: Effect.Effect<never, E>
     readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ReloadError>
+    readonly addDiscordAdmin: (
+      userId: typeof DiscordUserId.Type,
+    ) => Effect.Effect<DiscordAdminAddOutcome, AdminError>
+    readonly removeDiscordAdmin: (
+      userId: typeof DiscordUserId.Type,
+    ) => Effect.Effect<DiscordAdminRemoveOutcome, AdminError>
+    readonly listDiscordAdmins: () => Effect.Effect<ReadonlyArray<string>, AdminError>
     readonly ensureWorktree: (
       action: Extract<FridayCliAction, { readonly type: 'worktree-ensure' }>,
     ) => Effect.Effect<ManagedWorktree, WorktreeError>
@@ -318,6 +396,7 @@ export const runFridayCli = <
   | ActivityDescriptionError
   | SystemChannelError
   | ReloadError
+  | AdminError
 > =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
@@ -334,6 +413,21 @@ export const runFridayCli = <
           return yield* new ConfigReloadRejectedError({ detail: outcome.detail })
         }
         yield* Console.log(formatConfigReloadOutcome(outcome))
+        return
+      }
+      case 'config-admin-discord-add': {
+        const outcome = yield* options.addDiscordAdmin(action.userId)
+        yield* Console.log(formatDiscordAdminAdd(action.userId, outcome))
+        return
+      }
+      case 'config-admin-discord-remove': {
+        const outcome = yield* options.removeDiscordAdmin(action.userId)
+        yield* Console.log(formatDiscordAdminRemove(action.userId, outcome))
+        return
+      }
+      case 'config-admin-discord-list': {
+        const userIds = yield* options.listDiscordAdmins()
+        yield* Console.log(action.json ? JSON.stringify(userIds) : renderDiscordAdminList(userIds))
         return
       }
       case 'platform-invocation-set': {
