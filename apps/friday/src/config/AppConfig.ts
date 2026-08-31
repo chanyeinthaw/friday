@@ -54,6 +54,11 @@ export const DiscordPlatformConfig = Schema.Struct({
   }),
   respondToGlobalMentions: Schema.Boolean,
   mentionRoleIds: IdentifierArray,
+  /**
+   * Explicit opt-in for a global, public Discord application description containing
+   * sanitized channel names and task labels.
+   */
+  activityDescription: Schema.Boolean,
   invocation: Schema.Struct({
     defaultMode: InvocationMode,
     channels: Schema.Array(Schema.Struct({ channelId: Identifier, mode: InvocationMode })),
@@ -98,6 +103,7 @@ export const SlackPlatformConfig = Schema.Union([
 export type SlackPlatformConfig = typeof SlackPlatformConfig.Type
 
 export const AppConfig = Schema.Struct({
+  installationId: Identifier,
   models: Schema.Struct({
     primary: ConfiguredModel,
     utility: ConfiguredModel,
@@ -127,6 +133,8 @@ export class AppConfigError extends Schema.Error<AppConfigError>('AppConfigError
   }
 }
 
+const InstallationRow = Schema.Struct({ installation_id: Schema.String })
+
 const AgentConfigRow = Schema.Struct({
   primary_provider: Schema.String,
   primary_model_id: Schema.String,
@@ -152,6 +160,7 @@ const DiscordConnectionRow = Schema.Struct({
   public_key: Schema.String,
   bot_token_env: Schema.String,
   respond_to_global_mentions: Schema.Number,
+  activity_description_public: Schema.Number,
 })
 
 const InvocationDefaultRow = Schema.Struct({
@@ -187,6 +196,7 @@ const AccessSubjectRow = Schema.Struct({
   platform_subject_id: Schema.String,
 })
 
+const decodeInstallationRows = Schema.decodeUnknownEffect(Schema.Array(InstallationRow))
 const decodeAgentConfigRows = Schema.decodeUnknownEffect(Schema.Array(AgentConfigRow))
 const decodeSubagentProfileRows = Schema.decodeUnknownEffect(Schema.Array(SubagentProfileRow))
 const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
@@ -201,6 +211,22 @@ const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
 const readRows = Effect.fn('AppConfig.readRows')(function* () {
   const sql = yield* SqlClient.SqlClient
+  const installationRows = yield* sql<Record<string, unknown>>`
+    SELECT installation_id FROM installation_config WHERE id = 1
+  `
+  const installation = yield* decodeInstallationRows(installationRows).pipe(
+    Effect.flatMap((rows) =>
+      rows[0] === undefined
+        ? Effect.fail(
+            new AppConfigError({
+              operation: 'read',
+              path: 'installation_config',
+              detail: 'Friday installation identity has not been initialized.',
+            }),
+          )
+        : Effect.succeed(rows[0]),
+    ),
+  )
   const agentRows = yield* sql<Record<string, unknown>>`SELECT * FROM agent_config WHERE id = 1`
   const agent = yield* decodeAgentConfigRows(agentRows).pipe(
     Effect.flatMap((rows) =>
@@ -225,7 +251,8 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
       discord_connections.application_id,
       discord_connections.public_key,
       discord_connections.bot_token_env,
-      discord_connections.respond_to_global_mentions
+      discord_connections.respond_to_global_mentions,
+      discord_connections.activity_description_public
     FROM platform_connections
     JOIN discord_connections USING (connection_id)
     WHERE platform_connections.platform = 'discord'
@@ -251,6 +278,7 @@ const readRows = Effect.fn('AppConfig.readRows')(function* () {
     Record<string, unknown>
   >`SELECT * FROM platform_access_subjects ORDER BY connection_id, subject_type, platform_subject_id`
   return {
+    installation,
     agent,
     profiles: yield* decodeSubagentProfileRows(profiles),
     discord: yield* decodeDiscordConnectionRows(discord),
@@ -328,6 +356,7 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
     ),
   )
   const candidate = {
+    installationId: rows.installation.installation_id,
     models: {
       primary: {
         provider: rows.agent.primary_provider,
@@ -373,6 +402,7 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
               guilds: policyFor(connection.connection_id, 'guild', rows.policies, rows.subjects),
             },
             respondToGlobalMentions: connection.respond_to_global_mentions === 1,
+            activityDescription: connection.activity_description_public === 1,
             mentionRoleIds: rows.mentionRoles
               .filter((role) => role.connection_id === connection.connection_id)
               .map((role) => role.role_id),

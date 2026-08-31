@@ -19,6 +19,8 @@ Usage:
   friday worktree ensure <repository-url> [--ref <ref>] [--workspace <path>] [--json]
   friday workspace cleanup apply <proposal-id> [--json]
   friday platform invocation set <connection-id> <channel-id> <mention-only|all-messages>
+  friday platform activity-description set <connection-id>
+  friday platform activity-description reset <connection-id>
   friday platform system-channel set <connection-id> <channel-id>
   friday platform system-channel reset <connection-id> <channel-id>
 
@@ -26,8 +28,10 @@ Commands:
   start             Start Friday (default)
   worktree ensure          Ensure a reusable repository worktree for the current channel workspace
   workspace cleanup apply  Apply an approved workspace cleanup proposal
-  platform invocation set      Set one channel's invocation mode
-  platform system-channel set  Configure a direct system-management channel
+  platform invocation set          Set one channel's invocation mode
+  platform activity-description set   Enable public task activity now, without restarting Friday
+  platform activity-description reset Disable it now and clear only Friday-owned description text
+  platform system-channel set      Configure a direct system-management channel
   platform system-channel reset Remove system-management behavior from a channel
 
 Options:
@@ -44,6 +48,10 @@ export type FridayCliAction =
       readonly connectionId: typeof PlatformConnectionId.Type
       readonly channelId: string
       readonly mode: InvocationModeType
+    }
+  | {
+      readonly type: 'platform-activity-description-set' | 'platform-activity-description-reset'
+      readonly connectionId: typeof PlatformConnectionId.Type
     }
   | {
       readonly type: 'platform-system-channel-set' | 'platform-system-channel-reset'
@@ -133,6 +141,27 @@ const parseWorkspaceCleanupApply = Effect.fn('Cli.parseWorkspaceCleanupApply')(f
   return { type: 'workspace-cleanup-apply' as const, proposalId, json: trailing[0] === '--json' }
 })
 
+const parsePlatformActivityDescription = Effect.fn('Cli.parsePlatformActivityDescription')(
+  function* (arguments_: ReadonlyArray<string>) {
+    const operation = arguments_[2]
+    const connectionArgument = arguments_[3]
+    if (
+      arguments_.length !== 4 ||
+      (operation !== 'set' && operation !== 'reset') ||
+      !connectionArgument
+    ) {
+      return yield* new FridayCliError({ argument: arguments_.join(' ') })
+    }
+    const connectionId = yield* decodePlatformConnectionId(connectionArgument).pipe(
+      Effect.mapError(() => new FridayCliError({ argument: arguments_.join(' ') })),
+    )
+    return {
+      type: `platform-activity-description-${operation}` as const,
+      connectionId,
+    }
+  },
+)
+
 const parsePlatformSystemChannel = Effect.fn('Cli.parsePlatformSystemChannel')(function* (
   arguments_: ReadonlyArray<string>,
 ) {
@@ -193,6 +222,9 @@ export const parseFridayCli = (
   if (arguments_[0] === 'platform' && arguments_[1] === 'invocation' && arguments_[2] === 'set') {
     return parsePlatformInvocationSet(arguments_)
   }
+  if (arguments_[0] === 'platform' && arguments_[1] === 'activity-description') {
+    return parsePlatformActivityDescription(arguments_)
+  }
   if (arguments_[0] === 'platform' && arguments_[1] === 'system-channel') {
     return parsePlatformSystemChannel(arguments_)
   }
@@ -214,7 +246,14 @@ const renderWorktree = (worktree: ManagedWorktree): string => `Repository worktr
   Base: ${worktree.baseRef}
   Reused: ${worktree.reused ? 'yes' : 'no'}`
 
-export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError, SystemChannelError>(
+export const runFridayCli = <
+  E,
+  WorktreeError,
+  CleanupError,
+  InvocationError,
+  ActivityDescriptionError,
+  SystemChannelError,
+>(
   arguments_: ReadonlyArray<string>,
   options: {
     readonly start: Effect.Effect<never, E>
@@ -224,6 +263,15 @@ export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError, Sy
     readonly setPlatformInvocation: (
       action: Extract<FridayCliAction, { readonly type: 'platform-invocation-set' }>,
     ) => Effect.Effect<void, InvocationError>
+    readonly setDiscordActivityDescription: (
+      action: Extract<
+        FridayCliAction,
+        {
+          readonly type: 'platform-activity-description-set' | 'platform-activity-description-reset'
+        }
+      >,
+      enabled: boolean,
+    ) => Effect.Effect<void, ActivityDescriptionError>
     readonly setPlatformSystemChannel: (
       action: Extract<
         FridayCliAction,
@@ -238,7 +286,13 @@ export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError, Sy
   },
 ): Effect.Effect<
   void,
-  FridayCliError | E | WorktreeError | CleanupError | InvocationError | SystemChannelError
+  | FridayCliError
+  | E
+  | WorktreeError
+  | CleanupError
+  | InvocationError
+  | ActivityDescriptionError
+  | SystemChannelError
 > =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
@@ -253,6 +307,17 @@ export const runFridayCli = <E, WorktreeError, CleanupError, InvocationError, Sy
         yield* options.setPlatformInvocation(action)
         yield* Console.log(
           `Invocation mode for ${action.connectionId}:${action.channelId} set to ${action.mode}.`,
+        )
+        return
+      }
+      case 'platform-activity-description-set':
+      case 'platform-activity-description-reset': {
+        const enabled = action.type === 'platform-activity-description-set'
+        yield* options.setDiscordActivityDescription(action, enabled)
+        yield* Console.log(
+          enabled
+            ? `Discord activity description for ${action.connectionId} enabled. The running process will publish current task activity.`
+            : `Discord activity description for ${action.connectionId} disabled. Friday-owned text will be cleared.`,
         )
         return
       }

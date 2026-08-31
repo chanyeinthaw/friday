@@ -10,6 +10,19 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   yield* runChatSdkStateMigrations()
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS installation_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      installation_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `
+
+  yield* sql`
+    INSERT OR IGNORE INTO installation_config (id, installation_id, created_at)
+    VALUES (1, lower(hex(randomblob(16))), CURRENT_TIMESTAMP)
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS agent_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       primary_provider TEXT NOT NULL,
@@ -89,9 +102,22 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
       public_key TEXT NOT NULL,
       bot_token_env TEXT NOT NULL,
       respond_to_global_mentions INTEGER NOT NULL CHECK (respond_to_global_mentions IN (0, 1)),
+      activity_description_public INTEGER NOT NULL DEFAULT 0
+        CHECK (activity_description_public IN (0, 1)),
       FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
     )
   `
+
+  const columns = yield* sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info('discord_connections')
+  `
+  if (!columns.some((column) => column.name === 'activity_description_public')) {
+    yield* sql`
+      ALTER TABLE discord_connections
+      ADD COLUMN activity_description_public INTEGER NOT NULL DEFAULT 0
+        CHECK (activity_description_public IN (0, 1))
+    `
+  }
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS platform_system_channels (

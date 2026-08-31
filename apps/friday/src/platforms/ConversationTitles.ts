@@ -8,7 +8,11 @@ import { PlatformRegistry } from './PlatformRegistry.ts'
 
 export interface ConversationTitlesContract {
   readonly generated: (thread: ChannelThread, title: string) => Effect.Effect<void>
-  readonly taskStarted: (thread: ChannelThread, taskId: TaskId) => Effect.Effect<void>
+  readonly taskStarted: (
+    thread: ChannelThread,
+    taskId: TaskId,
+    task?: string,
+  ) => Effect.Effect<void>
   readonly taskFinished: (thread: ChannelThread, taskId: TaskId) => Effect.Effect<void>
 }
 
@@ -58,23 +62,34 @@ export const ConversationTitlesLive = Layer.effect(
         )
       })
 
-    const updateActivity = (thread: ChannelThread, taskId: TaskId, active: boolean) =>
+    const updateActivity = (
+      thread: ChannelThread,
+      taskId: TaskId,
+      active: boolean,
+      task?: string,
+    ) =>
       serialized(
         thread,
-        platforms.setAgentActivity({ binding: thread.conversationBinding, taskId, active }).pipe(
-          Effect.matchEffect({
-            onFailure: (cause) =>
-              Effect.logWarning('platform.agent-activity.failed').pipe(
-                Effect.annotateLogs({
-                  platform: thread.conversationBinding.platform,
-                  taskId,
-                  active,
-                  cause: String(cause),
-                }),
-              ),
-            onSuccess: () => Effect.void,
-          }),
-        ),
+        platforms
+          .setAgentActivity(
+            task === undefined
+              ? { binding: thread.conversationBinding, taskId, active }
+              : { binding: thread.conversationBinding, taskId, active, task },
+          )
+          .pipe(
+            Effect.matchEffect({
+              onFailure: (cause) =>
+                Effect.logWarning('platform.agent-activity.failed').pipe(
+                  Effect.annotateLogs({
+                    platform: thread.conversationBinding.platform,
+                    taskId,
+                    active,
+                    cause: String(cause),
+                  }),
+                ),
+              onSuccess: () => Effect.void,
+            }),
+          ),
       )
 
     return ConversationTitles.of({
@@ -85,7 +100,7 @@ export const ConversationTitlesLive = Layer.effect(
             .setConversationTitle({ binding: thread.conversationBinding, title })
             .pipe(Effect.ignore),
         ),
-      taskStarted: (thread, taskId) => updateActivity(thread, taskId, true),
+      taskStarted: (thread, taskId, task) => updateActivity(thread, taskId, true, task),
       taskFinished: (thread, taskId) => updateActivity(thread, taskId, false),
     })
   }),

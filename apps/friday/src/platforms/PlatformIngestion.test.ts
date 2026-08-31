@@ -68,6 +68,7 @@ const testModel = Schema.decodeSync(ModelSelection)({
   modelId: 'deepseek-v4-flash',
 })
 const testConfig = {
+  installationId: 'test-installation',
   models: {
     primary: { ...testModel, thinkingLevel: 'max' as const },
     utility: { ...testModel, thinkingLevel: 'low' as const },

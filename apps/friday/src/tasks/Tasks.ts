@@ -352,7 +352,11 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
     )
   }
 
-  const taskStarted = (parent: ChannelThread, taskId: TaskId): Effect.Effect<TaskLifecycle> =>
+  const taskStarted = (
+    parent: ChannelThread,
+    taskId: TaskId,
+    task?: string,
+  ): Effect.Effect<TaskLifecycle> =>
     withTaskLifecycle(taskId, (record) =>
       Effect.gen(function* () {
         const lifecycle: TaskLifecycle = {
@@ -362,7 +366,21 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         record.nextGeneration += 1
         const wasIdle = record.active.size === 0
         record.active.add(lifecycle)
-        if (wasIdle) yield* publishTaskActivity('started', parent, taskId)
+        if (wasIdle) {
+          yield* options.conversationTitles
+            ? options.conversationTitles.taskStarted(parent, taskId, task).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning('Task title activity publication failed', cause).pipe(
+                    Effect.annotateLogs({
+                      operation: 'started',
+                      taskId,
+                      parentThreadId: parent.id,
+                    }),
+                  ),
+                ),
+              )
+            : Effect.void
+        }
         return lifecycle
       }),
     )
@@ -553,33 +571,35 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           ),
         ),
       )
-    const lifecycle = yield* taskStarted(input.parent, taskId)
-    yield* options.fork(
-      handle.awaitTerminal.pipe(
-        Effect.flatMap((terminal) =>
-          Effect.gen(function* () {
-            yield* options.persistence.closeThread({
-              threadId: thread.id,
-              closedAt: yield* options.now,
-            })
-            if (lifecycle.cancelled) return
-            yield* options.channelTurns.accept({
-              thread: input.parent,
-              message: {
-                source: 'agent',
-                content: { text: renderTaskOutcome(taskId, terminal), images: [] },
-              },
-            })
-          }),
-        ),
-        Effect.catchCause((cause) =>
-          Effect.logError('Task completion delivery failed', cause).pipe(
-            Effect.annotateLogs({ taskId, parentThreadId: input.parent.id }),
+    const lifecycle = yield* taskStarted(input.parent, taskId, input.task)
+    yield* options
+      .fork(
+        handle.awaitTerminal.pipe(
+          Effect.flatMap((terminal) =>
+            Effect.gen(function* () {
+              yield* options.persistence.closeThread({
+                threadId: thread.id,
+                closedAt: yield* options.now,
+              })
+              if (lifecycle.cancelled) return
+              yield* options.channelTurns.accept({
+                thread: input.parent,
+                message: {
+                  source: 'agent',
+                  content: { text: renderTaskOutcome(taskId, terminal), images: [] },
+                },
+              })
+            }),
           ),
+          Effect.catchCause((cause) =>
+            Effect.logError('Task completion delivery failed', cause).pipe(
+              Effect.annotateLogs({ taskId, parentThreadId: input.parent.id }),
+            ),
+          ),
+          Effect.ensuring(taskFinished(input.parent, taskId, lifecycle)),
         ),
-        Effect.ensuring(taskFinished(input.parent, taskId, lifecycle)),
-      ),
-    )
+      )
+      .pipe(Effect.onError(() => taskFinished(input.parent, taskId, lifecycle)))
 
     return { taskId, status: 'pending' as const }
   })
@@ -769,6 +789,9 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         )
     }
     const continuation = yield* makeContinuationTurn(thread, request, turn)
+    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    const first = yield* options.persistence.getFirstTurn(thread.id)
+    const originalTask = Option.isSome(first) ? first.value.input.content.text : undefined
     const handle = yield* coordinator
       .prompt(continuation)
       .pipe(
@@ -780,30 +803,31 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
           ),
         ),
       )
-    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
-    const lifecycle = yield* taskStarted(parent, request.taskId)
-    yield* options.fork(
-      handle.awaitTerminal.pipe(
-        Effect.flatMap((terminal) =>
-          Effect.gen(function* () {
-            yield* options.persistence.closeThread({
-              threadId: thread.id,
-              closedAt: yield* options.now,
-            })
-            if (lifecycle.cancelled) return
-            yield* options.channelTurns.accept({
-              thread: parent,
-              message: {
-                source: 'agent',
-                content: { text: renderTaskOutcome(request.taskId, terminal), images: [] },
-              },
-            })
-          }),
+    const lifecycle = yield* taskStarted(parent, request.taskId, originalTask)
+    yield* options
+      .fork(
+        handle.awaitTerminal.pipe(
+          Effect.flatMap((terminal) =>
+            Effect.gen(function* () {
+              yield* options.persistence.closeThread({
+                threadId: thread.id,
+                closedAt: yield* options.now,
+              })
+              if (lifecycle.cancelled) return
+              yield* options.channelTurns.accept({
+                thread: parent,
+                message: {
+                  source: 'agent',
+                  content: { text: renderTaskOutcome(request.taskId, terminal), images: [] },
+                },
+              })
+            }),
+          ),
+          Effect.catchCause((cause) => Effect.logError('Task continuation delivery failed', cause)),
+          Effect.ensuring(taskFinished(parent, request.taskId, lifecycle)),
         ),
-        Effect.catchCause((cause) => Effect.logError('Task continuation delivery failed', cause)),
-        Effect.ensuring(taskFinished(parent, request.taskId, lifecycle)),
-      ),
-    )
+      )
+      .pipe(Effect.onError(() => taskFinished(parent, request.taskId, lifecycle)))
   })
 
   const list = Effect.fn('Tasks.list')(function* (request: ListTasksRequest) {
