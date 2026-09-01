@@ -14,7 +14,10 @@ import {
   type AccessPolicy,
   type DiscordGuildChannelConfig,
 } from './AppConfig.ts'
-import { runMigrations } from '../persistence/Migrations.ts'
+import {
+  migrateConnectionScopedDiscordConfig,
+  runStructuralMigrations,
+} from '../persistence/Migrations.ts'
 
 /**
  * A stable Discord snowflake: the decimal form of a positive 64-bit integer,
@@ -175,9 +178,16 @@ export const DiscordGuildsLive = Layer.effect(
   DiscordGuilds,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    // Ensure the database exists with current tables even before first start;
-    // a migration failure here is a defect, not a per-command error.
-    yield* runMigrations().pipe(Effect.orDie)
+    // Structural migrations must always succeed; a failure there is a defect.
+    // A refused legacy Discord migration, however, must not brick the config
+    // CLI: recording guild configuration is exactly how operators resolve the
+    // refusal (recorded channel overrides supersede their legacy rows), so the
+    // typed refusal is tolerated here while Friday's startup stays fail-closed.
+    yield* runStructuralMigrations().pipe(Effect.orDie)
+    yield* migrateConnectionScopedDiscordConfig().pipe(
+      Effect.catchTag('LegacyDiscordConfigMigrationError', () => Effect.void),
+      Effect.orDie,
+    )
 
     const writeError = (connectionId: PlatformConnectionId) => (cause: unknown) =>
       new DiscordGuildError({ operation: 'write', connectionId, cause })
@@ -369,62 +379,78 @@ export const DiscordGuildsLive = Layer.effect(
         ),
 
       disableGuild: (connectionId, guildId) =>
-        sql<Record<string, unknown>>`
+        requireDiscordConnection(connectionId).pipe(
+          Effect.andThen(
+            sql<Record<string, unknown>>`
           UPDATE discord_guilds SET enabled = 0
           WHERE connection_id = ${connectionId} AND guild_id = ${guildId} AND enabled = 1
           RETURNING guild_id
         `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.flatMap((rows) =>
-            rows[0] !== undefined
-              ? Effect.succeed<DiscordGuildDisableOutcome>('disabled')
-              : guildExists(connectionId, guildId).pipe(
-                  Effect.map((exists): DiscordGuildDisableOutcome =>
-                    exists ? 'already-disabled' : 'missing',
-                  ),
-                ),
+              Effect.mapError(writeError(connectionId)),
+              Effect.flatMap((rows) =>
+                rows[0] !== undefined
+                  ? Effect.succeed<DiscordGuildDisableOutcome>('disabled')
+                  : guildExists(connectionId, guildId).pipe(
+                      Effect.map((exists): DiscordGuildDisableOutcome =>
+                        exists ? 'already-disabled' : 'missing',
+                      ),
+                    ),
+              ),
+            ),
           ),
         ),
 
       removeGuild: (connectionId, guildId) =>
-        sql<Record<string, unknown>>`
+        requireDiscordConnection(connectionId).pipe(
+          Effect.andThen(
+            sql<Record<string, unknown>>`
           DELETE FROM discord_guilds
           WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
           RETURNING guild_id
         `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.map((rows): DiscordGuildRemoveOutcome =>
-            rows[0] === undefined ? 'missing' : 'removed',
+              Effect.mapError(writeError(connectionId)),
+              Effect.map((rows): DiscordGuildRemoveOutcome =>
+                rows[0] === undefined ? 'missing' : 'removed',
+              ),
+            ),
           ),
         ),
 
       setGuildInvocation: (connectionId, guildId, mode) =>
-        sql<Record<string, unknown>>`
+        requireDiscordConnection(connectionId).pipe(
+          Effect.andThen(
+            sql<Record<string, unknown>>`
           UPDATE discord_guilds SET invocation_mode = ${mode}
           WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
           RETURNING guild_id
         `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.map((rows): DiscordGuildUpdateOutcome =>
-            rows[0] === undefined ? 'missing' : 'updated',
+              Effect.mapError(writeError(connectionId)),
+              Effect.map((rows): DiscordGuildUpdateOutcome =>
+                rows[0] === undefined ? 'missing' : 'updated',
+              ),
+            ),
           ),
         ),
 
       setGuildUsers: (connectionId, guildId, policy) =>
-        sql
-          .withTransaction(
-            Effect.gen(function* () {
-              const updated = yield* sql<Record<string, unknown>>`
+        requireDiscordConnection(connectionId).pipe(
+          Effect.andThen(
+            sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const updated = yield* sql<Record<string, unknown>>`
               UPDATE discord_guilds SET users_mode = ${policy.mode}
               WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
               RETURNING guild_id
             `.pipe(Effect.mapError(writeError(connectionId)))
-              if (updated[0] === undefined) return 'missing' as const
-              yield* replaceUserSubjects(connectionId, { guildId }, policy)
-              return 'updated' as const
-            }),
-          )
-          .pipe(Effect.mapError(writeError(connectionId))),
+                  if (updated[0] === undefined) return 'missing' as const
+                  yield* replaceUserSubjects(connectionId, { guildId }, policy)
+                  return 'updated' as const
+                }),
+              )
+              .pipe(Effect.mapError(writeError(connectionId))),
+          ),
+        ),
 
       setChannel: (connectionId, guildId, channelId, patch) =>
         requireDiscordConnection(connectionId).pipe(
@@ -467,16 +493,20 @@ export const DiscordGuildsLive = Layer.effect(
         ),
 
       resetChannel: (connectionId, guildId, channelId) =>
-        sql<Record<string, unknown>>`
+        requireDiscordConnection(connectionId).pipe(
+          Effect.andThen(
+            sql<Record<string, unknown>>`
           DELETE FROM discord_guild_channels
           WHERE connection_id = ${connectionId}
             AND guild_id = ${guildId}
             AND channel_id = ${channelId}
           RETURNING channel_id
         `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.map((rows): DiscordGuildChannelResetOutcome =>
-            rows[0] === undefined ? 'missing' : 'removed',
+              Effect.mapError(writeError(connectionId)),
+              Effect.map((rows): DiscordGuildChannelResetOutcome =>
+                rows[0] === undefined ? 'missing' : 'removed',
+              ),
+            ),
           ),
         ),
     })

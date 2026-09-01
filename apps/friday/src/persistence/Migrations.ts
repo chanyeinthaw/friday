@@ -17,11 +17,16 @@ export class LegacyDiscordConfigMigrationError extends Schema.Error<LegacyDiscor
   detail: Schema.String,
 }) {
   override get message(): string {
-    return `Legacy Discord configuration migration refused: ${this.detail}. The migration rolled back and the legacy tables are unchanged; resolve these rows (or record the equivalent guild configuration), then restart Friday.`
+    return `Legacy Discord configuration migration refused: ${this.detail}. The migration rolled back and the legacy tables are unchanged. The guild configuration CLI commands still work while this refusal is in place: record the equivalent guild configuration for the listed channels (a recorded channel override supersedes the legacy rows for that channel), resolve any listed rows that have no guild-model equivalent directly in the legacy tables, then restart Friday.`
   }
 }
 
-export const runMigrations = Effect.fn('runMigrations')(function* () {
+/**
+ * Structural schema creation and idempotent data repair, without the
+ * fail-closed legacy Discord migration. Runs to completion even while a
+ * legacy-migration refusal keeps the legacy tables in place.
+ */
+export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(function* () {
   const sql = yield* SqlClient.SqlClient
 
   yield* sql`PRAGMA foreign_keys = ON`
@@ -198,8 +203,6 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
     )
   `
 
-  yield* migrateConnectionScopedDiscordConfig()
-
   yield* sql`
     CREATE TABLE IF NOT EXISTS discord_mention_roles (
       connection_id TEXT NOT NULL,
@@ -349,6 +352,14 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   `
 })
 
+export const runMigrations = Effect.fn('runMigrations')(function* () {
+  // Structural migrations run first so every table exists even while a legacy
+  // refusal keeps the legacy tables in place; the refusal then fails startup
+  // closed until the operator resolves or records the listed rows.
+  yield* runStructuralMigrations()
+  yield* migrateConnectionScopedDiscordConfig()
+})
+
 /** Parses the guild segment of a Discord conversation id (`discord:{guild}:{channel}[:{thread}]`). */
 const discordGuildFromConversationId = (column: string) =>
   `substr(substr(${column}, 9), 1, instr(substr(${column}, 9), ':') - 1)`
@@ -371,16 +382,25 @@ const capList = (items: ReadonlyArray<string>): string =>
  * row is destroyed; guild IDs are only ever taken from real data (existing
  * guild access subjects and the guild segment of persisted conversation
  * bindings), never guessed.
+ *
+ * Recovery: the guild configuration CLI commands run even while a refusal is
+ * in place (the config layer tolerates this error), so the operator can record
+ * the equivalent guild configuration. A recorded channel override supersedes
+ * the legacy rows for the same channel — it resolves unobservable-guild and
+ * ambiguous-guild refusals and is never overwritten by the migration. Legacy
+ * rows with no guild-model equivalent (channel access policies) have no
+ * recording path and must be resolved directly in the legacy tables.
  */
-const migrateConnectionScopedDiscordConfig = Effect.fn('migrateConnectionScopedDiscordConfig')(
-  function* () {
-    const sql = yield* SqlClient.SqlClient
-    const expectedLegacyTables = [
-      'platform_invocation_defaults',
-      'platform_channel_invocation_policies',
-      'platform_system_channels',
-    ] as const
-    const legacyTables = yield* sql<{ readonly name: string }>`
+export const migrateConnectionScopedDiscordConfig = Effect.fn(
+  'migrateConnectionScopedDiscordConfig',
+)(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const expectedLegacyTables = [
+    'platform_invocation_defaults',
+    'platform_channel_invocation_policies',
+    'platform_system_channels',
+  ] as const
+  const legacyTables = yield* sql<{ readonly name: string }>`
       SELECT name FROM sqlite_master
       WHERE type = 'table' AND name IN (
         'platform_invocation_defaults',
@@ -389,22 +409,22 @@ const migrateConnectionScopedDiscordConfig = Effect.fn('migrateConnectionScopedD
       )
       ORDER BY name
     `
-    if (legacyTables.length === 0) return
-    const presentLegacyTables = new Set(legacyTables.map((row) => row.name))
-    const missingLegacyTables = expectedLegacyTables.filter(
-      (table) => !presentLegacyTables.has(table),
-    )
-    if (missingLegacyTables.length > 0) {
-      return yield* new LegacyDiscordConfigMigrationError({
-        detail: `partial legacy schema: found ${[...presentLegacyTables].join(', ')} but missing ${missingLegacyTables.join(', ')}`,
-      })
-    }
+  if (legacyTables.length === 0) return
+  const presentLegacyTables = new Set(legacyTables.map((row) => row.name))
+  const missingLegacyTables = expectedLegacyTables.filter(
+    (table) => !presentLegacyTables.has(table),
+  )
+  if (missingLegacyTables.length > 0) {
+    return yield* new LegacyDiscordConfigMigrationError({
+      detail: `partial legacy schema: found ${[...presentLegacyTables].join(', ')} but missing ${missingLegacyTables.join(', ')}`,
+    })
+  }
 
-    const conversationIdExpression =
-      "json_extract(t.payload_json, '$.conversationBinding.conversationId')"
-    const guildExpression = discordGuildFromConversationId(conversationIdExpression)
-    // (connection_id, guild_id, channel_id) locations observed in persisted bindings.
-    const bindingLocations = `
+  const conversationIdExpression =
+    "json_extract(t.payload_json, '$.conversationBinding.conversationId')"
+  const guildExpression = discordGuildFromConversationId(conversationIdExpression)
+  // (connection_id, guild_id, channel_id) locations observed in persisted bindings.
+  const bindingLocations = `
     SELECT DISTINCT
       pc.connection_id AS connection_id,
       ${guildExpression} AS guild_id,
@@ -416,86 +436,127 @@ const migrateConnectionScopedDiscordConfig = Effect.fn('migrateConnectionScopedD
       AND ${conversationIdExpression} LIKE 'discord:%'
       AND ${guildExpression} != ''
   `
-    // The migration statements embed composed SQL fragments, so they run as raw
-    // queries; every fragment is static, with no external parameters.
-    const unsafe = <A extends object>(query: string) => sql.unsafe<A>(query)
+  // The migration statements embed composed SQL fragments, so they run as raw
+  // queries; every fragment is static, with no external parameters.
+  const unsafe = <A extends object>(query: string) => sql.unsafe<A>(query)
 
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        // ---- Fail-closed pre-checks: any unmappable legacy row aborts the
-        // whole migration (the transaction rolls back) before one byte of the
-        // new tables is written.
-        const problems: Array<string> = []
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      // ---- Fail-closed pre-checks: any unmappable legacy row aborts the
+      // whole migration (the transaction rolls back) before one byte of the
+      // new tables is written.
+      const problems: Array<string> = []
 
-        // A channel observed under more than one guild has ambiguous ownership;
-        // the migration never guesses which guild a policy belongs to.
-        const ambiguous = yield* unsafe<{
-          readonly connection_id: string
-          readonly channel_id: string
-          readonly guild_count: number
-        }>(`
+      // Channel overrides an operator explicitly recorded through the config
+      // CLI supersede the legacy rows for the same channel: the migration
+      // treats them as the recorded resolution of otherwise unmappable rows,
+      // leaves the legacy data unmoved, and never overwrites the recording.
+      // The snapshot is taken before any migration insert, and the insert
+      // guards below check it — the migration's own rows must still merge.
+      yield* unsafe(`
+        CREATE TEMP TABLE IF NOT EXISTS migration_recorded_channels (
+          connection_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          PRIMARY KEY (connection_id, channel_id)
+        )
+      `)
+      yield* unsafe(`DELETE FROM migration_recorded_channels`)
+      yield* unsafe(`
+        INSERT INTO migration_recorded_channels (connection_id, channel_id)
+        SELECT DISTINCT connection_id, channel_id FROM discord_guild_channels
+      `)
+      const recordedChannels = new Set(
+        (yield* unsafe<{ readonly connection_id: string; readonly channel_id: string }>(`
+        SELECT connection_id, channel_id FROM migration_recorded_channels
+      `)).map((row) => `${row.connection_id}:${row.channel_id}`),
+      )
+      const isRecorded = (row: { readonly connection_id: string; readonly channel_id: string }) =>
+        recordedChannels.has(`${row.connection_id}:${row.channel_id}`)
+
+      // A channel observed under more than one guild has ambiguous ownership;
+      // the migration never guesses which guild a policy belongs to. A
+      // recorded override for the channel resolves the ambiguity by naming
+      // the guild the operator chose.
+      const ambiguous = yield* unsafe<{
+        readonly connection_id: string
+        readonly channel_id: string
+        readonly guild_count: number
+      }>(`
         SELECT connection_id, channel_id, COUNT(DISTINCT guild_id) AS guild_count
         FROM (${bindingLocations}) b
         GROUP BY b.connection_id, b.channel_id
         HAVING COUNT(DISTINCT guild_id) > 1
       `)
-        for (const row of ambiguous) {
-          problems.push(
-            `channel ${row.channel_id} on connection ${row.connection_id} is bound under ${row.guild_count} guilds`,
-          )
-        }
+      for (const row of ambiguous) {
+        if (isRecorded(row)) continue
+        problems.push(
+          `channel ${row.channel_id} on connection ${row.connection_id} is bound under ${row.guild_count} guilds`,
+        )
+      }
 
-        // Legacy channel rows whose guild is not observable from persisted
-        // bindings cannot be placed; dropping them would silently discard a
-        // restrictive policy, so the operator decides instead.
-        const unmappedRows = (source: string, table: string) =>
-          unsafe<{ readonly connection_id: string; readonly channel_id: string }>(`
-        SELECT ${table}.connection_id AS connection_id, ${table}.channel_id AS channel_id
+      // Legacy channel rows whose guild is not observable from persisted
+      // bindings cannot be placed; dropping them would silently discard a
+      // restrictive policy, so the operator decides instead. A recorded
+      // override for the channel is that decision.
+      const unmappedRows = (source: string, table: string, modeExpression: string) =>
+        unsafe<{
+          readonly connection_id: string
+          readonly channel_id: string
+          readonly mode: string
+        }>(`
+        SELECT ${table}.connection_id AS connection_id, ${table}.channel_id AS channel_id, ${modeExpression} AS mode
         FROM ${table}
         WHERE NOT EXISTS (
           SELECT 1 FROM (${bindingLocations}) b
           WHERE b.connection_id = ${table}.connection_id AND b.channel_id = ${table}.channel_id
         )
       `).pipe(
-            Effect.map((rows) =>
-              rows.map(
+          Effect.map((rows) =>
+            rows
+              .filter((row) => !isRecorded(row))
+              .map(
                 (row) =>
-                  `channel ${row.channel_id} on connection ${row.connection_id} (${source}) has no observable guild`,
+                  `channel ${row.channel_id} on connection ${row.connection_id} (${source}, ${row.mode}) has no observable guild`,
               ),
-            ),
-          )
-        problems.push(
-          ...(yield* unmappedRows(
-            'channel invocation policy',
-            'platform_channel_invocation_policies',
-          )),
-          ...(yield* unmappedRows('system channel', 'platform_system_channels')),
+          ),
         )
+      problems.push(
+        ...(yield* unmappedRows(
+          'channel invocation policy',
+          'platform_channel_invocation_policies',
+          'mode',
+        )),
+        ...(yield* unmappedRows(
+          'system channel',
+          'platform_system_channels',
+          "'reply-in-channel'",
+        )),
+      )
 
-        // Channel access policies gate whole channels, which the guild model
-        // (enabled guilds with per-channel overrides) cannot express; mapping
-        // or dropping them would change who reaches Friday.
-        const channelPolicyConnections = yield* unsafe<{ readonly connection_id: string }>(`
+      // Channel access policies gate whole channels, which the guild model
+      // (enabled guilds with per-channel overrides) cannot express; mapping
+      // or dropping them would change who reaches Friday.
+      const channelPolicyConnections = yield* unsafe<{ readonly connection_id: string }>(`
         SELECT DISTINCT connection_id FROM platform_access_policies WHERE subject_type = 'channel'
         UNION
         SELECT DISTINCT connection_id FROM platform_access_subjects WHERE subject_type = 'channel'
       `)
-        for (const row of channelPolicyConnections) {
-          problems.push(
-            `connection ${row.connection_id} has channel access policies, which have no per-channel equivalent in the guild model`,
-          )
-        }
+      for (const row of channelPolicyConnections) {
+        problems.push(
+          `connection ${row.connection_id} has channel access policies, which have no per-channel equivalent in the guild model; resolve these legacy rows directly`,
+        )
+      }
 
-        if (problems.length > 0) {
-          return yield* new LegacyDiscordConfigMigrationError({
-            detail: capList(problems),
-          })
-        }
+      if (problems.length > 0) {
+        return yield* new LegacyDiscordConfigMigrationError({
+          detail: capList(problems),
+        })
+      }
 
-        // Discovered guilds: explicit guild access subjects plus guilds observed
-        // in bindings. Enabled flags follow the old guild access policy; invocation
-        // defaults carry over from the connection default they effectively were.
-        yield* unsafe(`
+      // Discovered guilds: explicit guild access subjects plus guilds observed
+      // in bindings. Enabled flags follow the old guild access policy; invocation
+      // defaults carry over from the connection default they effectively were.
+      yield* unsafe(`
         INSERT OR IGNORE INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
         SELECT
           g.connection_id,
@@ -531,46 +592,57 @@ const migrateConnectionScopedDiscordConfig = Effect.fn('migrateConnectionScopedD
         LEFT JOIN platform_invocation_defaults idf ON idf.connection_id = g.connection_id
       `)
 
-        // Channel invocation overrides migrate under the channel's observed
-        // guild. The upsert only touches the invocation column so rows created
-        // by a later statement keep their other overrides.
-        yield* unsafe(`
+      // Channel invocation overrides migrate under the channel's observed
+      // guild, except where the operator already recorded an override for the
+      // channel: the recording supersedes the legacy row. The upsert only
+      // touches the invocation column so rows created by a later statement
+      // keep their other overrides.
+      yield* unsafe(`
         INSERT INTO discord_guild_channels
           (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
         SELECT b.connection_id, b.guild_id, cip.channel_id, cip.mode, NULL, NULL
         FROM platform_channel_invocation_policies cip
         JOIN (${bindingLocations}) b
           ON b.connection_id = cip.connection_id AND b.channel_id = cip.channel_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM migration_recorded_channels rec
+          WHERE rec.connection_id = cip.connection_id AND rec.channel_id = cip.channel_id
+        )
         GROUP BY b.connection_id, b.guild_id, cip.channel_id
         ON CONFLICT (connection_id, guild_id, channel_id) DO UPDATE SET
           invocation_mode = excluded.invocation_mode
       `)
 
-        // Former system-management channels become reply-in-channel overrides,
-        // merged into any override row the same channel already carries (a
-        // channel that is both an invocation override and a system channel
-        // keeps both semantics).
-        yield* unsafe(`
+      // Former system-management channels become reply-in-channel overrides,
+      // merged into any override row the same channel already carries (a
+      // channel that is both an invocation override and a system channel
+      // keeps both semantics). A recorded override for the channel supersedes
+      // the legacy row, as above.
+      yield* unsafe(`
         INSERT INTO discord_guild_channels
           (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
         SELECT b.connection_id, b.guild_id, sc.channel_id, NULL, NULL, 'reply-in-channel'
         FROM platform_system_channels sc
         JOIN (${bindingLocations}) b
           ON b.connection_id = sc.connection_id AND b.channel_id = sc.channel_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM migration_recorded_channels rec
+          WHERE rec.connection_id = sc.connection_id AND rec.channel_id = sc.channel_id
+        )
         GROUP BY b.connection_id, b.guild_id, sc.channel_id
         ON CONFLICT (connection_id, guild_id, channel_id) DO UPDATE SET
           reply_mode = excluded.reply_mode
       `)
 
-        yield* unsafe(`DROP TABLE platform_system_channels`)
-        yield* unsafe(`DROP TABLE platform_channel_invocation_policies`)
-        yield* unsafe(`DROP TABLE platform_invocation_defaults`)
-        // Guild access policies are now expressed by each guild's enabled flag;
-        // channel access policies were refused above. Only user and workspace
-        // policies remain meaningful.
-        yield* unsafe(`DELETE FROM platform_access_subjects WHERE subject_type = 'guild'`)
-        yield* unsafe(`DELETE FROM platform_access_policies WHERE subject_type = 'guild'`)
-      }),
-    )
-  },
-)
+      yield* unsafe(`DROP TABLE platform_system_channels`)
+      yield* unsafe(`DROP TABLE platform_channel_invocation_policies`)
+      yield* unsafe(`DROP TABLE platform_invocation_defaults`)
+      yield* unsafe(`DROP TABLE migration_recorded_channels`)
+      // Guild access policies are now expressed by each guild's enabled flag;
+      // channel access policies were refused above. Only user and workspace
+      // policies remain meaningful.
+      yield* unsafe(`DELETE FROM platform_access_subjects WHERE subject_type = 'guild'`)
+      yield* unsafe(`DELETE FROM platform_access_policies WHERE subject_type = 'guild'`)
+    }),
+  )
+})

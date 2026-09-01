@@ -118,8 +118,24 @@ and system channels at the connection level. The migration
   which have no per-channel equivalent in the guild model — the migration
   aborts, rolls back, and Friday refuses to start. The error lists every
   offending row and the legacy tables are left untouched, so no policy is
-  silently dropped or widened; resolve the reported rows (or record the
-  equivalent guild configuration with the CLI) and restart.
+  silently dropped or widened.
+
+  Recovery has two paths, and both work while the refusal is in place:
+
+  - **Record the equivalent guild configuration**: the guild configuration CLI
+    commands keep working while Friday refuses to start, so the operator can
+    `friday config discord guild enable <connection-id> <guild-id>` and
+    `friday config discord guild channel set <connection-id> <guild-id>
+<channel-id> ...` for each listed channel. A recorded channel override
+    supersedes the legacy rows for that channel: it resolves unobservable-guild
+    and ambiguous-guild refusals (recording the override explicitly names the
+    owning guild), the migration never overwrites or duplicates it, and it
+    stands exactly as recorded after the migration succeeds.
+  - **Resolve the legacy rows directly**: rows with no guild-model equivalent —
+    the channel access policies — have no recording path; edit or remove those
+    legacy rows by hand (the tables are intact for exactly this purpose).
+
+  Once the listed rows are resolved, restart Friday and the migration re-runs.
 
 Friday checks all three legacy tables before migration. If only part of the
 legacy schema exists, startup fails closed and names the present and missing

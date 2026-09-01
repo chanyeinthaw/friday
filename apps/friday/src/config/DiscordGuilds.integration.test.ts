@@ -25,6 +25,7 @@ const guilds = DiscordGuildsLive.pipe(Layer.provide(database))
 const decodeGuildId = Schema.decodeSync(DiscordGuildId)
 const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
 const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
+type ConnectionId = typeof PlatformConnectionId.Type
 const decodeInvocationMode = Schema.decodeSync(InvocationMode)
 const decodeMode = (mode: InvocationModeType): InvocationModeType => decodeInvocationMode(mode)
 const isDiscordGuildError = Schema.is(DiscordGuildError)
@@ -139,20 +140,53 @@ test('manages guild enablement, defaults, and channel overrides', async () =>
     }).pipe(Effect.provide(Layer.merge(guilds, database))),
   ))
 
-test('rejects guild writes for unknown and non-Discord connections', async () =>
+test('every guild mutation rejects unknown and non-Discord connections with typed errors', async () =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* seed
       const store = yield* DiscordGuilds
       const guildId = decodeGuildId('111111111111111111')
+      const channelId = decodeChannelId('222222222222222222')
 
-      const unknown = yield* Effect.flip(store.enableGuild(decodeConnectionId('missing'), guildId))
-      assert(isDiscordGuildError(unknown))
-      assert.strictEqual(unknown.operation, 'unknown-connection')
+      // One entry per public mutation; arguments are otherwise irrelevant
+      // because the connection guard must fire before any write.
+      const mutations = [
+        ['enableGuild', (c: ConnectionId) => store.enableGuild(c, guildId)],
+        ['disableGuild', (c: ConnectionId) => store.disableGuild(c, guildId)],
+        ['removeGuild', (c: ConnectionId) => store.removeGuild(c, guildId)],
+        [
+          'setGuildInvocation',
+          (c: ConnectionId) => store.setGuildInvocation(c, guildId, decodeMode('mention-only')),
+        ],
+        [
+          'setGuildUsers',
+          (c: ConnectionId) => store.setGuildUsers(c, guildId, { mode: 'all', ids: [] }),
+        ],
+        [
+          'setChannel',
+          (c: ConnectionId) =>
+            store.setChannel(c, guildId, channelId, { replyMode: 'reply-in-channel' }),
+        ],
+        ['resetChannel', (c: ConnectionId) => store.resetChannel(c, guildId, channelId)],
+      ] as const
+      const scenarios = [
+        ['unknown connection', decodeConnectionId('missing'), 'unknown-connection'],
+        ['non-Discord connection', decodeConnectionId('chat'), 'non-discord-connection'],
+      ] as const
 
-      const nonDiscord = yield* Effect.flip(store.enableGuild(decodeConnectionId('chat'), guildId))
-      assert(isDiscordGuildError(nonDiscord))
-      assert.strictEqual(nonDiscord.operation, 'non-discord-connection')
+      for (const [scenario, connectionId, expectedOperation] of scenarios) {
+        for (const [name, mutate] of mutations) {
+          const error = yield* Effect.flip(mutate(connectionId))
+          assert(
+            isDiscordGuildError(error),
+            `${name} must fail with a typed DiscordGuildError for a ${scenario}`,
+          )
+          assert.strictEqual(error.operation, expectedOperation, `${name} for a ${scenario}`)
+        }
+      }
+
+      // The rejections fired before any write touched the real connection.
+      assert.deepStrictEqual(yield* store.listGuilds(decodeConnectionId('discord')), [])
     }).pipe(Effect.provide(Layer.merge(guilds, database))),
   ))
 

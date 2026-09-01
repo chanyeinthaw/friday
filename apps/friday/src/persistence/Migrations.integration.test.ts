@@ -10,8 +10,18 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 import { LegacyDiscordConfigMigrationError, runMigrations } from './Migrations.ts'
+import {
+  DiscordGuildChannelId,
+  DiscordGuildId,
+  DiscordGuilds,
+  DiscordGuildsLive,
+} from '../config/DiscordGuilds.ts'
+import { PlatformConnectionId } from '@friday/contracts/conversation'
 
 const isLegacyMigrationError = Schema.is(LegacyDiscordConfigMigrationError)
+const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
+const decodeGuildId = Schema.decodeSync(DiscordGuildId)
+const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
 
 const database = SqliteClient.layer({ filename: ':memory:' })
 
@@ -284,6 +294,113 @@ test('refuses when one channel is bound under more than one guild', async () =>
         SELECT * FROM discord_guild_channels
       `
       assert.deepStrictEqual(migrated, [])
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('a recorded guild channel override resolves an unobservable-guild refusal', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      const sql = yield* SqlClient.SqlClient
+      // A legacy policy whose guild cannot be observed refuses startup.
+      yield* sql`
+        INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)
+        VALUES ('discord', '999999999999999899', 'all-messages')
+      `
+      const refused = yield* Effect.exit(runMigrations())
+      const error = Exit.findErrorOption(refused)
+      assert(Exit.isFailure(refused) && Option.isSome(error))
+      assert(isLegacyMigrationError(error.value))
+
+      // The documented recovery: the config CLI's guild commands still work
+      // while the refusal is in place, so the operator records the equivalent
+      // guild configuration through the same live service layer the CLI
+      // builds.
+      yield* Effect.gen(function* () {
+        const store = yield* DiscordGuilds
+        const connectionId = decodeConnectionId('discord')
+        const guildId = decodeGuildId('111111111111111111')
+        assert.strictEqual(yield* store.enableGuild(connectionId, guildId), 'enabled')
+        assert.strictEqual(
+          yield* store.setChannel(connectionId, guildId, decodeChannelId('999999999999999899'), {
+            invocationMode: 'all-messages',
+          }),
+          'updated',
+        )
+
+        // The migration re-run recognizes the recorded override as the
+        // resolution: it succeeds, keeps the recording exactly as recorded, and
+        // clears the legacy tables.
+        yield* runMigrations()
+        const recorded = yield* sql<Record<string, unknown>>`
+          SELECT guild_id, invocation_mode, users_mode, reply_mode
+          FROM discord_guild_channels
+          WHERE channel_id = '999999999999999899'
+        `
+        assert.deepStrictEqual(recorded, [
+          {
+            guild_id: '111111111111111111',
+            invocation_mode: 'all-messages',
+            users_mode: null,
+            reply_mode: null,
+          },
+        ])
+        assert.deepStrictEqual(yield* legacyTableNames, [])
+      }).pipe(Effect.provide(DiscordGuildsLive))
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('a recorded guild channel override resolves an ambiguous-guild refusal and supersedes the legacy mode', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      const sql = yield* SqlClient.SqlClient
+      // Channel 901 carries a mention-only invocation policy and is bound
+      // under a second guild, making its placement ambiguous.
+      yield* sql`
+        INSERT INTO threads (thread_id, audience, status, payload_json, created_at, updated_at)
+        VALUES (
+          'thread-4', 'user', 'active',
+          '{"conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"999999999999999901","conversationId":"discord:222222222222222222:999999999999999901"}}',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `
+      const refused = yield* Effect.exit(runMigrations())
+      assert(Exit.isFailure(refused))
+
+      // The operator resolves the ambiguity by explicitly choosing the owning
+      // guild through the config CLI, deliberately recording a different
+      // invocation mode than the legacy row carried.
+      yield* Effect.gen(function* () {
+        const store = yield* DiscordGuilds
+        const connectionId = decodeConnectionId('discord')
+        const guildId = decodeGuildId('111111111111111111')
+        assert.strictEqual(yield* store.enableGuild(connectionId, guildId), 'enabled')
+        assert.strictEqual(
+          yield* store.setChannel(connectionId, guildId, decodeChannelId('999999999999999901'), {
+            invocationMode: 'all-messages',
+          }),
+          'updated',
+        )
+
+        yield* runMigrations()
+        // The recorded override stands exactly as recorded; the ambiguous
+        // legacy row is not migrated on top of it and not duplicated elsewhere.
+        const overrides = yield* sql<Record<string, unknown>>`
+          SELECT guild_id, invocation_mode, reply_mode
+          FROM discord_guild_channels
+          WHERE channel_id = '999999999999999901'
+          ORDER BY guild_id
+        `
+        assert.deepStrictEqual(overrides, [
+          {
+            guild_id: '111111111111111111',
+            invocation_mode: 'all-messages',
+            reply_mode: null,
+          },
+        ])
+        assert.deepStrictEqual(yield* legacyTableNames, [])
+      }).pipe(Effect.provide(DiscordGuildsLive))
     }).pipe(Effect.provide(database)),
   ))
 
