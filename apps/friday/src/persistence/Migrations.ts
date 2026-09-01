@@ -127,39 +127,55 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   }
 
   yield* sql`
-    CREATE TABLE IF NOT EXISTS platform_system_channels (
+    CREATE TABLE IF NOT EXISTS discord_guilds (
       connection_id TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (connection_id, channel_id),
-      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+      guild_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      invocation_mode TEXT NOT NULL CHECK (invocation_mode IN ('mention-only', 'all-messages')),
+      users_mode TEXT CHECK (users_mode IN ('all', 'allow', 'deny')),
+      PRIMARY KEY (connection_id, guild_id),
+      FOREIGN KEY (connection_id) REFERENCES discord_connections(connection_id) ON DELETE CASCADE
     )
   `
 
   yield* sql`
-    CREATE TABLE IF NOT EXISTS platform_invocation_defaults (
-      connection_id TEXT PRIMARY KEY,
-      mode TEXT NOT NULL CHECK (mode IN ('mention-only', 'all-messages')),
-      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
-    )
-  `
-
-  yield* sql`
-    INSERT OR IGNORE INTO platform_invocation_defaults (connection_id, mode)
-    SELECT connection_id, 'all-messages'
-    FROM discord_connections
-  `
-
-  yield* sql`
-    CREATE TABLE IF NOT EXISTS platform_channel_invocation_policies (
+    CREATE TABLE IF NOT EXISTS discord_guild_users (
       connection_id TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      mode TEXT NOT NULL CHECK (mode IN ('mention-only', 'all-messages')),
-      PRIMARY KEY (connection_id, channel_id),
-      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      PRIMARY KEY (connection_id, guild_id, user_id),
+      FOREIGN KEY (connection_id, guild_id)
+        REFERENCES discord_guilds(connection_id, guild_id) ON DELETE CASCADE
     )
   `
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS discord_guild_channels (
+      connection_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      invocation_mode TEXT CHECK (invocation_mode IN ('mention-only', 'all-messages')),
+      users_mode TEXT CHECK (users_mode IN ('all', 'allow', 'deny')),
+      reply_mode TEXT CHECK (reply_mode IN ('reply-in-thread', 'reply-in-channel')),
+      PRIMARY KEY (connection_id, guild_id, channel_id),
+      FOREIGN KEY (connection_id, guild_id)
+        REFERENCES discord_guilds(connection_id, guild_id) ON DELETE CASCADE
+    )
+  `
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS discord_guild_channel_users (
+      connection_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      PRIMARY KEY (connection_id, guild_id, channel_id, user_id),
+      FOREIGN KEY (connection_id, guild_id, channel_id)
+        REFERENCES discord_guild_channels(connection_id, guild_id, channel_id) ON DELETE CASCADE
+    )
+  `
+
+  yield* migrateConnectionScopedDiscordConfig()
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS discord_mention_roles (
@@ -173,7 +189,7 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   yield* sql`
     CREATE TABLE IF NOT EXISTS platform_access_policies (
       connection_id TEXT NOT NULL,
-      subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'channel', 'guild', 'workspace')),
+      subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace')),
       mode TEXT NOT NULL CHECK (mode IN ('all', 'allow', 'deny')),
       PRIMARY KEY (connection_id, subject_type),
       FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
@@ -309,3 +325,126 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
     ON activities (turn_id, sequence)
   `
 })
+
+/** Parses the guild segment of a Discord conversation id (`discord:{guild}:{channel}[:{thread}]`). */
+const discordGuildFromConversationId = (column: string) =>
+  `substr(substr(${column}, 9), 1, instr(substr(${column}, 9), ':') - 1)`
+
+/**
+ * One-time migration of the pre-guild Discord configuration. Connection-scoped
+ * invocation defaults, channel invocation policies, and system channels are
+ * replaced by guild-scoped configuration, so every migrated row needs the guild
+ * that owns its channel. Guild IDs are only taken from real data — existing
+ * guild access subjects and the guild segment of persisted conversation
+ * bindings — and rows whose guild cannot be resolved are dropped instead of
+ * guessed. Connection-level channel allow/deny policies have no equivalent in
+ * the guild model and are dropped with the old tables.
+ */
+const migrateConnectionScopedDiscordConfig = Effect.fn('migrateConnectionScopedDiscordConfig')(
+  function* () {
+    const sql = yield* SqlClient.SqlClient
+    const legacyTables = yield* sql<{ readonly name: string }>`
+    SELECT name FROM sqlite_master
+    WHERE type = 'table' AND name = 'platform_invocation_defaults'
+  `
+    if (legacyTables.length === 0) return
+
+    const conversationIdExpression =
+      "json_extract(t.payload_json, '$.conversationBinding.conversationId')"
+    const guildExpression = discordGuildFromConversationId(conversationIdExpression)
+    // (connection_id, guild_id, channel_id) locations observed in persisted bindings.
+    const bindingLocations = `
+    SELECT DISTINCT
+      pc.connection_id AS connection_id,
+      ${guildExpression} AS guild_id,
+      json_extract(t.payload_json, '$.conversationBinding.channelId') AS channel_id
+    FROM threads t
+    JOIN platform_connections pc
+      ON pc.connection_id = json_extract(t.payload_json, '$.conversationBinding.connectionId')
+    WHERE pc.platform = 'discord'
+      AND ${conversationIdExpression} LIKE 'discord:%'
+      AND ${guildExpression} != ''
+  `
+    // The migration statements embed composed SQL fragments, so they run as raw
+    // queries; every fragment is static, with no external parameters.
+    const unsafe = <A extends object>(query: string) => sql.unsafe<A>(query)
+
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        // Discovered guilds: explicit guild access subjects plus guilds observed in
+        // bindings. Enabled flags follow the old guild access policy; invocation
+        // defaults carry over from the connection default they effectively were.
+        yield* unsafe(`
+        INSERT OR IGNORE INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
+        SELECT
+          g.connection_id,
+          g.guild_id,
+          CASE
+            WHEN gp.mode IS NULL THEN 1
+            WHEN gp.mode = 'all' THEN 1
+            WHEN gp.mode = 'allow' THEN gs.platform_subject_id IS NOT NULL
+            ELSE gs.platform_subject_id IS NULL
+          END,
+          COALESCE(idf.mode, 'mention-only'),
+          NULL
+        FROM (
+          SELECT pc.connection_id AS connection_id, ${guildExpression} AS guild_id
+          FROM threads t
+          JOIN platform_connections pc
+            ON pc.connection_id = json_extract(t.payload_json, '$.conversationBinding.connectionId')
+          WHERE pc.platform = 'discord'
+            AND ${conversationIdExpression} LIKE 'discord:%'
+            AND ${guildExpression} != ''
+          UNION
+          SELECT s.connection_id, s.platform_subject_id
+          FROM platform_access_subjects s
+          JOIN platform_connections pc ON pc.connection_id = s.connection_id
+          WHERE s.subject_type = 'guild' AND pc.platform = 'discord'
+        ) g
+        LEFT JOIN platform_access_policies gp
+          ON gp.connection_id = g.connection_id AND gp.subject_type = 'guild'
+        LEFT JOIN platform_access_subjects gs
+          ON gs.connection_id = g.connection_id
+          AND gs.subject_type = 'guild'
+          AND gs.platform_subject_id = g.guild_id
+        LEFT JOIN platform_invocation_defaults idf ON idf.connection_id = g.connection_id
+      `)
+
+        // Channel invocation overrides migrate only when the channel's guild is
+        // observable; otherwise they are dropped rather than guessed.
+        yield* unsafe(`
+        INSERT OR IGNORE INTO discord_guild_channels
+          (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
+        SELECT b.connection_id, MIN(b.guild_id), cip.channel_id, cip.mode, NULL, NULL
+        FROM platform_channel_invocation_policies cip
+        JOIN (${bindingLocations}) b
+          ON b.connection_id = cip.connection_id AND b.channel_id = cip.channel_id
+        GROUP BY b.connection_id, cip.channel_id
+      `)
+
+        // Former system-management channels become reply-in-channel overrides.
+        yield* unsafe(`
+        INSERT OR IGNORE INTO discord_guild_channels
+          (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
+        SELECT b.connection_id, MIN(b.guild_id), sc.channel_id, NULL, NULL, 'reply-in-channel'
+        FROM platform_system_channels sc
+        JOIN (${bindingLocations}) b
+          ON b.connection_id = sc.connection_id AND b.channel_id = sc.channel_id
+        GROUP BY b.connection_id, sc.channel_id
+      `)
+
+        yield* unsafe(`DROP TABLE platform_system_channels`)
+        yield* unsafe(`DROP TABLE platform_channel_invocation_policies`)
+        yield* unsafe(`DROP TABLE platform_invocation_defaults`)
+        // Guild and channel access policies have no equivalent subject rows in the
+        // guild model; only user and workspace policies remain meaningful.
+        yield* unsafe(
+          `DELETE FROM platform_access_subjects WHERE subject_type IN ('channel', 'guild')`,
+        )
+        yield* unsafe(
+          `DELETE FROM platform_access_policies WHERE subject_type IN ('channel', 'guild')`,
+        )
+      }),
+    )
+  },
+)

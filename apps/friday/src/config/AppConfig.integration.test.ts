@@ -63,33 +63,23 @@ const configured = Effect.gen(function* () {
   `
   yield* sql`
     INSERT INTO platform_access_policies (connection_id, subject_type, mode)
-    VALUES
-      ('discord-personal', 'user', 'all'),
-      ('discord-personal', 'channel', 'allow'),
-      ('discord-personal', 'guild', 'deny')
-  `
-  yield* sql`
-    INSERT INTO platform_access_subjects (connection_id, subject_type, platform_subject_id)
-    VALUES
-      ('discord-personal', 'channel', 'channel-1'),
-      ('discord-personal', 'guild', 'guild-1')
+    VALUES ('discord-personal', 'user', 'all')
   `
   yield* sql`
     INSERT INTO discord_mention_roles (connection_id, role_id)
     VALUES ('discord-personal', 'role-1')
   `
   yield* sql`
-    INSERT INTO platform_system_channels (connection_id, channel_id, created_at, updated_at)
-    VALUES ('discord-personal', 'system-channel', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    INSERT INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
+    VALUES ('discord-personal', '111111111111111111', 1, 'mention-only', NULL)
   `
   yield* sql`
-    UPDATE platform_invocation_defaults
-    SET mode = 'mention-only'
-    WHERE connection_id = 'discord-personal'
-  `
-  yield* sql`
-    INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)
-    VALUES ('discord-personal', 'channel-1', 'all-messages')
+    INSERT INTO discord_guild_channels (
+      connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode
+    ) VALUES (
+      'discord-personal', '111111111111111111', '222222222222222222', 'all-messages', NULL,
+      'reply-in-channel'
+    )
   `
   return yield* loadAppConfig({ environment: { DISCORD_BOT_TOKEN: 'discord-token' } })
 })
@@ -113,17 +103,24 @@ test('loads global agent configuration and enabled platform connections from SQL
       assert(discord !== undefined)
       assert.strictEqual(discord.connectionId, 'discord-personal')
       assert.strictEqual(discord.credentials.botToken, 'discord-token')
-      assert.deepStrictEqual(discord.access.users, { mode: 'all', ids: [] })
-      assert.deepStrictEqual(discord.access.channels, { mode: 'allow', ids: ['channel-1'] })
-      assert.deepStrictEqual(discord.access.guilds, { mode: 'deny', ids: ['guild-1'] })
+      assert.deepStrictEqual(discord.users, { mode: 'all', ids: [] })
       assert.deepStrictEqual(discord.mentionRoleIds, ['role-1'])
       assert.strictEqual(discord.respondToGlobalMentions, true)
       assert.strictEqual(discord.activityDescription, false)
-      assert.deepStrictEqual(discord.systemChannelIds, ['system-channel'])
-      assert.deepStrictEqual(discord.invocation, {
-        defaultMode: 'mention-only',
-        channels: [{ channelId: 'channel-1', mode: 'all-messages' }],
-      })
+      assert.deepStrictEqual(discord.guilds, [
+        {
+          guildId: '111111111111111111',
+          enabled: true,
+          invocation: { defaultMode: 'mention-only' },
+          channels: [
+            {
+              channelId: '222222222222222222',
+              invocationMode: 'all-messages',
+              replyMode: 'reply-in-channel',
+            },
+          ],
+        },
+      ])
     }).pipe(Effect.provide(database)),
   ))
 
@@ -276,20 +273,21 @@ test('reloads the complete configuration and bumps the snapshot version', async 
     Effect.gen(function* () {
       const config = yield* AppConfig
       const first = config.current()
-      assert.strictEqual(first.platforms.discord[0]?.systemChannelIds[0], 'system-channel')
+      assert.strictEqual(first.platforms.discord[0]?.guilds.length, 1)
 
       const sql = yield* SqlClient.SqlClient
       yield* sql`
-        INSERT INTO platform_system_channels (connection_id, channel_id, created_at, updated_at)
-        VALUES ('discord-personal', 'system-channel-2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
+        VALUES ('discord-personal', '333333333333333333', 0, 'all-messages', NULL)
       `
       const version = yield* config.reload
       assert.strictEqual(version, 2)
       const second = config.current()
-      assert.deepStrictEqual(second.platforms.discord[0]?.systemChannelIds, [
-        'system-channel',
-        'system-channel-2',
-      ])
+      assert.deepStrictEqual(
+        second.platforms.discord[0]?.guilds.map((guild) => guild.guildId),
+        ['111111111111111111', '333333333333333333'],
+      )
+      assert.strictEqual(second.platforms.discord[0]?.guilds[1]?.enabled, false)
       assert.strictEqual(second.agent.recentMessageCount, first.agent.recentMessageCount)
     }).pipe(Effect.provide(reloadable), Effect.provide(database)),
   ))
@@ -338,7 +336,7 @@ test('reload keeps startup Discord topology and admin allow-list pinned', async 
       assert(connection)
       assert.deepStrictEqual([...connection.mentionRoleIds], ['role-1'])
       assert.deepStrictEqual([...reloaded.admin.discordUserIds], [])
-      // Access policies stay reloadable.
-      assert.strictEqual(connection.access.users.mode, 'all')
+      // User permission policies stay reloadable.
+      assert.strictEqual(connection.users.mode, 'all')
     }).pipe(Effect.provide(reloadable), Effect.provide(database)),
   ))

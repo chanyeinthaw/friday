@@ -1,0 +1,255 @@
+/* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, anti-slop/no-unsafe-dictionary-type -- Bun executes the SQLite integration boundary; SQL rows are decoded or checked immediately. */
+
+import { test } from 'bun:test'
+import { strict as assert } from 'node:assert'
+import * as Effect from 'effect/Effect'
+import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
+
+import { runMigrations } from './Migrations.ts'
+
+const database = SqliteClient.layer({ filename: ':memory:' })
+
+/** Recreates the pre-guild schema pieces the migration consumes. */
+const seedLegacySchema = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    CREATE TABLE platform_connections (
+      connection_id TEXT PRIMARY KEY,
+      platform TEXT NOT NULL,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `
+  yield* sql`
+    CREATE TABLE discord_connections (
+      connection_id TEXT PRIMARY KEY,
+      application_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      bot_token_env TEXT NOT NULL,
+      respond_to_global_mentions INTEGER NOT NULL,
+      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+    )
+  `
+  yield* sql`
+    CREATE TABLE threads (
+      thread_id TEXT PRIMARY KEY,
+      audience TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT
+    )
+  `
+  yield* sql`
+    CREATE TABLE platform_access_policies (
+      connection_id TEXT NOT NULL,
+      subject_type TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      PRIMARY KEY (connection_id, subject_type)
+    )
+  `
+  yield* sql`
+    CREATE TABLE platform_access_subjects (
+      connection_id TEXT NOT NULL,
+      subject_type TEXT NOT NULL,
+      platform_subject_id TEXT NOT NULL,
+      PRIMARY KEY (connection_id, subject_type, platform_subject_id)
+    )
+  `
+  yield* sql`
+    CREATE TABLE platform_invocation_defaults (
+      connection_id TEXT PRIMARY KEY,
+      mode TEXT NOT NULL
+    )
+  `
+  yield* sql`
+    CREATE TABLE platform_channel_invocation_policies (
+      connection_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      PRIMARY KEY (connection_id, channel_id)
+    )
+  `
+  yield* sql`
+    CREATE TABLE platform_system_channels (
+      connection_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (connection_id, channel_id)
+    )
+  `
+  yield* sql`
+    INSERT INTO platform_connections (connection_id, platform, name, enabled, created_at, updated_at)
+    VALUES ('discord', 'discord', 'Discord', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `
+  yield* sql`
+    INSERT INTO discord_connections (connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions)
+    VALUES ('discord', 'application-1', 'public-key-1', 'DISCORD_BOT_TOKEN', 1)
+  `
+  // Guild allow policy: only these two guilds were accessible.
+  yield* sql`
+    INSERT INTO platform_access_policies (connection_id, subject_type, mode)
+    VALUES ('discord', 'guild', 'allow')
+  `
+  yield* sql`
+    INSERT INTO platform_access_subjects (connection_id, subject_type, platform_subject_id)
+    VALUES
+      ('discord', 'guild', '111111111111111111'),
+      ('discord', 'guild', '333333333333333333')
+  `
+  // Connection-wide invocation default and one channel override, plus a former
+  // system-management channel.
+  yield* sql`
+    INSERT INTO platform_invocation_defaults (connection_id, mode)
+    VALUES ('discord', 'all-messages')
+  `
+  yield* sql`
+    INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)
+    VALUES ('discord', '999999999999999901', 'mention-only')
+  `
+  yield* sql`
+    INSERT INTO platform_system_channels (connection_id, channel_id, created_at, updated_at)
+    VALUES ('discord', '999999999999999902', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `
+  // Bindings observe two guilds: 111 (allowed) via two channels, and 222
+  // (never allow-listed) via one channel.
+  yield* sql`
+    INSERT INTO threads (thread_id, audience, status, payload_json, created_at, updated_at)
+    VALUES
+      (
+        'thread-1', 'user', 'active',
+        '{"conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"999999999999999901","conversationId":"discord:111111111111111111:999999999999999901"}}',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'thread-2', 'user', 'active',
+        '{"conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"999999999999999902","conversationId":"discord:111111111111111111:999999999999999902"}}',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ),
+      (
+        'thread-3', 'user', 'active',
+        '{"conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"999999999999999903","conversationId":"discord:222222222222222222:999999999999999903"}}',
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+  `
+})
+
+const legacyTableNames = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const rows = yield* sql<{ readonly name: string }>`
+    SELECT name FROM sqlite_master
+    WHERE type = 'table'
+      AND name IN (
+        'platform_invocation_defaults',
+        'platform_channel_invocation_policies',
+        'platform_system_channels'
+      )
+    ORDER BY name
+  `
+  return rows.map((row) => row.name)
+})
+
+test('migrates connection-scoped Discord configuration into guild-scoped tables', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      yield* runMigrations()
+
+      const sql = yield* SqlClient.SqlClient
+      const guilds = yield* sql<Record<string, unknown>>`
+        SELECT guild_id, enabled, invocation_mode, users_mode
+        FROM discord_guilds ORDER BY guild_id
+      `
+      assert.deepStrictEqual(guilds, [
+        // Allow-listed subject: enabled, inheriting the connection invocation default.
+        {
+          guild_id: '111111111111111111',
+          enabled: 1,
+          invocation_mode: 'all-messages',
+          users_mode: null,
+        },
+        // Discovered only from bindings and never allow-listed: migrated disabled.
+        {
+          guild_id: '222222222222222222',
+          enabled: 0,
+          invocation_mode: 'all-messages',
+          users_mode: null,
+        },
+        // Explicit guild subject without bindings: enabled.
+        {
+          guild_id: '333333333333333333',
+          enabled: 1,
+          invocation_mode: 'all-messages',
+          users_mode: null,
+        },
+      ])
+
+      const channels = yield* sql<Record<string, unknown>>`
+        SELECT guild_id, channel_id, invocation_mode, users_mode, reply_mode
+        FROM discord_guild_channels ORDER BY channel_id
+      `
+      assert.deepStrictEqual(channels, [
+        // Channel invocation override migrates under its observed guild.
+        {
+          guild_id: '111111111111111111',
+          channel_id: '999999999999999901',
+          invocation_mode: 'mention-only',
+          users_mode: null,
+          reply_mode: null,
+        },
+        // Former system channel becomes a reply-in-channel override.
+        {
+          guild_id: '111111111111111111',
+          channel_id: '999999999999999902',
+          invocation_mode: null,
+          users_mode: null,
+          reply_mode: 'reply-in-channel',
+        },
+      ])
+
+      // Legacy tables are gone; the subject rows they superseded are cleaned up.
+      assert.deepStrictEqual(yield* legacyTableNames, [])
+      const leftoverSubjects = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM platform_access_subjects WHERE subject_type = 'guild'
+      `
+      assert.strictEqual(leftoverSubjects[0]?.count, 0)
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('drops channel rows whose guild cannot be observed instead of guessing', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)
+        VALUES ('discord', '999999999999999899', 'all-messages')
+      `
+      yield* runMigrations()
+
+      const orphan = yield* sql<Record<string, unknown>>`
+        SELECT * FROM discord_guild_channels WHERE channel_id = '999999999999999899'
+      `
+      assert.deepStrictEqual(orphan, [])
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('skips the migration when the legacy tables are absent', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      // Fresh database: runMigrations creates the current schema directly.
+      yield* runMigrations()
+      assert.deepStrictEqual(yield* legacyTableNames, [])
+      const sql = yield* SqlClient.SqlClient
+      const guilds = yield* sql<Record<string, unknown>>`SELECT * FROM discord_guilds`
+      assert.deepStrictEqual(guilds, [])
+      // Re-running stays a no-op.
+      yield* runMigrations()
+      assert.deepStrictEqual(yield* legacyTableNames, [])
+    }).pipe(Effect.provide(database)),
+  ))

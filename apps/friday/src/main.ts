@@ -22,14 +22,13 @@ import { FridayLive } from './Live.ts'
 import { withFridayLogging } from './logging/Live.ts'
 import { reloadApplicationConfig } from './config/ConfigReload.ts'
 import { sendControlRequest, serveControlSocket } from './control/ControlSocket.ts'
-import { InvocationPolicies, InvocationPoliciesLive } from './platforms/InvocationPolicies.ts'
+import { DiscordGuilds, DiscordGuildsLive } from './config/DiscordGuilds.ts'
 import {
   DiscordActivityDescriptions,
   DiscordActivityDescriptionsLive,
 } from './platforms/DiscordActivityDescriptions.ts'
 import { AppConfig } from './config/AppConfigLive.ts'
 import { DiscordAdmins, DiscordAdminsLive } from './config/DiscordAdmins.ts'
-import { SystemChannels, SystemChannelsLive } from './platforms/SystemChannels.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
@@ -52,13 +51,10 @@ const WorkspaceCleanupNotificationsConfiguredLive = WorkspaceCleanupNotification
   ),
 )
 
-const InvocationPoliciesConfiguredLive = InvocationPoliciesLive.pipe(
-  Layer.provide(FridaySqliteLive),
-)
 const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
-const SystemChannelsConfiguredLive = SystemChannelsLive.pipe(Layer.provide(FridaySqliteLive))
+const DiscordGuildsConfiguredLive = DiscordGuildsLive.pipe(Layer.provide(FridaySqliteLive))
 const DiscordAdminsConfiguredLive = DiscordAdminsLive.pipe(Layer.provide(FridaySqliteLive))
 
 const start = Effect.scoped(
@@ -104,25 +100,50 @@ const application = Effect.scoped(
           ),
           Effect.provide(DiscordActivityDescriptionsConfiguredLive),
         ),
-      setPlatformSystemChannel: (action, enabled) =>
-        SystemChannels.pipe(
-          Effect.flatMap((channels) =>
-            enabled
-              ? channels.set(action.connectionId, action.channelId)
-              : channels.reset(action.connectionId, action.channelId),
-          ),
-          Effect.provide(SystemChannelsConfiguredLive),
+      listDiscordConnections: () =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.listConnections()),
+          Effect.provide(DiscordGuildsConfiguredLive),
         ),
-      setPlatformInvocation: (action) =>
-        InvocationPolicies.pipe(
-          Effect.flatMap((policies) =>
-            policies.setChannelMode({
-              connectionId: action.connectionId,
-              channelId: action.channelId,
-              mode: action.mode,
-            }),
-          ),
-          Effect.provide(InvocationPoliciesConfiguredLive),
+      listDiscordGuilds: (connectionId) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.listGuilds(connectionId)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      enableDiscordGuild: (connectionId, guildId) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.enableGuild(connectionId, guildId)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      disableDiscordGuild: (connectionId, guildId) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.disableGuild(connectionId, guildId)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      removeDiscordGuild: (connectionId, guildId) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.removeGuild(connectionId, guildId)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      setDiscordGuildInvocation: (connectionId, guildId, mode) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.setGuildInvocation(connectionId, guildId, mode)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      setDiscordGuildUsers: (connectionId, guildId, policy) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.setGuildUsers(connectionId, guildId, policy)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      setDiscordGuildChannel: (connectionId, guildId, channelId, patch) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.setChannel(connectionId, guildId, channelId, patch)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      resetDiscordGuildChannel: (connectionId, guildId, channelId) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.resetChannel(connectionId, guildId, channelId)),
+          Effect.provide(DiscordGuildsConfiguredLive),
         ),
       addDiscordAdmin: (userId) =>
         DiscordAdmins.pipe(

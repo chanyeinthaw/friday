@@ -6,9 +6,8 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { DiscordActivityDescriptions } from '../DiscordActivityDescriptions.ts'
-import { effectiveInvocationMode, shouldInvoke } from '../InvocationPolicies.ts'
 import { PlatformIngestion } from '../PlatformIngestion.ts'
-import { isAllowedByAccess, isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
+import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import { AppConfig } from '../../config/AppConfigLive.ts'
 import { findDiscordConnection } from '../../config/AppConfig.ts'
 import { reloadApplicationConfig } from '../../config/ConfigReload.ts'
@@ -17,6 +16,7 @@ import { ThreadPersistence } from '../../conversation/ThreadPersistence.ts'
 import { ThreadRuntimePool } from '../../conversation/ThreadRuntimePool.ts'
 import { harnessReloadRefused } from '../../conversation/ThreadRuntime.ts'
 import { ChatSdkCallbackError, ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
+import type { InvocationMode } from '../../config/AppConfig.ts'
 import { PlatformRegistry } from '../PlatformRegistry.ts'
 import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
@@ -26,8 +26,9 @@ import {
   makeDiscordAgentActivity,
 } from './DiscordAgentActivity.ts'
 import {
-  makeDiscordInvocationChannelSelector,
-  makeDiscordLocationGate,
+  replyInChannelChannelIds,
+  resolveDiscordChannelPolicy,
+  shouldInvoke,
   type DiscordConnectionPolicies,
   type DiscordPolicyProvider,
 } from './DiscordChannelAccess.ts'
@@ -52,14 +53,7 @@ import {
   harnessReloadReply,
   harnessSubcommand,
 } from './DiscordHarnessCommand.ts'
-import {
-  FridayDiscordAdapter,
-  type FridayDiscordAdapterConfig,
-} from './DiscordSystemChannelAdapter.ts'
-import {
-  isDiscordSystemChannel,
-  projectDiscordSystemChannelMessage,
-} from './DiscordSystemChannel.ts'
+import { FridayDiscordAdapter, type FridayDiscordAdapterConfig } from './FridayDiscordAdapter.ts'
 import { searchDiscordMessages } from './DiscordMessageSearch.ts'
 import { withDiscordThreadActivityTitle } from './DiscordThreadActivityTitle.ts'
 import {
@@ -111,23 +105,17 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           Option.map(
             findDiscordConnection(config.current(), discordConfig.connectionId),
             (connection): DiscordConnectionPolicies => ({
-              guilds: connection.access.guilds,
-              channels: connection.access.channels,
-              users: connection.access.users,
-              invocation: connection.invocation,
-              systemChannelIds: connection.systemChannelIds,
+              users: connection.users,
+              guilds: connection.guilds,
             }),
           )
         const currentPolicies = (): DiscordConnectionPolicies =>
           Option.getOrElse(policies(), (): DiscordConnectionPolicies => ({
-            guilds: { mode: 'deny', ids: [] },
-            channels: { mode: 'deny', ids: [] },
             users: { mode: 'deny', ids: [] },
-            invocation: { defaultMode: 'mention-only', channels: [] },
-            systemChannelIds: [],
+            guilds: [],
           }))
-        const invocationChannels = makeDiscordInvocationChannelSelector(policies)
-        const isAllowedLocation = makeDiscordLocationGate(policies)
+        const resolveChannelPolicy = (guildId: string, channelId: string) =>
+          Option.getOrUndefined(resolveDiscordChannelPolicy(currentPolicies(), guildId, channelId))
         const discord = yield* Effect.try({
           try: () =>
             new FridayDiscordAdapter({
@@ -135,13 +123,11 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               applicationId: String(discordConfig.credentials.applicationId),
               publicKey: String(discordConfig.credentials.publicKey),
               mentionRoleIds: [...discordConfig.mentionRoleIds],
-              // Friday owns invocation and access policy through the snapshot.
-              respondToChannelIds: invocationChannels.channels,
-              respondToGlobalMentions: true,
-              systemChannelIds: () => currentPolicies().systemChannelIds,
-              // The adapter must ignore unconfigured guilds/channels before it
-              // creates any Discord thread on Friday's behalf.
-              isAllowedLocation,
+              respondToGlobalMentions: discordConfig.respondToGlobalMentions,
+              // Friday owns invocation, reply mode, and permission policy
+              // through the snapshot; the adapter drops anything unresolved.
+              resolveChannelPolicy,
+              replyInChannelChannelIds: () => replyInChannelChannelIds(currentPolicies()),
               // The adapter flattens (or drops) subcommands in the command
               // path depending on arguments; match every produced path and
               // make the Friday and harness command replies ephemeral.
@@ -166,9 +152,6 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         })
         const bootstrapOptions: DiscordThreadBootstrapOptions = {
           discord,
-          // The bootstrap reads system channels live so reloaded system channels
-          // bind new threads to the parent channel instead of a child thread.
-          systemChannelIds: () => currentPolicies().systemChannelIds,
           model: () => config.current().models.primary,
         }
         const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
@@ -274,92 +257,62 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           connectionId: discordConfig.connectionId,
           chat,
           normalizeInboundMessage: (thread, message) =>
-            isDiscordSystemChannel(discord, thread, currentPolicies().systemChannelIds)
-              ? Effect.succeed(
-                  projectDiscordSystemChannelMessage(
-                    discordConfig.connectionId,
-                    discord,
-                    thread,
-                    message,
-                  ),
-                )
-              : projectDiscordMessage(discordConfig.connectionId, discord, thread, message),
+            projectDiscordMessage(discordConfig.connectionId, discord, thread, message),
           shouldHandleMessage: (kind, thread, message) =>
             Effect.try({
               try: () => {
+                // Thread ids encode the parent channel, so policy resolves from
+                // the parent channel while the message stays in its thread.
                 const location = discord.decodeThreadId(thread.id)
-                const policiesNow = currentPolicies()
-                const systemChannel =
-                  policiesNow.systemChannelIds.includes(location.channelId) &&
-                  (location.threadId === undefined || location.threadId === location.channelId)
-                return {
-                  accessAllowed:
-                    isAllowedByPolicy(location.guildId, policiesNow.guilds) &&
-                    isAllowedByAccess({
-                      userId: message.author.userId,
-                      channelId: location.channelId,
-                      userPolicy: policiesNow.users,
-                      channelPolicy: policiesNow.channels,
-                    }),
-                  location,
-                  systemChannel,
-                  mode: effectiveInvocationMode(policiesNow.invocation, location.channelId),
-                }
+                const resolved = resolveDiscordChannelPolicy(
+                  currentPolicies(),
+                  location.guildId,
+                  location.channelId,
+                )
+                return { location, resolved }
               },
               catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
             }).pipe(
-              Effect.flatMap(({ accessAllowed, location, systemChannel, mode }) =>
-                accessAllowed
-                  ? Effect.all({
-                      mode: Effect.succeed(mode),
-                      input: (systemChannel
-                        ? Effect.succeed(
-                            projectDiscordSystemChannelMessage(
-                              discordConfig.connectionId,
-                              discord,
-                              thread,
-                              message,
-                            ),
-                          )
-                        : projectDiscordMessage(
-                            discordConfig.connectionId,
-                            discord,
-                            thread,
-                            message,
-                          )
+              Effect.flatMap(
+                ({
+                  location,
+                  resolved,
+                }): Effect.Effect<
+                  {
+                    readonly allowed: boolean
+                    readonly location: typeof location
+                    readonly mode: InvocationMode | null
+                  },
+                  ChatSdkCallbackError
+                > =>
+                  Option.isSome(resolved) &&
+                  isAllowedByPolicy(message.author.userId, resolved.value.users)
+                    ? projectDiscordMessage(
+                        discordConfig.connectionId,
+                        discord,
+                        thread,
+                        message,
                       ).pipe(
                         Effect.flatMap((input) => ingestion.hasBinding(input)),
                         Effect.mapError(
                           (cause) =>
                             new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
                         ),
-                      ),
-                    }).pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
-                      ),
-                      Effect.map(({ mode, input: hasBinding }) => ({
-                        allowed: shouldInvoke({ kind, mode, hasBinding }),
+                        Effect.map((hasBinding) => ({
+                          allowed: shouldInvoke({
+                            kind,
+                            mode: resolved.value.invocationMode,
+                            hasBinding,
+                          }),
+                          location,
+                          mode: resolved.value.invocationMode,
+                        })),
+                      )
+                    : Effect.succeed({
+                        allowed: false,
                         location,
-                        mode,
-                      })),
-                    )
-                  : Effect.succeed({
-                      allowed: false,
-                      location,
-                      mode: null,
-                    }).pipe(
-                      Effect.map(
-                        (
-                          result,
-                        ): {
-                          readonly allowed: boolean
-                          readonly location: typeof location
-                          readonly mode: 'all-messages' | 'mention-only' | null
-                        } => result,
-                      ),
-                    ),
+                        mode: null,
+                      }),
               ),
               Effect.tap(({ allowed, location, mode }) =>
                 allowed
@@ -405,13 +358,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           Effect.annotateLogs({
             component: 'discord',
             connectionId: discordConfig.connectionId,
-            guildAccessMode: discordConfig.access.guilds.mode,
-            guildAccessCount: discordConfig.access.guilds.ids.length,
-            channelAccessMode: discordConfig.access.channels.mode,
-            channelAccessCount: discordConfig.access.channels.ids.length,
-            userAccessMode: discordConfig.access.users.mode,
-            userAccessCount: discordConfig.access.users.ids.length,
-            systemChannelCount: discordConfig.systemChannelIds.length,
+            userAccessMode: discordConfig.users.mode,
+            userAccessCount: discordConfig.users.ids.length,
+            guildCount: discordConfig.guilds.length,
+            enabledGuildCount: discordConfig.guilds.filter((guild) => guild.enabled).length,
           }),
         )
         return { connectionId: discordConfig.connectionId, platform }

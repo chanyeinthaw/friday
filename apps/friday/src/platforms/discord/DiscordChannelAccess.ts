@@ -1,17 +1,26 @@
 import * as Option from 'effect/Option'
 
-import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import type { AccessPolicy, DiscordPlatformConfig } from '../../config/AppConfig.ts'
-import { effectiveInvocationMode } from '../InvocationPolicies.ts'
+import { DefaultReplyMode } from '../../config/AppConfig.ts'
+import type { ChatSdkInboundKind } from '../chat-sdk/ChatSdkLifecycle.ts'
+
+/**
+ * Whether a message invokes Friday: mentions and direct messages always do;
+ * subscribed channel messages follow the resolved invocation mode, and messages
+ * in threads Friday already participates in continue the conversation.
+ */
+export const shouldInvoke = (input: {
+  readonly kind: ChatSdkInboundKind
+  readonly mode: 'mention-only' | 'all-messages'
+  readonly hasBinding: boolean
+}): boolean =>
+  input.kind === 'mention' ||
+  input.kind === 'direct-message' ||
+  input.mode === 'all-messages' ||
+  input.hasBinding
 
 /** Live view of a Discord connection's reloadable policy section. */
-export interface DiscordConnectionPolicies {
-  readonly guilds: AccessPolicy
-  readonly channels: AccessPolicy
-  readonly users: AccessPolicy
-  readonly invocation: DiscordPlatformConfig['invocation']
-  readonly systemChannelIds: ReadonlyArray<string>
-}
+export type DiscordConnectionPolicies = Pick<DiscordPlatformConfig, 'users' | 'guilds'>
 
 /**
  * Synchronous provider for the current reloadable policies of one Discord
@@ -20,56 +29,63 @@ export interface DiscordConnectionPolicies {
  */
 export type DiscordPolicyProvider = () => Option.Option<DiscordConnectionPolicies>
 
-const isAccessible = (channelId: string, policy: AccessPolicy): boolean => {
-  if (policy.mode === 'all') return true
-  if (policy.mode === 'allow') return policy.ids.includes(channelId)
-  return !policy.ids.includes(channelId)
-}
-
-export interface DiscordInvocationChannelSelector {
-  readonly channels: Array<string>
+/** Everything the message path needs to know about one Discord location. */
+export interface DiscordResolvedChannelPolicy {
+  /** Invocation mode resolved from the channel override or the guild default. */
+  readonly invocationMode: 'mention-only' | 'all-messages'
+  /** Reply behavior resolved from the channel override or the default. */
+  readonly replyMode: 'reply-in-thread' | 'reply-in-channel'
+  /**
+   * User permission resolved from the channel override, the guild default, or
+   * the connection-wide policy.
+   */
+  readonly users: AccessPolicy
 }
 
 /**
- * Location gate for the Discord adapter: a message location is allowed only when
- * both the guild and the (parent) channel pass their access policies. Guilds and
- * channels without a configured policy are treated as allowed, matching the
- * `AccessPolicy` semantics used by Friday's message handlers. Policies are read
- * from the provider on every check so reloads apply without touching Discord
- * resources; a missing connection snapshot denies everything.
+ * Resolves the effective policy for one Discord location. A guild that is
+ * absent from the configuration, or disabled, resolves to None: Friday takes no
+ * action there. Direct messages (`@me`) resolve against the connection-wide
+ * user policy only; they are always operational and always mention-invoked.
+ *
+ * Callers pass the parent channel for messages inside threads, so thread
+ * messages resolve their policy from the parent channel while remaining bound
+ * to the thread they already belong to.
  */
-export const makeDiscordLocationGate =
-  (policies: DiscordPolicyProvider): ((guildId: string, channelId: string) => boolean) =>
-  (guildId, channelId) =>
-    Option.match(policies(), {
-      onNone: () => false,
-      onSome: (current) =>
-        isAllowedByPolicy(guildId, current.guilds) &&
-        isAllowedByPolicy(channelId, current.channels),
+export const resolveDiscordChannelPolicy = (
+  connection: DiscordConnectionPolicies,
+  guildId: string,
+  channelId: string,
+): Option.Option<DiscordResolvedChannelPolicy> => {
+  if (guildId === '@me') {
+    return Option.some({
+      invocationMode: 'mention-only',
+      replyMode: DefaultReplyMode,
+      users: connection.users,
     })
+  }
+  const guild = connection.guilds.find((candidate) => candidate.guildId === guildId)
+  if (guild === undefined || !guild.enabled) return Option.none()
+  const channel = guild.channels.find((candidate) => candidate.channelId === channelId)
+  return Option.some({
+    invocationMode: channel?.invocationMode ?? guild.invocation.defaultMode,
+    replyMode: channel?.replyMode ?? DefaultReplyMode,
+    users: channel?.users ?? guild.users ?? connection.users,
+  })
+}
 
 /**
- * The Discord adapter only reads `length` and calls `includes(channelId)`.
- * Keep that stable adapter reference while the invocation and channel policies
- * are read live from the configuration snapshot on every check.
+ * Channel IDs configured to reply directly in the channel. Discord channel IDs
+ * are globally unique, so scanning the enabled guilds' explicit channel entries
+ * is unambiguous; only channel entries can override the reply mode.
  */
-export const makeDiscordInvocationChannelSelector = (
-  policies: DiscordPolicyProvider,
-): DiscordInvocationChannelSelector => ({
-  channels: new Proxy([], {
-    get: (_target, property) => {
-      if (property === 'length') return 1
-      if (property === 'includes') {
-        return (channelId: string): boolean =>
-          Option.match(policies(), {
-            onNone: () => false,
-            onSome: (current) => {
-              if (!isAccessible(channelId, current.channels)) return false
-              return effectiveInvocationMode(current.invocation, channelId) === 'all-messages'
-            },
-          })
-      }
-      return undefined
-    },
-  }),
-})
+export const replyInChannelChannelIds = (
+  connection: DiscordConnectionPolicies,
+): ReadonlyArray<string> =>
+  connection.guilds
+    .filter((guild) => guild.enabled)
+    .flatMap((guild) =>
+      guild.channels
+        .filter((channel) => channel.replyMode === 'reply-in-channel')
+        .map((channel) => channel.channelId),
+    )

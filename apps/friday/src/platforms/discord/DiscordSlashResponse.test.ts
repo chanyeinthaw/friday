@@ -10,7 +10,7 @@ import * as Effect from 'effect/Effect'
 import { Chat } from 'chat'
 
 import { FRIDAY_COMMAND_PATHS } from './DiscordSlashCommand.ts'
-import { FridayDiscordAdapter } from './DiscordSystemChannelAdapter.ts'
+import { FridayDiscordAdapter } from './FridayDiscordAdapter.ts'
 
 interface RecordedRequest {
   readonly kind: 'interaction' | 'channel'
@@ -35,7 +35,12 @@ class RecordingFridayDiscordAdapter extends FridayDiscordAdapter {
       publicKey: 'public-key',
       // The adapter drops unconfigured locations before Friday ever sees them;
       // the test dispatches a configured one.
-      isAllowedLocation: () => true,
+      resolveChannelPolicy: () => ({
+        invocationMode: 'mention-only',
+        replyMode: 'reply-in-thread',
+        users: { mode: 'all', ids: [] },
+      }),
+      replyInChannelChannelIds: () => [],
       // The same interactionFlags wiring DiscordLive installs for /friday.
       interactionFlags: (context) =>
         FRIDAY_COMMAND_PATHS.includes(context.command)

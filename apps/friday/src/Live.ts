@@ -18,7 +18,6 @@ import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
 import { DiscordActivityDescriptionsLive } from './platforms/DiscordActivityDescriptions.ts'
-import { InvocationPoliciesLive } from './platforms/InvocationPolicies.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
 import {
@@ -89,9 +88,6 @@ const ThreadRuntimesLive = Layer.effect(
 )
 
 const AppConfigConfiguredLive = AppConfigLive.pipe(Layer.provide(FridaySqliteLive))
-const InvocationPoliciesConfiguredLive = InvocationPoliciesLive.pipe(
-  Layer.provide(FridaySqliteLive),
-)
 const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
@@ -102,7 +98,6 @@ const CoreLive = Layer.mergeAll(
   BunCrypto.layer,
   BunFileSystem.layer,
   PlatformRegistryLive,
-  InvocationPoliciesConfiguredLive,
   DiscordActivityDescriptionsConfiguredLive,
   AppConfigConfiguredLive,
   SystemPromptTemplatesLive,
