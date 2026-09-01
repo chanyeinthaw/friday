@@ -9,7 +9,11 @@ import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { LegacyDiscordConfigMigrationError, runMigrations } from './Migrations.ts'
+import {
+  LegacyDiscordConfigMigrationError,
+  runMigrations,
+  runStructuralMigrations,
+} from './Migrations.ts'
 import {
   DiscordGuildChannelId,
   DiscordGuildId,
@@ -168,6 +172,109 @@ const legacyTableNames = Effect.gen(function* () {
   `
   return rows.map((row) => row.name)
 })
+
+test('migrates legacy cleanup state, reconciles duplicates, and reruns idempotently', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        CREATE TABLE threads (
+          thread_id TEXT PRIMARY KEY,
+          audience TEXT NOT NULL,
+          status TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          closed_at TEXT
+        )
+      `
+      yield* sql`
+        INSERT INTO threads (thread_id, audience, status, payload_json, created_at, updated_at)
+        VALUES ('cleanup-thread', 'user', 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `
+      yield* sql`
+        CREATE TABLE workspace_cleanup_proposals (
+          proposal_id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'stale')),
+          lifecycle_status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (lifecycle_status IN ('pending', 'applied', 'stale', 'failed')),
+          workspace_path TEXT NOT NULL,
+          estimated_bytes INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          applied_at TEXT,
+          summary TEXT NOT NULL,
+          FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
+        )
+      `
+      yield* sql`
+        INSERT INTO workspace_cleanup_proposals (
+          proposal_id, thread_id, status, lifecycle_status, workspace_path,
+          estimated_bytes, created_at, applied_at, summary
+        ) VALUES
+          ('cleanup-old', 'cleanup-thread', 'pending', 'pending', '/tmp/workspace', 1,
+            '2026-01-01T00:00:00Z', NULL, 'old'),
+          ('cleanup-new-z', 'cleanup-thread', 'pending', 'failed', '/tmp/workspace', 1,
+            '2026-01-02T00:00:00Z', NULL, 'new z'),
+          ('cleanup-new-a', 'cleanup-thread', 'pending', 'pending', '/tmp/workspace', 1,
+            '2026-01-02T00:00:00Z', NULL, 'new a')
+      `
+      yield* sql`
+        CREATE TABLE workspace_cleanup_resources (
+          proposal_id TEXT NOT NULL,
+          worktree_path TEXT NOT NULL,
+          branch TEXT NOT NULL,
+          head TEXT NOT NULL,
+          common_directory TEXT NOT NULL,
+          status_porcelain TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          removal_status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (removal_status IN ('pending', 'removed')),
+          PRIMARY KEY (proposal_id, worktree_path),
+          FOREIGN KEY (proposal_id) REFERENCES workspace_cleanup_proposals(proposal_id)
+            ON DELETE CASCADE
+        )
+      `
+      yield* sql`
+        INSERT INTO workspace_cleanup_resources (
+          proposal_id, worktree_path, branch, head, common_directory,
+          status_porcelain, size_bytes, removal_status
+        ) VALUES ('cleanup-new-z', '/tmp/workspace/repo', 'friday/task/repo', 'abc',
+          '/tmp/repo.git', '', 1, 'pending')
+      `
+
+      yield* runStructuralMigrations()
+      yield* sql`
+        UPDATE workspace_cleanup_resources
+        SET removal_status = 'removing'
+        WHERE proposal_id = 'cleanup-new-z'
+      `
+      const proposals = yield* sql<Record<string, unknown>>`
+        SELECT proposal_id, lifecycle_status FROM workspace_cleanup_proposals ORDER BY proposal_id
+      `
+      assert.deepStrictEqual(proposals, [
+        { proposal_id: 'cleanup-new-a', lifecycle_status: 'stale' },
+        { proposal_id: 'cleanup-new-z', lifecycle_status: 'failed' },
+        { proposal_id: 'cleanup-old', lifecycle_status: 'stale' },
+      ])
+      const indexes = yield* sql<{ readonly name: string; readonly sql: string }>`
+        SELECT name, sql FROM sqlite_master
+        WHERE type = 'index' AND name = 'workspace_cleanup_one_active_per_thread'
+      `
+      assert.strictEqual(indexes.length, 1)
+      assert.match(indexes[0]!.sql, /WHERE lifecycle_status IN \('pending', 'failed'\)/)
+
+      yield* runStructuralMigrations()
+      const rerun = yield* sql<Record<string, unknown>>`
+        SELECT proposal_id, lifecycle_status FROM workspace_cleanup_proposals ORDER BY proposal_id
+      `
+      assert.deepStrictEqual(rerun, proposals)
+      const removing = yield* sql<{ readonly removal_status: string }>`
+        SELECT removal_status FROM workspace_cleanup_resources
+      `
+      assert.strictEqual(removing[0]!.removal_status, 'removing')
+    }).pipe(Effect.provide(database)),
+  ))
 
 test('migrates connection-scoped Discord configuration into guild-scoped tables', async () =>
   Effect.runPromise(

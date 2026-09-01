@@ -77,6 +77,84 @@ test('adds, reads, lists, toggles, and removes a Discord connection', async () =
     }),
   ))
 
+test('updates connection fields, preserving unspecified ones and enforcing uniqueness', async () =>
+  runWithDatabase(
+    Effect.gen(function* () {
+      const store = yield* DiscordConnections
+      assert.strictEqual(yield* store.addConnection(connection), 'added')
+
+      // A no-op update reports unchanged and preserves the stored row.
+      assert.strictEqual(
+        yield* store.updateConnection({ connectionId: connection.connectionId, name: 'Main bot' }),
+        'unchanged',
+      )
+
+      // A partial update changes only the given fields; the token stays indirected.
+      assert.strictEqual(
+        yield* store.updateConnection({
+          connectionId: connection.connectionId,
+          name: 'Renamed bot',
+          botTokenEnv: decodeTokenEnv('FRIDAY_DISCORD_TOKEN_NEW'),
+          respondToGlobalMentions: false,
+        }),
+        'updated',
+      )
+      const updated = yield* store.getConnection(connection.connectionId)
+      assert(Option.isSome(updated))
+      assert.strictEqual(updated.value.name, 'Renamed bot')
+      assert.strictEqual(updated.value.botTokenEnv, 'FRIDAY_DISCORD_TOKEN_NEW')
+      assert.strictEqual(updated.value.respondToGlobalMentions, false)
+      assert.strictEqual(updated.value.applicationId, '111111111111111111')
+      assert.strictEqual(updated.value.publicKey, '0123456789abcdef'.repeat(4))
+
+      assert.strictEqual(
+        yield* store.updateConnection({
+          connectionId: connection.connectionId,
+          applicationId: decodeSnowflake('999999999999999999'),
+        }),
+        'updated',
+      )
+
+      // Moving an application id to an existing connection is refused untouched.
+      assert.strictEqual(
+        yield* store.addConnection({
+          ...connection,
+          connectionId: decodeConnectionId('discord-other'),
+          applicationId: decodeSnowflake('888888888888888888'),
+        }),
+        'added',
+      )
+      assert.strictEqual(
+        yield* store.updateConnection({
+          connectionId: connection.connectionId,
+          applicationId: decodeSnowflake('888888888888888888'),
+        }),
+        'application-exists',
+      )
+      const untouched = yield* store.getConnection(connection.connectionId)
+      assert(Option.isSome(untouched))
+      assert.strictEqual(untouched.value.applicationId, '999999999999999999')
+
+      // Reassigning an application id to no current owner is allowed.
+      assert.strictEqual(
+        yield* store.updateConnection({
+          connectionId: connection.connectionId,
+          applicationId: decodeSnowflake('111111111111111111'),
+        }),
+        'updated',
+      )
+
+      // Unknown connections report missing instead of failing.
+      assert.strictEqual(
+        yield* store.updateConnection({
+          connectionId: decodeConnectionId('discord-absent'),
+          name: 'Ghost',
+        }),
+        'missing',
+      )
+    }),
+  ))
+
 test('enforces application-id uniqueness and rolls back both-table add failures', async () =>
   runWithDatabase(
     Effect.gen(function* () {

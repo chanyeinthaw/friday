@@ -25,14 +25,23 @@ and reload does not evict or restart any work.
 Discord resources are built once per process, so the following are pinned to
 the startup snapshot and ignored by reload:
 
-- Discord connections (adding, removing, enabling, disabling)
+- Discord connections (adding, removing, enabling, disabling, updating fields)
 - Credentials (bot token environment variable, application ID, public key)
 - Mention role IDs and global-mention behavior
-- Activity-description publication
 - Adding, removing, enabling, or disabling connections themselves
 - The admin allow-list (see below)
 
 Changes to these require a Friday restart.
+
+One connection setting is not restart-based: `config discord
+activity-description set/reset` flips the stored flag and the running Discord
+adapter picks the change up through its ~1 second watch loop, without a reload
+or restart.
+
+Connection field updates via `config discord connection update` (name,
+application ID, public key, bot token environment variable, global-mention
+behavior) are part of the startup-pinned topology and require a restart like
+the other connection lifecycle operations.
 
 ## Admin allow-list
 
@@ -98,8 +107,11 @@ lock:
 - are requested under a client-side deadline (10 seconds) and response size
   cap, so an unresponsive or misbehaving server fails fast with a typed error
 
-CLI configuration commands that write SQLite (`config discord guild ...`,
-`platform activity-description set/reset`) take effect on the next reload.
+CLI configuration commands that write SQLite (`config discord guild ...`)
+take effect on the next reload. The exception is
+`config discord activity-description set/reset`, which the running process
+picks up live through its watch loop within about a second — no reload and no
+restart needed.
 
 ## Harness reload
 

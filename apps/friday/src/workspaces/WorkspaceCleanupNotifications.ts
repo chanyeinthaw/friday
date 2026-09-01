@@ -73,7 +73,7 @@ export const WorkspaceCleanupNotificationsLive = Layer.effect(
           AND NOT EXISTS (
             SELECT 1 FROM workspace_cleanup_proposals
             WHERE workspace_cleanup_proposals.thread_id = threads.thread_id
-              AND workspace_cleanup_proposals.status = 'pending'
+              AND workspace_cleanup_proposals.lifecycle_status IN ('pending', 'failed')
           )
         ORDER BY updated_at ASC
       `

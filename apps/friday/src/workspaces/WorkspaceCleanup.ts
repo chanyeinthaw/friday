@@ -10,13 +10,16 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
 import { ThreadPersistence } from '../conversation/ThreadPersistence.ts'
 import {
   inspectRepositoryWorktree,
   removeRepositoryWorktree,
+  RepositoryWorktreeError,
   RepositoryWorktreeSnapshot,
+  validateRepositoryWorktreeSnapshot,
 } from '../repositories/RepositoryWorktrees.ts'
 
 const NonEmptyString = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
@@ -28,13 +31,18 @@ export type WorkspaceCleanupProposalId = typeof WorkspaceCleanupProposalId.Type
 export const WorkspaceCleanupProposal = Schema.Struct({
   id: WorkspaceCleanupProposalId,
   threadId: ThreadId,
-  status: Schema.Literals(['pending', 'applied', 'stale']),
+  status: Schema.Literals(['pending', 'applied', 'stale', 'failed']),
   workspacePath: Schema.String,
   estimatedBytes: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   createdAt: Schema.String,
   appliedAt: Schema.NullOr(Schema.String),
   summary: Schema.String,
-  resources: Schema.Array(RepositoryWorktreeSnapshot),
+  resources: Schema.Array(
+    Schema.Struct({
+      ...RepositoryWorktreeSnapshot.fields,
+      removalStatus: Schema.Literals(['pending', 'removing', 'removed']),
+    }),
+  ),
 })
 export type WorkspaceCleanupProposal = typeof WorkspaceCleanupProposal.Type
 
@@ -42,6 +50,7 @@ const ProposalRow = Schema.Struct({
   proposal_id: Schema.String,
   thread_id: Schema.String,
   status: Schema.String,
+  lifecycle_status: Schema.String,
   workspace_path: Schema.String,
   estimated_bytes: Schema.Number,
   created_at: Schema.String,
@@ -56,6 +65,7 @@ const ResourceRow = Schema.Struct({
   common_directory: Schema.String,
   status_porcelain: Schema.String,
   size_bytes: Schema.Number,
+  removal_status: Schema.String,
 })
 const decodeProposalRows = Schema.decodeUnknownEffect(Schema.Array(ProposalRow))
 const decodeResourceRows = Schema.decodeUnknownEffect(Schema.Array(ResourceRow))
@@ -75,6 +85,24 @@ export class WorkspaceCleanupError extends Schema.Error<WorkspaceCleanupError>(
   }
 }
 
+/**
+ * Typed rejection for an approved proposal whose owning workspace or recorded
+ * worktrees changed after the proposal was created. The proposal is marked
+ * `stale` transactionally before this error surfaces, so `workspace cleanup
+ * list` no longer reports it pending.
+ */
+export class WorkspaceCleanupStaleError extends Schema.Error<WorkspaceCleanupStaleError>(
+  'WorkspaceCleanupStaleError',
+)({
+  _tag: Schema.tag('WorkspaceCleanupStaleError'),
+  proposalId: WorkspaceCleanupProposalId,
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return this.detail
+  }
+}
+
 export interface WorkspaceCleanupContract {
   readonly propose: (
     thread: ChannelThread,
@@ -82,21 +110,29 @@ export interface WorkspaceCleanupContract {
   readonly get: (
     proposalId: WorkspaceCleanupProposalId,
   ) => Effect.Effect<WorkspaceCleanupProposal, WorkspaceCleanupError>
+  /** Lists all recorded proposals, most recently created first. */
+  readonly list: () => Effect.Effect<ReadonlyArray<WorkspaceCleanupProposal>, WorkspaceCleanupError>
   readonly apply: (
     proposalId: WorkspaceCleanupProposalId,
     currentWorkingDirectory: string,
-  ) => Effect.Effect<WorkspaceCleanupProposal, WorkspaceCleanupError>
+  ) => Effect.Effect<WorkspaceCleanupProposal, WorkspaceCleanupError | WorkspaceCleanupStaleError>
 }
 
 export class WorkspaceCleanup extends Context.Service<WorkspaceCleanup, WorkspaceCleanupContract>()(
   'friday/workspaces/WorkspaceCleanup',
 ) {}
 
-const isDirectChild = (workspace: string, candidate: string): boolean => {
+/**
+ * Guards the proposal inspection: only entries that are direct children of the
+ * channel workspace (never `..`, absolute paths, or nested escapes) are
+ * inspected as its repository worktrees.
+ */
+export const isDirectChild = (workspace: string, candidate: string): boolean => {
   const path = relative(workspace, candidate)
   return path.length > 0 && !path.startsWith('..') && !isAbsolute(path) && !path.includes('/')
 }
 
+// Stryker disable all: Proposal inspection and presentation are covered by ordinary tests; lifecycle mutation focuses on crash recovery below.
 const summarize = (resources: ReadonlyArray<RepositoryWorktreeSnapshot>): string => {
   const dirty = resources.filter(({ status }) => status.length > 0).length
   const bytes = resources.reduce((total, resource) => total + resource.sizeBytes, 0)
@@ -110,7 +146,7 @@ const rowToProposal = Effect.fn('WorkspaceCleanup.rowToProposal')(function* (
   return yield* decodeProposal({
     id: proposal.proposal_id,
     threadId: proposal.thread_id,
-    status: proposal.status,
+    status: proposal.lifecycle_status,
     workspacePath: proposal.workspace_path,
     estimatedBytes: proposal.estimated_bytes,
     createdAt: proposal.created_at,
@@ -123,6 +159,7 @@ const rowToProposal = Effect.fn('WorkspaceCleanup.rowToProposal')(function* (
       commonDirectory: resource.common_directory,
       status: resource.status_porcelain,
       sizeBytes: resource.size_bytes,
+      removalStatus: resource.removal_status,
     })),
   })
 })
@@ -157,17 +194,6 @@ export const WorkspaceCleanupLive = Layer.effect(
     })
 
     const propose = Effect.fn('WorkspaceCleanup.propose')(function* (thread: ChannelThread) {
-      const existing = yield* sql<Record<string, unknown>>`
-        SELECT * FROM workspace_cleanup_proposals
-        WHERE thread_id = ${thread.id} AND status = 'pending'
-        ORDER BY created_at DESC
-        LIMIT 1
-      `
-      const existingProposal = (yield* decodeProposalRows(existing))[0]
-      if (existingProposal) {
-        return yield* get(yield* decodeProposalId(existingProposal.proposal_id))
-      }
-
       const workspace = resolve(thread.workingDirectory)
       const entries = yield* fileSystem.readDirectory(workspace).pipe(
         Effect.mapError(
@@ -206,34 +232,81 @@ export const WorkspaceCleanupLive = Layer.effect(
       const createdAt = DateTime.formatIso(yield* DateTime.now)
       const estimatedBytes = resources.reduce((total, resource) => total + resource.sizeBytes, 0)
       const summary = summarize(resources)
-      yield* sql.withTransaction(
+      const activeProposalId = yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* sql`
-            INSERT INTO workspace_cleanup_proposals (
-              proposal_id, thread_id, status, workspace_path, estimated_bytes,
+          const inserted = yield* sql<{ readonly proposal_id: string }>`
+            INSERT OR IGNORE INTO workspace_cleanup_proposals (
+              proposal_id, thread_id, status, lifecycle_status, workspace_path, estimated_bytes,
               created_at, applied_at, summary
             ) VALUES (
-              ${proposalId}, ${thread.id}, 'pending', ${workspace}, ${estimatedBytes},
+              ${proposalId}, ${thread.id}, 'pending', 'pending', ${workspace}, ${estimatedBytes},
               ${createdAt}, NULL, ${summary}
             )
+            RETURNING proposal_id
           `
+          if (inserted.length === 0) {
+            const existing = yield* sql<Record<string, unknown>>`
+              SELECT * FROM workspace_cleanup_proposals
+              WHERE thread_id = ${thread.id} AND lifecycle_status IN ('pending', 'failed')
+              ORDER BY created_at DESC, proposal_id DESC
+              LIMIT 1
+            `
+            const existingProposal = (yield* decodeProposalRows(existing))[0]
+            if (existingProposal === undefined) {
+              return yield* new WorkspaceCleanupError({
+                operation: 'inspect',
+                detail: `Could not resolve the active cleanup proposal for thread '${thread.id}'.`,
+              })
+            }
+            return yield* decodeProposalId(existingProposal.proposal_id)
+          }
           yield* Effect.forEach(
             resources,
             (resource) => sql`
               INSERT INTO workspace_cleanup_resources (
                 proposal_id, worktree_path, branch, head, common_directory,
-                status_porcelain, size_bytes
+                status_porcelain, size_bytes, removal_status
               ) VALUES (
                 ${proposalId}, ${resource.path}, ${resource.branch}, ${resource.head},
-                ${resource.commonDirectory}, ${resource.status}, ${resource.sizeBytes}
+                ${resource.commonDirectory}, ${resource.status}, ${resource.sizeBytes}, 'pending'
               )
             `,
             { discard: true },
           )
+          return proposalId
         }),
       )
-      return yield* get(proposalId)
+      return yield* get(activeProposalId)
     })
+
+    /** Marks a still-pending proposal stale inside one committed transaction. */
+    const markStale = (
+      proposalId: WorkspaceCleanupProposalId,
+    ): Effect.Effect<void, SqlError, never> =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+            UPDATE workspace_cleanup_proposals
+            SET status = 'stale', lifecycle_status = 'stale'
+            WHERE proposal_id = ${proposalId} AND lifecycle_status IN ('pending', 'failed')
+          `
+        }),
+      )
+
+    const stale = (
+      proposalId: WorkspaceCleanupProposalId,
+      detail: string,
+    ): Effect.Effect<never, WorkspaceCleanupStaleError | SqlError> =>
+      markStale(proposalId).pipe(
+        Effect.flatMap(() =>
+          Effect.fail(
+            new WorkspaceCleanupStaleError({
+              proposalId,
+              detail: `Workspace cleanup proposal '${proposalId}' is stale: ${detail}`,
+            }),
+          ),
+        ),
+      )
 
     const apply = Effect.fn('WorkspaceCleanup.apply')(function* (
       proposalId: WorkspaceCleanupProposalId,
@@ -246,7 +319,7 @@ export const WorkspaceCleanupLive = Layer.effect(
           detail: `Cleanup proposal '${proposalId}' must be applied from its owning channel workspace.`,
         })
       }
-      if (proposal.status !== 'pending') {
+      if (proposal.status !== 'pending' && proposal.status !== 'failed') {
         return yield* new WorkspaceCleanupError({
           operation: 'validate',
           detail: `Workspace cleanup proposal '${proposalId}' is already ${proposal.status}.`,
@@ -278,30 +351,106 @@ export const WorkspaceCleanupLive = Layer.effect(
         })
       }
       if (resolve(thread.value.workingDirectory) !== resolve(proposal.workspacePath)) {
-        return yield* new WorkspaceCleanupError({
-          operation: 'validate',
-          detail: 'The channel workspace changed after cleanup approval was requested.',
-        })
+        return yield* stale(
+          proposalId,
+          'the owning channel workspace changed after the proposal was created.',
+        )
       }
-      yield* Effect.forEach(proposal.resources, removeRepositoryWorktree, {
+      // Stryker restore all
+      // Validate every untouched resource before deleting anything. A
+      // `removing` resource has durable deletion intent, so a missing worktree
+      // is the expected crash-gap state and is reconciled below.
+      const pending = proposal.resources.filter((resource) => resource.removalStatus === 'pending')
+      const removing = proposal.resources.filter(
+        (resource) => resource.removalStatus === 'removing',
+      )
+      const remaining = [...pending, ...removing]
+      yield* Effect.forEach(pending, validateRepositoryWorktreeSnapshot, {
         discard: true,
         concurrency: 1,
       }).pipe(
-        Effect.tapError(() =>
-          sql`
-            UPDATE workspace_cleanup_proposals
-            SET status = 'stale'
-            WHERE proposal_id = ${proposalId}
-          `.pipe(Effect.ignore),
+        Effect.andThen(
+          Effect.forEach(
+            removing,
+            (resource) =>
+              inspectRepositoryWorktree(resource.path).pipe(
+                Effect.flatMap((current) =>
+                  current === null ? Effect.void : validateRepositoryWorktreeSnapshot(resource),
+                ),
+              ),
+            { discard: true, concurrency: 1 },
+          ),
+        ),
+        Effect.catch(
+          (
+            error,
+          ): Effect.Effect<
+            never,
+            RepositoryWorktreeError | WorkspaceCleanupStaleError | SqlError
+          > => {
+            if (error.operation === 'validate') return stale(proposalId, error.message)
+            return Effect.fail(error)
+          },
         ),
       )
+      for (const resource of remaining) {
+        if (resource.removalStatus === 'pending') {
+          yield* sql`
+            UPDATE workspace_cleanup_resources
+            SET removal_status = 'removing'
+            WHERE proposal_id = ${proposalId} AND worktree_path = ${resource.path}
+              AND removal_status = 'pending'
+          `
+        }
+        const step = yield* Effect.exit(
+          removeRepositoryWorktree(resource).pipe(
+            Effect.andThen(
+              sql`
+                UPDATE workspace_cleanup_resources
+                SET removal_status = 'removed'
+                WHERE proposal_id = ${proposalId} AND worktree_path = ${resource.path}
+                  AND removal_status = 'removing'
+              `,
+            ),
+          ),
+        )
+        if (step._tag === 'Failure') {
+          yield* sql`
+            UPDATE workspace_cleanup_proposals
+            SET lifecycle_status = 'failed'
+            WHERE proposal_id = ${proposalId}
+          `
+          return yield* Effect.failCause(step.cause)
+        }
+      }
+      // Stryker disable all: Final projection and service error mapping are outside the deletion state machine.
       const appliedAt = DateTime.formatIso(yield* DateTime.now)
       yield* sql`
         UPDATE workspace_cleanup_proposals
-        SET status = 'applied', applied_at = ${appliedAt}
+        SET status = 'applied', lifecycle_status = 'applied', applied_at = ${appliedAt}
         WHERE proposal_id = ${proposalId}
       `
       return yield* get(proposalId)
+    })
+
+    const list = Effect.fn('WorkspaceCleanup.list')(function* () {
+      const rows = yield* sql<Record<string, unknown>>`
+        SELECT proposal_id FROM workspace_cleanup_proposals
+        ORDER BY created_at DESC, proposal_id DESC
+      `
+      const ids = yield* Effect.forEach(rows, (row) =>
+        decodeProposalId(row.proposal_id).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkspaceCleanupError({
+                operation: 'load',
+                detail: 'Stored workspace cleanup proposal identity is invalid.',
+                cause,
+              }),
+          ),
+        ),
+      )
+      return yield* Effect.forEach(ids, get, { concurrency: 'unbounded' })
     })
 
     const mapFailure =
@@ -318,8 +467,17 @@ export const WorkspaceCleanupLive = Layer.effect(
     return WorkspaceCleanup.of({
       propose: (thread) => propose(thread).pipe(Effect.mapError(mapFailure('inspect'))),
       get: (proposalId) => get(proposalId).pipe(Effect.mapError(mapFailure('load'))),
+      list: () => list().pipe(Effect.mapError(mapFailure('load'))),
       apply: (proposalId, currentWorkingDirectory) =>
-        apply(proposalId, currentWorkingDirectory).pipe(Effect.mapError(mapFailure('apply'))),
+        apply(proposalId, currentWorkingDirectory).pipe(
+          // The typed stale outcome passes through untouched.
+          Effect.mapError((cause) =>
+            cause instanceof WorkspaceCleanupError || cause instanceof WorkspaceCleanupStaleError
+              ? cause
+              : mapFailure('apply')(cause),
+          ),
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ),
     })
   }),
 )
