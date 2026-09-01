@@ -2,6 +2,7 @@ import { assert, it } from '@effect/vitest'
 import { ConversationBinding, PlatformConnectionId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import { TestClock } from 'effect/testing'
 import * as Schema from 'effect/Schema'
 
 import type { PlatformAdapter } from '../PlatformAdapter.ts'
@@ -350,6 +351,129 @@ it.effect('evicts failed idle state so a later cycle retries the Discord lookup'
       ['⚡ Design Review'],
     )
   }),
+)
+
+it.effect(
+  'retries a transient cleanup failure on the test clock and restores the idle title within 3 attempts',
+  () =>
+    Effect.gen(function* () {
+      const stub = stubDiscord(initialThreadNames('Design Review'))
+      const cleanupAttempts: Array<string> = []
+      // Resolved by the adapter as each cleanup attempt is issued, so the test only
+      // advances the TestClock once the schedule is parked on its delay.
+      const attempt1 = Promise.withResolvers<void>()
+      const attempt2 = Promise.withResolvers<void>()
+      const attempt3 = Promise.withResolvers<void>()
+      const attemptSignals = [attempt1, attempt2, attempt3]
+      let cleanupFailures = 2
+      const adapter: DiscordThreadTitleAdapter = {
+        ...stub,
+        setThreadTitle: (id, name) => {
+          if (name.startsWith('⚡ ')) return stub.setThreadTitle(id, name)
+          attemptSignals[cleanupAttempts.length]?.resolve()
+          cleanupAttempts.push(name)
+          if (cleanupFailures > 0) {
+            cleanupFailures -= 1
+            return Promise.reject(new Error('rename failed'))
+          }
+          return stub.setThreadTitle(id, name)
+        },
+      }
+      const platform = makePlatform(adapter, [])
+
+      yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+      const finalize = yield* platform
+        .finalizeWorking({ binding: threadBinding, text: 'Done' })
+        .pipe(Effect.forkChild)
+
+      // Attempt 1 runs immediately; the schedule then delays 50ms before attempt 2
+      // and 100ms before attempt 3.
+      yield* Effect.promise(() => attempt1.promise)
+      assert.deepStrictEqual(cleanupAttempts, ['Design Review'])
+      yield* TestClock.adjust('50 millis')
+      yield* Effect.promise(() => attempt2.promise)
+      assert.deepStrictEqual(cleanupAttempts, ['Design Review', 'Design Review'])
+      yield* TestClock.adjust('100 millis')
+      yield* Effect.promise(() => attempt3.promise)
+      assert.deepStrictEqual(cleanupAttempts, ['Design Review', 'Design Review', 'Design Review'])
+      yield* Fiber.join(finalize)
+
+      assert.deepStrictEqual(
+        stub.renames.map(({ name }) => name),
+        ['⚡ Design Review', 'Design Review'],
+      )
+      assert.strictEqual(stub.names.get('discord:guild-1:thread-1'), 'Design Review')
+    }),
+)
+
+it.effect(
+  'stops after 3 failed cleanup attempts on the test clock and preserves the failed idle state',
+  () =>
+    Effect.gen(function* () {
+      const stub = stubDiscord(initialThreadNames('Design Review'))
+      const cleanupAttempts: Array<string> = []
+      const attemptSignals: readonly [
+        PromiseWithResolvers<void>,
+        PromiseWithResolvers<void>,
+        PromiseWithResolvers<void>,
+        PromiseWithResolvers<void>,
+        PromiseWithResolvers<void>,
+        PromiseWithResolvers<void>,
+      ] = [
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+        Promise.withResolvers<void>(),
+      ]
+      const adapter: DiscordThreadTitleAdapter = {
+        ...stub,
+        setThreadTitle: (id, name) => {
+          if (name.startsWith('⚡ ')) return stub.setThreadTitle(id, name)
+          attemptSignals[cleanupAttempts.length]?.resolve()
+          cleanupAttempts.push(name)
+          return Promise.reject(new Error('rename failed'))
+        },
+      }
+      const platform = makePlatform(adapter, [])
+
+      yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+      const finalize = yield* platform
+        .finalizeWorking({ binding: threadBinding, text: 'Done' })
+        .pipe(Effect.forkChild)
+      yield* Effect.promise(() => attemptSignals[0].promise)
+      yield* TestClock.adjust('50 millis')
+      yield* Effect.promise(() => attemptSignals[1].promise)
+      yield* TestClock.adjust('100 millis')
+      yield* Effect.promise(() => attemptSignals[2].promise)
+      yield* Fiber.join(finalize)
+      assert.strictEqual(cleanupAttempts.length, 3)
+
+      // The idle entry is preserved: the next begin does not re-apply the prefix because the
+      // failed restore is still the applied name, proving no eviction/reset happened.
+      yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking again...' })
+      assert.strictEqual(cleanupAttempts.length, 3)
+      assert.deepStrictEqual(
+        stub.renames.map(({ name }) => name),
+        ['⚡ Design Review'],
+      )
+
+      // A later finalize retries the cleanup, again bounded to 3 attempts.
+      const retryFinalize = yield* platform
+        .finalizeWorking({ binding: threadBinding, text: 'Done again' })
+        .pipe(Effect.forkChild)
+      yield* Effect.promise(() => attemptSignals[3].promise)
+      yield* TestClock.adjust('50 millis')
+      yield* Effect.promise(() => attemptSignals[4].promise)
+      yield* TestClock.adjust('100 millis')
+      yield* Effect.promise(() => attemptSignals[5].promise)
+      yield* Fiber.join(retryFinalize)
+      assert.strictEqual(cleanupAttempts.length, 6)
+
+      // The failure was never treated as success: Discord still shows the activity prefix.
+      assert.strictEqual(stub.names.get('discord:guild-1:thread-1'), '⚡ Design Review')
+    }),
 )
 
 it.effect('keeps wrapped operations working when Discord title calls fail', () =>
