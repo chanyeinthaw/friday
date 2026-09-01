@@ -1,6 +1,6 @@
 {
   "name": "@friday/friday",
-  "version": "0.0.0-nightly.14",
+  "version": "0.0.0-nightly.15",
   "private": true,
   "bin": {
     "friday": "dist/friday"
