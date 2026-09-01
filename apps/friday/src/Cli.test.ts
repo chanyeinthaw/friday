@@ -294,17 +294,20 @@ it.effect('runs Discord admin commands through the admin operations', () =>
     yield* runFridayCli(['config', 'admin', 'discord', 'list'], adminRunner())
     yield* runFridayCli(['config', 'admin', 'discord', 'list', '--json'], adminRunner())
 
+    // Pinned literals: expectations do not reuse the production formatters.
     const lines = yield* TestConsole.logLines
     assert(
-      lines.includes(formatDiscordAdminAdd(decodeDiscordUserId('123456789012345678'), 'added')),
+      lines.includes(
+        'Discord admin 123456789012345678 added. Restart Friday to apply it: the admin allow-list is pinned at startup.',
+      ),
     )
     assert(
       lines.includes(
-        formatDiscordAdminRemove(decodeDiscordUserId('123456789012345678'), 'removed'),
+        'Discord admin 123456789012345678 removed. Restart Friday to apply it: the admin allow-list is pinned at startup.',
       ),
     )
-    assert(lines.includes(renderDiscordAdminList(['123456789012345678'])))
-    assert(lines.includes(JSON.stringify(['123456789012345678'])))
+    assert(lines.includes('Discord administrators:\n  123456789012345678'))
+    assert(lines.includes('["123456789012345678"]'))
   }).pipe(Effect.provide(TestConsole.layer)),
 )
 

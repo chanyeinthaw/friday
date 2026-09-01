@@ -8,8 +8,6 @@ import {
   workingDirectoriesConflict,
 } from './TaskPolicy.ts'
 
-const statuses = ['pending', 'running', 'completed', 'interrupted', 'failed'] as const
-
 describe('task status policy', () => {
   it.each([
     ['pending', true, false],
@@ -17,18 +15,12 @@ describe('task status policy', () => {
     ['completed', false, true],
     ['interrupted', false, true],
     ['failed', false, true],
-  ] as const)('classifies %s', (status, active, terminal) => {
+  ] as const)('classifies %s and applies the status filters', (status, active, terminal) => {
     expect(isActiveTaskStatus(status)).toBe(active)
     expect(isTerminalTaskStatus(status)).toBe(terminal)
-  })
-
-  it.each(statuses)('matches all for %s', (status) => {
     expect(matchesTaskStatusFilter(status, 'all')).toBe(true)
-  })
-
-  it.each(statuses)('matches active and terminal filters exclusively for %s', (status) => {
-    expect(matchesTaskStatusFilter(status, 'active')).toBe(isActiveTaskStatus(status))
-    expect(matchesTaskStatusFilter(status, 'terminal')).toBe(isTerminalTaskStatus(status))
+    expect(matchesTaskStatusFilter(status, 'active')).toBe(active)
+    expect(matchesTaskStatusFilter(status, 'terminal')).toBe(terminal)
   })
 })
 
