@@ -27,6 +27,7 @@ import { join } from 'node:path'
 
 import type { FridayContract } from '../Friday.ts'
 import type { ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
+import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
 import type { ThreadPersistenceContract } from '../conversation/ThreadPersistence.ts'
 import { makeTaskModels } from './TaskModels.ts'
 import { makeTasks } from './Tasks.ts'
@@ -107,6 +108,7 @@ const makeFriday = (promptedTurns: Array<Turn>): FridayContract => ({
         ),
       steer: () => Effect.void,
       cancel: () => Effect.void,
+      reload: () => Effect.succeed(harnessReloadSucceeded()),
       onEvent: () => Effect.void,
       start: Effect.void,
       drain: Effect.never,
@@ -191,6 +193,7 @@ test('publishes task lifecycle in order and cleans up once for an immediately te
           }),
         steer: () => Effect.void,
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.never,
@@ -258,6 +261,7 @@ test('finalizes initial task activity when awaitTerminal defects', async () => {
               }),
             steer: () => Effect.void,
             cancel: () => Effect.void,
+            reload: () => Effect.succeed(harnessReloadSucceeded()),
             onEvent: () => Effect.void,
             start: Effect.void,
             drain: Effect.never,
@@ -461,6 +465,7 @@ test('delivers a completed task back to the parent channel Thread', async () => 
           }),
         steer: () => Effect.void,
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.never,
@@ -539,6 +544,7 @@ test('delivers a bootstrap result back to the channel for a separate normal task
           Effect.succeed({ turnId: turn.id, awaitTerminal: Deferred.await(terminal.deferred) }),
         steer: () => Effect.void,
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.never,
@@ -647,6 +653,7 @@ test('steers an active task and continues an idle task with a new Turn', async (
         steer: (_turnId, activity) =>
           Effect.sync(() => steered.push(activity.message.content.text)),
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.never,
@@ -705,6 +712,7 @@ test('does not prompt a continuation when metadata reads fail', async () => {
             Effect.sync(() => void (prompted = true)).pipe(Effect.andThen(Effect.never)),
           steer: () => Effect.void,
           cancel: () => Effect.void,
+          reload: () => Effect.succeed(harnessReloadSucceeded()),
           onEvent: () => Effect.void,
           start: Effect.void,
           drain: Effect.never,
@@ -746,6 +754,7 @@ test('marks an idle task active while its continuation runs', async () => {
           Effect.succeed({ turnId: turn.id, awaitTerminal: Deferred.await(terminal.deferred) }),
         steer: () => Effect.void,
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.never,
@@ -860,6 +869,7 @@ test('keeps task activity active across overlapping continuation finalizers', as
           },
           steer: () => Effect.void,
           cancel: () => Effect.void,
+          reload: () => Effect.succeed(harnessReloadSucceeded()),
           onEvent: () => Effect.void,
           start: Effect.void,
           drain: Effect.never,
@@ -954,6 +964,7 @@ test('cancels only an active owned task', async () => {
           prompt: () => Effect.die('not expected'),
           steer: () => Effect.die('not expected'),
           cancel: (turnId) => Effect.sync(() => cancelled.push(turnId)),
+          reload: () => Effect.succeed(harnessReloadSucceeded()),
           onEvent: () => Effect.void,
           start: Effect.void,
           drain: Effect.never,

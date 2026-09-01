@@ -14,7 +14,7 @@ import * as Stream from 'effect/Stream'
 
 import { makeThreadCoordinator } from './ThreadCoordinator.ts'
 import { ThreadPersistence, type ThreadPersistenceContract } from './ThreadPersistence.ts'
-import type { ThreadRuntimeEvent } from './ThreadRuntime.ts'
+import { harnessReloadSucceeded, type ThreadRuntimeEvent } from './ThreadRuntime.ts'
 
 const decodeActivity = Schema.decodeUnknownSync(Activity)
 const decodeTurn = Schema.decodeUnknownSync(Turn)
@@ -128,6 +128,7 @@ it.effect('persists a Turn before prompting its runtime', () =>
       prompt: ({ turnId }: { readonly turnId: typeof turn.id }) =>
         Effect.sync(() => operations.push({ type: 'prompt', value: turnId })),
       cancel: () => Effect.void,
+      reload: () => Effect.succeed(harnessReloadSucceeded()),
       events: Stream.empty,
     }
     const coordinator = yield* makeThreadCoordinator(runtime).pipe(
@@ -152,6 +153,7 @@ it.effect('completes the Turn handle after a prompt delivery failure is persiste
         harnessSession,
         prompt: () => Effect.fail('prompt-boom'),
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         events: Stream.never,
       }
       const coordinator = yield* makeThreadCoordinator(runtime).pipe(
@@ -180,6 +182,7 @@ it.effect('persists steering before delivering it to the runtime', () =>
       prompt: ({ turnId }: { readonly turnId: typeof turn.id }) =>
         Effect.sync(() => operations.push({ type: 'prompt', value: turnId })),
       cancel: () => Effect.void,
+      reload: () => Effect.succeed(harnessReloadSucceeded()),
       events: Stream.empty,
     }
     const coordinator = yield* makeThreadCoordinator(runtime).pipe(
@@ -205,6 +208,7 @@ it.effect('signals completion only after the terminal event is persisted', () =>
         harnessSession,
         prompt: () => Effect.void,
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         events: Stream.unwrap(
           Deferred.await(events).pipe(Effect.map((items) => Stream.fromIterable(items))),
         ),
@@ -246,6 +250,7 @@ it.effect('persists active snapshots and the completed Activity in event order',
       harnessSession,
       prompt: () => Effect.void,
       cancel: () => Effect.void,
+      reload: () => Effect.succeed(harnessReloadSucceeded()),
       events: Stream.fromIterable(runtimeEvents),
     }
     const coordinator = yield* makeThreadCoordinator(runtime).pipe(

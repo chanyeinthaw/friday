@@ -1,7 +1,9 @@
 import { DiscordInteractionResponseFlag } from '@chat-adapter/discord'
 import { Chat, type SlashCommandEvent } from 'chat'
+import { PlatformConversationId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 
 import { DiscordActivityDescriptions } from '../DiscordActivityDescriptions.ts'
 import { effectiveInvocationMode, shouldInvoke } from '../InvocationPolicies.ts'
@@ -10,6 +12,10 @@ import { isAllowedByAccess, isAllowedByPolicy } from '../chat-sdk/AccessPolicy.t
 import { AppConfig } from '../../config/AppConfigLive.ts'
 import { findDiscordConnection } from '../../config/AppConfig.ts'
 import { reloadApplicationConfig } from '../../config/ConfigReload.ts'
+import { reloadConversationHarness } from '../../conversation/HarnessReload.ts'
+import { ThreadPersistence } from '../../conversation/ThreadPersistence.ts'
+import { ThreadRuntimePool } from '../../conversation/ThreadRuntimePool.ts'
+import { harnessReloadRefused } from '../../conversation/ThreadRuntime.ts'
 import { ChatSdkCallbackError, ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
 import { PlatformRegistry } from '../PlatformRegistry.ts'
 import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
@@ -25,7 +31,7 @@ import {
   type DiscordConnectionPolicies,
   type DiscordPolicyProvider,
 } from './DiscordChannelAccess.ts'
-import { registerGlobalFridayCommand } from './DiscordCommandRegistration.ts'
+import { registerGlobalDiscordCommands } from './DiscordCommandRegistration.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
@@ -38,6 +44,14 @@ import {
   fridayReloadReply,
   fridaySubcommand,
 } from './DiscordSlashCommand.ts'
+import {
+  HARNESS_COMMAND_PATHS,
+  decideHarnessCommand,
+  decodeHarnessInteraction,
+  harnessCommandReply,
+  harnessReloadReply,
+  harnessSubcommand,
+} from './DiscordHarnessCommand.ts'
 import {
   FridayDiscordAdapter,
   type FridayDiscordAdapterConfig,
@@ -130,9 +144,9 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               isAllowedLocation,
               // The adapter flattens (or drops) subcommands in the command
               // path depending on arguments; match every produced path and
-              // make the reload reply ephemeral.
+              // make the Friday and harness command replies ephemeral.
               interactionFlags: (context) =>
-                FRIDAY_COMMAND_PATHS.includes(context.command)
+                [...FRIDAY_COMMAND_PATHS, ...HARNESS_COMMAND_PATHS].includes(context.command)
                   ? DiscordInteractionResponseFlag.Ephemeral
                   : undefined,
             } satisfies FridayDiscordAdapterConfig),
@@ -177,6 +191,11 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         )
         const platform = withDiscordThreadActivityTitle(discord, chatSdkPlatform)
         yield* platforms.register(platform)
+        // Harness reload targets the thread bound to the invoking conversation
+        // and its already-open runtime; both lookups are connection-scoped.
+        const persistence = yield* ThreadPersistence
+        const pool = yield* ThreadRuntimePool
+        const decodeConversationId = Schema.decodeOption(PlatformConversationId)
         const runFridayCommand = (event: SlashCommandEvent) =>
           Effect.gen(function* () {
             const decision = decideFridayCommand({
@@ -202,6 +221,54 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           )
         chat.onSlashCommand(FRIDAY_COMMAND_PATHS, (event) =>
           Effect.runPromise(runFridayCommand(event)).then(() => undefined),
+        )
+        const runHarnessCommand = (event: SlashCommandEvent) =>
+          Effect.gen(function* () {
+            const decision = decideHarnessCommand({
+              subcommand: Option.flatMap(decodeHarnessInteraction(event.raw), harnessSubcommand),
+              userId: event.user.userId,
+              admin,
+            })
+            if (decision.kind !== 'reload') {
+              yield* respondEphemeral(event, harnessCommandReply(decision))
+              return
+            }
+            const conversationId = decodeConversationId(event.channel.id)
+            if (Option.isNone(conversationId)) {
+              yield* respondEphemeral(
+                event,
+                harnessReloadReply(
+                  harnessReloadRefused(
+                    'unknown-thread',
+                    'No Friday thread is bound to this conversation; run the command inside a Friday thread.',
+                  ),
+                ),
+              )
+              return
+            }
+            const outcome = yield* reloadConversationHarness({
+              findThread: persistence.findPlatformThread,
+              reloadRuntime: pool.reloadHarness,
+            })({
+              platform: 'discord',
+              connectionId: discordConfig.connectionId,
+              conversationId: conversationId.value,
+            })
+            yield* respondEphemeral(event, harnessReloadReply(outcome))
+            yield* Effect.logInfo('discord.command.harness-reload').pipe(
+              Effect.annotateLogs({
+                component: 'discord',
+                connectionId: discordConfig.connectionId,
+                conversationId: event.channel.id,
+                userId: event.user.userId,
+                outcome: outcome.ok ? 'reloaded' : outcome.reason,
+              }),
+            )
+          }).pipe(
+            Effect.catchCause((cause) => Effect.logError('Harness slash command failed', cause)),
+          )
+        chat.onSlashCommand(HARNESS_COMMAND_PATHS, (event) =>
+          Effect.runPromise(runHarnessCommand(event)).then(() => undefined),
         )
         yield* startChatSdkLifecycle({
           connectionId: discordConfig.connectionId,
@@ -327,9 +394,9 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               ),
             ),
         })
-        // Register the application command before the gateway starts so a
+        // Register the application commands before the gateway starts so a
         // registration failure cannot leave partially started Discord resources.
-        yield* registerGlobalFridayCommand({
+        yield* registerGlobalDiscordCommands({
           botToken,
           applicationId: String(discordConfig.credentials.applicationId),
         })

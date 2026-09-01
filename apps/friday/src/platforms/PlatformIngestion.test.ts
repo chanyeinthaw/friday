@@ -24,6 +24,7 @@ import {
   type ThreadPersistenceContract,
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
+import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
@@ -294,6 +295,7 @@ const makeFriday = (
           ),
         steer: () => Effect.sync(() => events.push('steer')),
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.void,

@@ -29,4 +29,23 @@ describe('DiscordLive wiring', () => {
     expect(liveSource).toContain('event.channel.post(message)')
     expect(liveSource).not.toMatch(/\.postEphemeral\(/u)
   })
+
+  it('wires /harness reload onto the pool with persistence thread lookup', () => {
+    // The handler must be registered for the adapter-produced /harness paths,
+    // resolve the thread bound to the invoking conversation, and reload the
+    // existing runtime through the pool (never opening an absent runtime).
+    expect(liveSource).toContain('chat.onSlashCommand(HARNESS_COMMAND_PATHS')
+    expect(liveSource).toContain('reloadConversationHarness({')
+    expect(liveSource).toContain('findThread: persistence.findPlatformThread')
+    expect(liveSource).toContain('reloadRuntime: pool.reloadHarness')
+  })
+
+  it('keeps harness reload replies ephemeral and registers both global commands', () => {
+    const flagsIndex = liveSource.indexOf('DiscordInteractionResponseFlag.Ephemeral')
+    expect(flagsIndex).toBeGreaterThan(-1)
+    // Both command path families share the ephemeral interaction flag.
+    expect(liveSource).toMatch(/\[\.\.\.FRIDAY_COMMAND_PATHS, \.\.\.HARNESS_COMMAND_PATHS\]/u)
+    expect(liveSource).toContain('harnessReloadReply(outcome)')
+    expect(liveSource).toContain('yield* registerGlobalDiscordCommands({')
+  })
 })

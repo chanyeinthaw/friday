@@ -82,6 +82,7 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
       abort: async () => {
         abortCount++
       },
+      reload: async () => undefined,
       dispose: () => {
         disposeCount++
       },
@@ -207,6 +208,7 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
           prompts.push({ text, behavior: options?.streamingBehavior })
         },
         abort: async () => undefined,
+        reload: async () => undefined,
         dispose: () => undefined,
         getSessionStats: () => ({
           sessionFile: undefined,
@@ -309,6 +311,7 @@ it.effect('fails the active Turn without overtaking failed deferred steering', (
           abortCount++
           await Effect.runPromise(Deferred.succeed(finishTurnPrompt, undefined))
         },
+        reload: async () => undefined,
         dispose: () => undefined,
         getSessionStats: () => ({
           sessionFile: undefined,
@@ -472,4 +475,156 @@ it.effect('projects streamed tool snapshots into active and completed Activities
     })
     assert.strictEqual(state.activeTools.size, 0)
   }),
+)
+
+const reloadThread = (id: string) =>
+  decodeThread({
+    id,
+    audience: 'user',
+    parent: null,
+    harness: 'pi',
+    harnessSession: null,
+    workingDirectory: `/tmp/friday/${id}`,
+    model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
+    thinkingLevel: 'max',
+    channelContext: { name: 'Friday test channel', description: '' },
+    conversationBinding: {
+      platform: 'discord',
+      connectionId: 'discord',
+      channelId: `channel-${id}`,
+      sourceMessageId: `message-${id}`,
+      conversationId: `platform-conversation-${id}`,
+    },
+    status: 'active',
+    createdAt: '2026-03-21T09:00:00.000Z',
+    updatedAt: '2026-03-21T09:00:00.000Z',
+    closedAt: null,
+  })
+
+const emptyStats = (sessionId: string) => ({
+  sessionFile: undefined,
+  sessionId,
+  userMessages: 0,
+  assistantMessages: 0,
+  toolCalls: 0,
+  toolResults: 0,
+  totalMessages: 0,
+  tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  cost: 0,
+})
+
+it.effect('reloads the Pi harness session in place when the runtime is idle', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let reloadCount = 0
+      const session: PiAgentSessionContract = {
+        sessionId: 'pi-session-reload',
+        sessionManager: { getSessionFile: () => undefined },
+        subscribe: () => () => undefined,
+        bindExtensions: async () => undefined,
+        prompt: async () => undefined,
+        abort: async () => undefined,
+        reload: async () => {
+          reloadCount += 1
+        },
+        dispose: () => undefined,
+        getSessionStats: () => emptyStats('pi-session-reload'),
+      }
+      const runtime = yield* makePiThreadRuntime({
+        thread: reloadThread('thread-reload-idle'),
+        sessionFactory: () => Effect.succeed(session),
+      })
+
+      const outcome = yield* runtime.reload()
+
+      assert.deepStrictEqual(outcome, { ok: true })
+      assert.strictEqual(reloadCount, 1)
+      // The conversation is preserved: the session and its file are untouched.
+      assert.strictEqual(runtime.harnessSession.id, 'pi-session-reload')
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
+)
+
+it.effect('refuses harness reload while a Pi Turn is active', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const turnPromptStarted = yield* Deferred.make<void>()
+      const finishTurnPrompt = yield* Deferred.make<void>()
+      let reloadCount = 0
+      const session: PiAgentSessionContract = {
+        sessionId: 'pi-session-reload-busy',
+        sessionManager: { getSessionFile: () => undefined },
+        subscribe: () => () => undefined,
+        bindExtensions: async () => undefined,
+        prompt: async (_text, options) => {
+          if (options?.streamingBehavior === 'steer') return
+          Effect.runFork(Deferred.succeed(turnPromptStarted, undefined))
+          await Effect.runPromise(Deferred.await(finishTurnPrompt))
+        },
+        abort: async () => {
+          await Effect.runPromise(Deferred.succeed(finishTurnPrompt, undefined))
+        },
+        reload: async () => {
+          reloadCount += 1
+        },
+        dispose: () => undefined,
+        getSessionStats: () => emptyStats('pi-session-reload-busy'),
+      }
+      const runtime = yield* makePiThreadRuntime({
+        thread: reloadThread('thread-reload-busy'),
+        sessionFactory: () => Effect.succeed(session),
+      })
+      yield* runtime
+        .prompt({
+          turnId: decodeTurnId('turn-reload-busy'),
+          message: { source: 'user', content: { text: 'start', images: [] } },
+          mode: 'turn',
+        })
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(turnPromptStarted)
+
+      const outcome = yield* runtime.reload()
+
+      assert.deepStrictEqual(outcome, {
+        ok: false,
+        reason: 'busy',
+        detail: 'A turn is active in this thread; wait for it to finish before reloading.',
+      })
+      assert.strictEqual(reloadCount, 0)
+
+      yield* Deferred.succeed(finishTurnPrompt, undefined)
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
+)
+
+it.effect('reports a structured failure when the Pi reload rejects', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const session: PiAgentSessionContract = {
+        sessionId: 'pi-session-reload-failure',
+        sessionManager: { getSessionFile: () => undefined },
+        subscribe: () => () => undefined,
+        bindExtensions: async () => undefined,
+        prompt: async () => undefined,
+        abort: async () => undefined,
+        reload: async () => {
+          throw new Error('extension runner exploded')
+        },
+        dispose: () => undefined,
+        getSessionStats: () => emptyStats('pi-session-reload-failure'),
+      }
+      const runtime = yield* makePiThreadRuntime({
+        thread: reloadThread('thread-reload-failure'),
+        sessionFactory: () => Effect.succeed(session),
+      })
+
+      const outcome = yield* runtime.reload()
+
+      assert.deepStrictEqual(outcome, {
+        ok: false,
+        reason: 'reload-failed',
+        detail: 'extension runner exploded',
+      })
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
 )

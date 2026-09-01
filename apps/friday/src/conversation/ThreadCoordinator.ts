@@ -10,7 +10,12 @@ import {
   type ThreadPersistenceContract,
   type ThreadPersistenceError,
 } from './ThreadPersistence.ts'
-import type { PromptRequest, ThreadRuntime, ThreadRuntimeEvent } from './ThreadRuntime.ts'
+import type {
+  HarnessReloadOutcome,
+  PromptRequest,
+  ThreadRuntime,
+  ThreadRuntimeEvent,
+} from './ThreadRuntime.ts'
 
 export type TerminalTurn =
   | {
@@ -45,6 +50,7 @@ export interface ThreadCoordinatorContract<PromptError, EventError> {
     activity: SteeringActivity,
   ) => Effect.Effect<void, PromptError | ThreadPersistenceError>
   readonly cancel: (turnId: TurnId) => Effect.Effect<void, PromptError>
+  readonly reload: () => Effect.Effect<HarnessReloadOutcome>
   readonly onEvent: (
     listener: (event: ThreadRuntimeEvent) => Effect.Effect<void>,
   ) => Effect.Effect<void, never, Scope.Scope>
@@ -194,6 +200,7 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
         }
       }),
     cancel: runtime.cancel,
+    reload: runtime.reload,
     onEvent: (listener) =>
       Effect.acquireRelease(
         Effect.sync(() => void eventListeners.add(listener)),

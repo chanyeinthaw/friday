@@ -10,6 +10,7 @@ import type {
   TurnId,
 } from '@friday/contracts/conversation'
 import type * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import type * as Stream from 'effect/Stream'
 
 export type PromptMode = 'steer' | 'turn'
@@ -63,11 +64,52 @@ export type ThreadRuntimeEvent =
       readonly completedAt: IsoDateTime
     }
 
+/**
+ * Structured result of a harness reload against one live runtime. Reloads
+ * refresh harness extensions/settings in place and always preserve the
+ * conversation; refusals (busy, absent runtime) and failures never throw
+ * across the transport boundary.
+ */
+export const HarnessReloadOutcome = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    reason: Schema.Literals(['busy', 'no-runtime', 'unknown-thread', 'reload-failed']),
+    detail: Schema.String,
+  }),
+])
+export type HarnessReloadOutcome = typeof HarnessReloadOutcome.Type
+
+export const harnessReloadSucceeded = (): HarnessReloadOutcome => ({ ok: true })
+
+export const harnessReloadRefused = (
+  reason: Exclude<Extract<HarnessReloadOutcome, { ok: false }>['reason'], 'reload-failed'>,
+  detail: string,
+): HarnessReloadOutcome => ({ ok: false, reason, detail })
+
+export const harnessReloadFailed = (detail: string): HarnessReloadOutcome => ({
+  ok: false,
+  reason: 'reload-failed',
+  detail,
+})
+
+/** Human-readable one-line summary shared by the Discord reply. */
+export const formatHarnessReloadOutcome = (outcome: HarnessReloadOutcome): string =>
+  outcome.ok
+    ? 'Harness reloaded (extensions and settings refreshed; conversation preserved).'
+    : outcome.reason === 'reload-failed'
+      ? `Harness reload failed: ${outcome.detail}`
+      : `Harness reload refused (${outcome.reason}): ${outcome.detail}`
+
 export interface ThreadRuntime<PromptError = never, EventError = never> {
   readonly threadId: ThreadId
   readonly harnessSession: HarnessSession
   readonly prompt: (request: PromptRequest) => Effect.Effect<void, PromptError>
   readonly cancel: (turnId: TurnId) => Effect.Effect<void, PromptError>
+  /** Reloads the harness session in place; never fails, reports an outcome. */
+  readonly reload: () => Effect.Effect<HarnessReloadOutcome>
   readonly events: Stream.Stream<ThreadRuntimeEvent, EventError>
 }
 
