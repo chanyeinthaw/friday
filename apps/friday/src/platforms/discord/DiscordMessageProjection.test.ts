@@ -50,6 +50,12 @@ it.effect('repairs a pre-existing Discord thread starter projected as its parent
 
 it.effect('keeps an ordinary channel message in the parent channel', () =>
   Effect.gen(function* () {
+    // SAFETY: The prototype supplies the required adapter while own properties below supply channelId and id.
+    const sdkThread = Object.create({ adapter: { name: 'discord' } }) as typeof thread
+    Object.assign(sdkThread, {
+      channelId: 'discord:guild-1:channel-1',
+      id: 'discord:guild-1:channel-1',
+    })
     const input = yield* projectDiscordMessage(
       'discord',
       {
@@ -58,7 +64,7 @@ it.effect('keeps an ordinary channel message in the parent channel', () =>
           `discord:${guildId}:${channelId}:${threadId}`,
         fetchChannelInfo: () => Promise.reject(new Error('not found')),
       },
-      thread,
+      sdkThread,
       message,
     )
 

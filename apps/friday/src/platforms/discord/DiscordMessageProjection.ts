@@ -1,4 +1,5 @@
 import type { DiscordAdapter } from '@chat-adapter/discord'
+import { PlatformConversationId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
@@ -16,11 +17,28 @@ const ExistingDiscordThread = Schema.Struct({
   type: Schema.Literals([10, 11, 12]),
 })
 const decodeExistingDiscordThread = Schema.decodeUnknownOption(ExistingDiscordThread)
+const decodeConversationId = Schema.decodeSync(PlatformConversationId)
 
 export interface DiscordMessageProjectionAdapter extends Pick<
   DiscordAdapter,
   'decodeThreadId' | 'encodeThreadId' | 'fetchChannelInfo'
 > {}
+
+const projectWithConversationId = (
+  connectionId: string,
+  thread: ChatSdkThreadProjectionSource,
+  message: ChatSdkMessageProjectionSource,
+  conversationId: string,
+) => {
+  const input = projectChatSdkMessage(connectionId, thread, message)
+  return {
+    ...input,
+    binding: {
+      ...input.binding,
+      conversationId: decodeConversationId(conversationId),
+    },
+  }
+}
 
 /** Repairs Chat SDK's parent-channel fallback when a message already owns a Discord thread. */
 export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function* (
@@ -35,12 +53,9 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
   })
   if (isDiscordThread(location)) return projectChatSdkMessage(connectionId, thread, message)
 
-  const channelThread = {
-    ...thread,
-    id: discordChannelConversationId(discord, location),
-  }
+  const channelConversationId = discordChannelConversationId(discord, location)
   if (location.guildId === '@me' || location.threadId === location.channelId) {
-    return projectChatSdkMessage(connectionId, channelThread, message)
+    return projectWithConversationId(connectionId, thread, message, channelConversationId)
   }
 
   const existingThread = yield* Effect.promise(() =>
@@ -54,17 +69,14 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
     existingThread._tag === 'None' ||
     existingThread.value.parent_id !== location.channelId
   ) {
-    return projectChatSdkMessage(connectionId, channelThread, message)
+    return projectWithConversationId(connectionId, thread, message, channelConversationId)
   }
 
-  const repairedThread = {
-    ...thread,
-    id: discord.encodeThreadId({
-      guildId: location.guildId,
-      channelId: location.channelId,
-      threadId: existingThread.value.id,
-    }),
-  }
+  const repairedConversationId = discord.encodeThreadId({
+    guildId: location.guildId,
+    channelId: location.channelId,
+    threadId: existingThread.value.id,
+  })
   yield* Effect.logInfo('discord.thread-binding.repaired').pipe(
     Effect.annotateLogs({
       channelId: location.channelId,
@@ -72,5 +84,5 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
       messageId: message.id,
     }),
   )
-  return projectChatSdkMessage(connectionId, repairedThread, message)
+  return projectWithConversationId(connectionId, thread, message, repairedConversationId)
 })
