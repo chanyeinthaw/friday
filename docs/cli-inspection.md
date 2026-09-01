@@ -7,14 +7,14 @@ command prefix for the authoritative command and usage listing.
 
 ## `friday worktree list [--json]`
 
-Lists the repository worktrees Friday manages, using a persisted registry as
-the source of truth for what is Friday-managed. The registry lives at
+Lists the repository worktrees Friday created or explicitly adopted, using a
+persisted registry as the source of truth for that lifecycle ownership. The registry lives at
 `$FRIDAY_HOME/repositories/worktrees.json` and is written only by Friday's own
 worktree lifecycle operations: `worktree ensure` registers the worktree it
 creates or adopts, isolated task worktrees register at creation, and cleanup
-removal unregisters the entry it removed. Because the registry is the only
-source of entries, the command never scans the file system for arbitrary git
-repositories and never claims caches or worktrees it did not create.
+removal unregisters the entry it removed. Because the registry is the only source of entries, the command never scans
+the file system for arbitrary git repositories. An entry may be Friday-created
+or explicitly adopted after exact validation.
 
 For every registered entry, the current branch, head, and prunable state are
 read from git's own worktree registry at the entry's recorded common
@@ -46,12 +46,22 @@ registers an exact worktree path. This is deliberately conservative. A cache
 under `$FRIDAY_HOME/repositories` is not enough evidence by itself because an
 operator or another tool may have placed it there.
 
-`worktree ensure` registers an existing matching worktree when it adopts it.
-Task creation registers an existing matching isolated task worktree when it
-reuses it. Cleanup removal updates registrations as it removes worktrees. The
-registry writer uses an atomic rename, so listing never reads a partly written
-file. A malformed registry is a typed error rather than silently discarded
-state.
+`worktree ensure` may adopt an existing destination only after its exact path
+and origin remote match the request. Isolated task creation is stricter: the
+destination must be registered in the requested primary repository's Git
+common directory and checked out on the exact deterministic
+`friday/task/<id>` branch. Validation happens before Friday registers or
+mutates the destination.
+
+These guarantees begin with registry-aware Friday versions. Older Friday
+versions did not persist ownership metadata, so the absence of an entry cannot
+prove who created a pre-registry worktree.
+
+Registry read-modify-write operations keep the in-process semaphore and also
+hold an inter-process lock under `$FRIDAY_HOME/repositories`. Lock acquisition
+is bounded and stale locks are recoverable. The final document is replaced by
+atomic rename, so readers do not see a partly written file. A malformed
+registry is a typed error rather than silently discarded state.
 
 ## `friday workspace cleanup list [--json]`
 
@@ -59,18 +69,23 @@ Lists every recorded workspace cleanup proposal from the persisted
 `workspace_cleanup_proposals` table, most recently created first, together
 with each proposal's resource snapshots. It complements
 `workspace cleanup apply`: apply executes one approved proposal from its
-owning workspace, while `list` shows all recorded proposals — pending, applied,
-and stale — from anywhere.
+owning workspace, while `list` shows all recorded proposals, including pending, failed, applied, and stale, from
+anywhere.
 
 Human output shows one block per proposal: id, status, the recorded summary
 (worktree count, uncommitted-file count, estimated size), the owning workspace
-path, and each resource with its branch and size. With `--json`, the command
+path, and each resource with its branch, size, and removal progress. With `--json`, the command
 prints a JSON array of full proposal records (the same shape
 `workspace cleanup apply --json` returns for a single proposal, including the
 `resources` snapshots).
 
-Listing does not validate a proposal against the live file system. Freshness
-is enforced at apply time: when the owning channel workspace or a recorded
-worktree changed since the proposal was created, apply marks the proposal
-`stale` transactionally and fails with a typed stale error, so it immediately
-stops showing as pending in `workspace cleanup list`.
+Listing does not validate a proposal against the live file system. Apply first
+validates every remaining resource. A changed workspace or worktree marks the
+proposal `stale` before any new deletion starts.
+
+Cleanup is not described as an atomic filesystem transaction. Each successful
+resource removal is persisted as `removed`. If a later Git, filesystem, or
+registry step fails, the proposal becomes `failed` and keeps the exact
+remaining resources as `pending`. Running apply again resumes those pending
+steps. Removal is idempotent, including the case where Git removal succeeded
+but registry persistence failed.

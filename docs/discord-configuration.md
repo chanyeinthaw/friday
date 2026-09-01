@@ -123,11 +123,14 @@ can carry a single override; `channel reset` removes the row entirely.
 ## CLI help
 
 `friday --help` renders the full command listing from the same typed command
-registry the parser dispatches on. Every command prefix accepts `--help`:
+tree the parser uses. Execution uses a separate switch over the parsed action
+union. The switch has a `never` default, and the operation contract is typed,
+so adding an action without an execution case fails typechecking. Every command
+prefix accepts `--help`:
 `friday config discord guild --help` lists the guild subcommands, and
 `friday config discord guild set-users --help` prints that command's exact
-usage. The rendered help is the single source of command truth; there is no
-separate usage file to drift.
+usage. The tree is the source of parsing and help metadata. The exhaustive
+action switch is the source of execution behavior.
 
 ## Migration from connection-scoped configuration
 

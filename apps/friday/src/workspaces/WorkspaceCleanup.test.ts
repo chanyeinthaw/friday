@@ -10,7 +10,7 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { execFile } from 'node:child_process'
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { vi } from 'vitest'
@@ -21,6 +21,7 @@ import {
   ensureRepositoryWorktree,
   listManagedWorktrees,
   RepositoryUrl,
+  worktreeRegistryPath,
 } from '../repositories/RepositoryWorktrees.ts'
 import {
   isDirectChild,
@@ -269,6 +270,74 @@ describe('WorkspaceCleanup', () => {
         )
       }
       assert.strictEqual((yield* cleanup.get(proposal.id)).status, 'stale')
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(SqlClientLive, ThreadPersistenceLive, TestLive)),
+    ),
+  )
+
+  it.effect('records partial progress as failed and resumes after registry recovery', () =>
+    Effect.gen(function* () {
+      const { workspace, worktree: first } = yield* makeManagedWorkspace('resume-failure')
+      const otherSource = join(fridayHome, 'workspaces', 'resume-failure-other')
+      yield* Effect.promise(() => mkdir(otherSource, { recursive: true }))
+      yield* Effect.promise(() => writeFile(join(otherSource, 'README.md'), 'other', 'utf8'))
+      yield* Effect.promise(() => git(otherSource, 'init', '--initial-branch=main'))
+      yield* Effect.promise(() => commitAll(otherSource, 'initial'))
+      const second = yield* ensureRepositoryWorktree({
+        url: decodeRepositoryUrlSync(otherSource),
+        workspaceRoot: workspace,
+      })
+      const cleanup = yield* WorkspaceCleanup
+      const proposal = yield* proposeForWorkspace(workspace)
+      assert(proposal !== null)
+      assert.strictEqual(proposal.resources.length, 2)
+
+      const registry = worktreeRegistryPath(fridayHome)
+      const backup = `${registry}.backup`
+      yield* Effect.promise(() => rename(registry, backup))
+      yield* Effect.promise(() => mkdir(registry))
+      const failure = yield* cleanup.apply(proposal.id, workspace).pipe(Effect.flip)
+      assert(isCleanupError(failure))
+      const failed = yield* cleanup.get(proposal.id)
+      assert.strictEqual(failed.status, 'failed')
+      assert.deepStrictEqual(
+        failed.resources.map((resource) => resource.removalStatus),
+        ['pending', 'pending'],
+      )
+      const removedFirst = proposal.resources[0]!.path
+      const untouchedSecond = proposal.resources[1]!.path
+      assert.strictEqual(
+        yield* Effect.promise(() =>
+          stat(removedFirst).then(
+            () => false,
+            () => true,
+          ),
+        ),
+        true,
+      )
+      assert.strictEqual(
+        yield* Effect.promise(() =>
+          stat(untouchedSecond).then(
+            () => true,
+            () => false,
+          ),
+        ),
+        true,
+      )
+
+      yield* Effect.promise(() => rm(registry, { recursive: true, force: true }))
+      yield* Effect.promise(() => rename(backup, registry))
+      const applied = yield* cleanup.apply(proposal.id, workspace)
+      assert.strictEqual(applied.status, 'applied')
+      assert.deepStrictEqual(
+        applied.resources.map((resource) => resource.removalStatus),
+        ['removed', 'removed'],
+      )
+      const listedPaths = (yield* listManagedWorktrees()).map((entry) => entry.path)
+      assert.strictEqual(listedPaths.includes(first.path), false)
+      assert.strictEqual(listedPaths.includes(second.path), false)
+      assert(new Set([first.path, second.path]).has(removedFirst))
     }).pipe(
       Effect.scoped,
       Effect.provide(Layer.mergeAll(SqlClientLive, ThreadPersistenceLive, TestLive)),

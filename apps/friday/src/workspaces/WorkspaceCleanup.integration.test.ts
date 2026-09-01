@@ -53,10 +53,10 @@ test('lists recorded cleanup proposals most recent first with their resources', 
       ) =>
         sql`
           INSERT INTO workspace_cleanup_proposals (
-            proposal_id, thread_id, status, workspace_path, estimated_bytes,
+            proposal_id, thread_id, status, lifecycle_status, workspace_path, estimated_bytes,
             created_at, applied_at, summary
           ) VALUES (
-            ${proposalId}, 'task-1', ${status}, '/tmp/channel', 4096,
+            ${proposalId}, 'task-1', ${status}, ${status}, '/tmp/channel', 4096,
             ${createdAt}, ${status === 'applied' ? '2025-01-02T00:00:00Z' : null},
             '1 repository worktree, 0 with uncommitted files, approximately 4096 bytes.'
           )
@@ -93,6 +93,7 @@ test('lists recorded cleanup proposals most recent first with their resources', 
         ['/tmp/channel/newer-repo'],
       )
       assert.strictEqual(proposals[0]!.resources[0]!.sizeBytes, 4096)
+      assert.strictEqual(proposals[0]!.resources[0]!.removalStatus, 'pending')
       assert.strictEqual(proposals[0]!.appliedAt, null)
       assert.strictEqual(proposals[1]!.appliedAt, '2025-01-02T00:00:00Z')
     }),

@@ -299,6 +299,96 @@ export const readWorktreeRegistry = (
   )
 
 const registrySemaphore = Semaphore.makeUnsafe(1)
+const registryLockTimeoutMs = 10_000
+const registryLockStaleMs = 30_000
+const registryLockRetryMs = 25
+
+const registryLockPath = (home: string): string => `${worktreeRegistryPath(home)}.lock`
+
+const pause = (milliseconds: number) =>
+  Effect.promise(() => new Promise<void>((resolvePause) => setTimeout(resolvePause, milliseconds)))
+
+/**
+ * Acquires an inter-process registry lock by atomically creating a directory.
+ * A lock older than 30 seconds is recoverable. Healthy contention is bounded
+ * to 10 seconds so a wedged writer cannot block Friday forever.
+ */
+const acquireRegistryLock = Effect.fn('RepositoryWorktrees.acquireRegistryLock')(function* (
+  home: string,
+) {
+  const lockPath = registryLockPath(home)
+  const startedAt = Date.now()
+  yield* Effect.tryPromise({
+    try: () => mkdir(dirname(lockPath), { recursive: true }),
+    catch: (cause) =>
+      new RepositoryWorktreeError({
+        operation: 'inspect',
+        detail: 'Could not create the managed worktree registry directory.',
+        cause,
+      }),
+  })
+  while (true) {
+    const acquired = yield* Effect.tryPromise({
+      try: async () => {
+        await mkdir(lockPath)
+        await writeFile(join(lockPath, 'owner'), `${process.pid}\n`, { mode: 0o600 })
+        return true
+      },
+      catch: (cause) => {
+        // SAFETY: Node filesystem rejections carry the optional errno code.
+        if ((cause as NodeJS.ErrnoException).code === 'EEXIST') return false
+        throw cause
+      },
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new RepositoryWorktreeError({
+            operation: 'inspect',
+            detail: 'Could not acquire the managed worktree registry lock.',
+            cause,
+          }),
+      ),
+    )
+    if (acquired) return lockPath
+
+    const lockStat = yield* Effect.tryPromise({
+      try: () => stat(lockPath),
+      catch: (cause) => {
+        // SAFETY: Node filesystem rejections carry the optional errno code.
+        if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw cause
+      },
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new RepositoryWorktreeError({
+            operation: 'inspect',
+            detail: 'Could not inspect the managed worktree registry lock.',
+            cause,
+          }),
+      ),
+    )
+    if (lockStat !== null && Date.now() - lockStat.mtimeMs > registryLockStaleMs) {
+      yield* Effect.tryPromise({
+        try: () => rm(lockPath, { recursive: true, force: true }),
+        catch: (cause) =>
+          new RepositoryWorktreeError({
+            operation: 'inspect',
+            detail: 'Could not recover a stale managed worktree registry lock.',
+            cause,
+          }),
+      })
+      continue
+    }
+    if (Date.now() - startedAt >= registryLockTimeoutMs) {
+      return yield* new RepositoryWorktreeError({
+        operation: 'inspect',
+        detail: 'Timed out waiting for the managed worktree registry lock.',
+      })
+    }
+    yield* pause(registryLockRetryMs)
+  }
+})
 
 /** Writes a complete registry by atomic rename, so readers never see a partial document. */
 const writeRegistry = (home: string, registry: WorktreeRegistry) =>
@@ -330,16 +420,21 @@ const writeRegistry = (home: string, registry: WorktreeRegistry) =>
     (temporaryPath) => Effect.promise(() => rm(temporaryPath, { force: true })),
   )
 
-/** Serializes registry read-modify-write operations within this Friday process. */
+/** Serializes registry read-modify-write operations within and across Friday processes. */
 const updateRegistry = (
   home: string,
   update: (entries: ReadonlyArray<ManagedWorktreeRegistration>) => WorktreeRegistry,
 ) =>
   registrySemaphore.withPermit(
-    Effect.gen(function* () {
-      const existing = yield* readWorktreeRegistry(home)
-      yield* writeRegistry(home, update(existing?.worktrees ?? []))
-    }),
+    Effect.acquireUseRelease(
+      acquireRegistryLock(home),
+      () =>
+        Effect.gen(function* () {
+          const existing = yield* readWorktreeRegistry(home)
+          yield* writeRegistry(home, update(existing?.worktrees ?? []))
+        }),
+      (lockPath) => Effect.promise(() => rm(lockPath, { recursive: true, force: true })),
+    ),
   )
 
 /** Adds or refreshes one registry entry. A missing registry starts empty. */
@@ -354,7 +449,7 @@ const registerManagedWorktree = Effect.fn('RepositoryWorktrees.register')(functi
 })
 
 /** Removes one registry entry; a missing registry is materialized as empty. */
-const unregisterManagedWorktree = Effect.fn('RepositoryWorktrees.unregister')(function* (
+export const unregisterManagedWorktree = Effect.fn('RepositoryWorktrees.unregister')(function* (
   home: string,
   path: string,
 ) {
@@ -445,27 +540,39 @@ export const removeRepositoryWorktree = Effect.fn('RepositoryWorktrees.removeMan
   snapshot: RepositoryWorktreeSnapshot,
   home: string = FRIDAY_HOME,
 ) {
-  yield* validateRepositoryWorktreeSnapshot(snapshot)
-  yield* requireGit('remove', [
-    '--git-dir',
-    snapshot.commonDirectory,
-    'worktree',
-    'remove',
-    '--force',
-    snapshot.path,
-  ])
-  if (snapshot.branch.startsWith('friday/task/')) {
+  const current = yield* inspectRepositoryWorktree(snapshot.path)
+  if (current !== null) {
+    yield* validateRepositoryWorktreeSnapshot(snapshot)
     yield* requireGit('remove', [
       '--git-dir',
       snapshot.commonDirectory,
-      'branch',
-      '-D',
-      snapshot.branch,
+      'worktree',
+      'remove',
+      '--force',
+      snapshot.path,
     ])
   }
+  if (snapshot.branch.startsWith('friday/task/')) {
+    const branch = yield* runGit([
+      '--git-dir',
+      snapshot.commonDirectory,
+      'show-ref',
+      '--verify',
+      `refs/heads/${snapshot.branch}`,
+    ])
+    if (branch.exitCode === 0) {
+      yield* requireGit('remove', [
+        '--git-dir',
+        snapshot.commonDirectory,
+        'branch',
+        '-D',
+        snapshot.branch,
+      ])
+    }
+  }
   yield* requireGit('remove', ['--git-dir', snapshot.commonDirectory, 'worktree', 'prune'])
-  // Git removal is already durable. Keep a failed registry update visible so
-  // operators know the stale registration still needs attention.
+  // Retrying after a registry failure is safe: Git removal, branch deletion,
+  // pruning, and unregistration are all checked or idempotent.
   yield* unregisterManagedWorktree(home, snapshot.path)
 })
 
@@ -565,6 +672,62 @@ export interface CreateIsolatedWorktreeInput {
   readonly taskId: string
 }
 
+const registrationWithRollback = (
+  registration: Effect.Effect<void, RepositoryWorktreeError>,
+  rollback: Effect.Effect<void, RepositoryWorktreeError>,
+): Effect.Effect<void, RepositoryWorktreeError> =>
+  registration.pipe(
+    Effect.catch((original) =>
+      rollback.pipe(
+        Effect.catch((cleanup) =>
+          Effect.fail(
+            new RepositoryWorktreeError({
+              operation: original.operation,
+              detail: `${original.message} Rollback also failed: ${cleanup.message}`,
+              cause: original,
+            }),
+          ),
+        ),
+        Effect.andThen(Effect.fail(original)),
+      ),
+    ),
+  )
+
+const rollbackCreatedWorktree = Effect.fn('RepositoryWorktrees.rollbackCreated')(function* (
+  commonDirectory: string,
+  destination: string,
+  branch: string,
+  deleteBranch: boolean,
+) {
+  const removed = yield* runGit([
+    '--git-dir',
+    commonDirectory,
+    'worktree',
+    'remove',
+    '--force',
+    destination,
+  ])
+  if (removed.exitCode !== 0 && (yield* pathExists(destination))) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'remove',
+      detail: removed.stderr || `Could not roll back worktree '${destination}'.`,
+    })
+  }
+  if (deleteBranch) {
+    const branchExists = yield* runGit([
+      '--git-dir',
+      commonDirectory,
+      'show-ref',
+      '--verify',
+      `refs/heads/${branch}`,
+    ])
+    if (branchExists.exitCode === 0) {
+      yield* requireGit('remove', ['--git-dir', commonDirectory, 'branch', '-D', branch])
+    }
+  }
+  yield* requireGit('remove', ['--git-dir', commonDirectory, 'worktree', 'prune'])
+})
+
 export const createIsolatedWorktree = Effect.fn('RepositoryWorktrees.createIsolated')(function* (
   input: CreateIsolatedWorktreeInput,
   home: string = FRIDAY_HOME,
@@ -582,26 +745,44 @@ export const createIsolatedWorktree = Effect.fn('RepositoryWorktrees.createIsola
   const destination = `${primary}--${shortTaskId}`
   const branch = `friday/task/${shortTaskId}`
   const registeredAt = DateTime.formatIso(yield* DateTime.now)
+  const origin = yield* requireGit('inspect', ['-C', primary, 'remote', 'get-url', 'origin'])
   const existing = yield* runGit(['-C', destination, 'rev-parse', '--is-inside-work-tree'])
   if (existing.exitCode === 0) {
-    const currentBranch = yield* requireGit('inspect', [
-      '-C',
-      destination,
-      'branch',
-      '--show-current',
+    const [currentBranch, destinationGitDirectory] = yield* Effect.all([
+      requireGit('inspect', ['-C', destination, 'branch', '--show-current']),
+      requireGit('inspect', ['-C', destination, 'rev-parse', '--git-common-dir']),
     ])
+    const destinationCommonDirectory = resolve(destination, destinationGitDirectory)
+    const registered = yield* runGit([
+      '--git-dir',
+      commonDirectory,
+      'worktree',
+      'list',
+      '--porcelain',
+    ])
+    const isRegistered =
+      registered.exitCode === 0 &&
+      parseWorktreePorcelain(registered.stdout).some((record) => record.path === destination)
+    if (
+      destinationCommonDirectory !== commonDirectory ||
+      !isRegistered ||
+      currentBranch !== branch
+    ) {
+      return yield* new RepositoryWorktreeError({
+        operation: 'validate',
+        detail: `Existing isolated destination '${destination}' is not the registered '${branch}' worktree of '${commonDirectory}'.`,
+      })
+    }
     yield* registerManagedWorktree(home, {
       path: destination,
-      url: yield* requireGit('inspect', ['-C', primary, 'remote', 'get-url', 'origin']),
+      url: origin,
       commonDirectory,
       registeredAt,
     })
     return ManagedWorktree.make({
-      url: RepositoryUrl.make(
-        yield* requireGit('inspect', ['-C', primary, 'remote', 'get-url', 'origin']),
-      ),
+      url: RepositoryUrl.make(origin),
       path: destination,
-      branch: currentBranch,
+      branch,
       baseRef: baseCommit,
       commonDirectory,
       reused: true,
@@ -623,12 +804,15 @@ export const createIsolatedWorktree = Effect.fn('RepositoryWorktrees.createIsola
     destination,
     baseCommit,
   ])
-  yield* registerManagedWorktree(home, {
-    path: destination,
-    url: yield* requireGit('inspect', ['-C', primary, 'remote', 'get-url', 'origin']),
-    commonDirectory,
-    registeredAt,
-  })
+  yield* registrationWithRollback(
+    registerManagedWorktree(home, {
+      path: destination,
+      url: origin,
+      commonDirectory,
+      registeredAt,
+    }),
+    rollbackCreatedWorktree(commonDirectory, destination, branch, true),
+  )
   return ManagedWorktree.make({
     url: RepositoryUrl.make(
       yield* requireGit('inspect', ['-C', primary, 'remote', 'get-url', 'origin']),
@@ -729,12 +913,15 @@ export const ensureRepositoryWorktree = Effect.fn('RepositoryWorktrees.ensure')(
       ? ['--git-dir', cacheDirectory, 'worktree', 'add', destination, branch]
       : ['--git-dir', cacheDirectory, 'worktree', 'add', '-b', branch, destination, baseRef]
   yield* requireGit('create', arguments_)
-  yield* registerManagedWorktree(home, {
-    path: destination,
-    url: input.url,
-    commonDirectory: cacheDirectory,
-    registeredAt,
-  })
+  yield* registrationWithRollback(
+    registerManagedWorktree(home, {
+      path: destination,
+      url: input.url,
+      commonDirectory: cacheDirectory,
+      registeredAt,
+    }),
+    rollbackCreatedWorktree(cacheDirectory, destination, branch, branchExists.exitCode !== 0),
+  )
   return ManagedWorktree.make({
     url: input.url,
     path: destination,

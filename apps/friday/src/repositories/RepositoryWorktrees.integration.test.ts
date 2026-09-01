@@ -1,7 +1,7 @@
 /* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/async-function, effecttsgo/node-builtin-import -- Bun runs this integration test against real temporary Git repositories; Effect execution is the explicit test boundary. */
 
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Schema from 'effect/Schema'
@@ -19,6 +19,11 @@ const temporaryDirectories: Array<string> = []
 const decodeWorktree = Schema.decodeSync(Schema.fromJsonString(ManagedWorktree))
 const decodeWorktreeList = Schema.decodeSync(
   Schema.fromJsonString(Schema.Array(ManagedWorktreeListEntry)),
+)
+const decodeRegistryPaths = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({ worktrees: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+  ),
 )
 
 const makeTemporaryDirectory = async (prefix: string) => {
@@ -153,6 +158,56 @@ test('lists managed worktrees from the persisted Friday registry', async () => {
   const pruned = decodeWorktreeList(await runFriday(['worktree', 'list', '--json']))
   expect(pruned.length).toBe(1)
   expect(pruned[0]!.prunable).toBe(true)
+})
+
+test('keeps concurrent registry updates from separate Friday processes', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-concurrency-test-')
+  const fridayHome = join(root, 'friday-home')
+  const sources = [join(root, 'source-one'), join(root, 'source-two')]
+  const workspaces = [join(root, 'workspace-one'), join(root, 'workspace-two')]
+  await Promise.all(
+    sources.map(async (source) => {
+      await command(['git', 'init', '--initial-branch=main', source])
+      await Bun.write(join(source, 'README.md'), `${source}\n`)
+      await command(['git', '-C', source, 'add', 'README.md'])
+      await command([
+        'git',
+        '-C',
+        source,
+        '-c',
+        'user.name=Friday',
+        '-c',
+        'user.email=friday@example.com',
+        'commit',
+        '-m',
+        'initial',
+      ])
+    }),
+  )
+  await Promise.all(
+    sources.map((source, index) =>
+      command(
+        [
+          'bun',
+          'run',
+          './src/main.ts',
+          'worktree',
+          'ensure',
+          source,
+          '--workspace',
+          workspaces[index]!,
+          '--json',
+        ],
+        { FRIDAY_HOME: fridayHome, NODE_ENV: 'test' },
+      ),
+    ),
+  )
+  const registry = decodeRegistryPaths(
+    await readFile(join(fridayHome, 'repositories', 'worktrees.json'), 'utf8'),
+  )
+  expect(registry.worktrees.map((entry) => entry.path).toSorted()).toEqual(
+    sources.map((source, index) => join(workspaces[index]!, source.split('/').at(-1)!)).toSorted(),
+  )
 })
 
 test('removes an approved dirty worktree after revalidating its snapshot', async () => {

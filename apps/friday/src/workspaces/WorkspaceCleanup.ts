@@ -31,13 +31,18 @@ export type WorkspaceCleanupProposalId = typeof WorkspaceCleanupProposalId.Type
 export const WorkspaceCleanupProposal = Schema.Struct({
   id: WorkspaceCleanupProposalId,
   threadId: ThreadId,
-  status: Schema.Literals(['pending', 'applied', 'stale']),
+  status: Schema.Literals(['pending', 'applied', 'stale', 'failed']),
   workspacePath: Schema.String,
   estimatedBytes: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   createdAt: Schema.String,
   appliedAt: Schema.NullOr(Schema.String),
   summary: Schema.String,
-  resources: Schema.Array(RepositoryWorktreeSnapshot),
+  resources: Schema.Array(
+    Schema.Struct({
+      ...RepositoryWorktreeSnapshot.fields,
+      removalStatus: Schema.Literals(['pending', 'removed']),
+    }),
+  ),
 })
 export type WorkspaceCleanupProposal = typeof WorkspaceCleanupProposal.Type
 
@@ -45,6 +50,7 @@ const ProposalRow = Schema.Struct({
   proposal_id: Schema.String,
   thread_id: Schema.String,
   status: Schema.String,
+  lifecycle_status: Schema.String,
   workspace_path: Schema.String,
   estimated_bytes: Schema.Number,
   created_at: Schema.String,
@@ -59,6 +65,7 @@ const ResourceRow = Schema.Struct({
   common_directory: Schema.String,
   status_porcelain: Schema.String,
   size_bytes: Schema.Number,
+  removal_status: Schema.String,
 })
 const decodeProposalRows = Schema.decodeUnknownEffect(Schema.Array(ProposalRow))
 const decodeResourceRows = Schema.decodeUnknownEffect(Schema.Array(ResourceRow))
@@ -138,7 +145,7 @@ const rowToProposal = Effect.fn('WorkspaceCleanup.rowToProposal')(function* (
   return yield* decodeProposal({
     id: proposal.proposal_id,
     threadId: proposal.thread_id,
-    status: proposal.status,
+    status: proposal.lifecycle_status,
     workspacePath: proposal.workspace_path,
     estimatedBytes: proposal.estimated_bytes,
     createdAt: proposal.created_at,
@@ -151,6 +158,7 @@ const rowToProposal = Effect.fn('WorkspaceCleanup.rowToProposal')(function* (
       commonDirectory: resource.common_directory,
       status: resource.status_porcelain,
       sizeBytes: resource.size_bytes,
+      removalStatus: resource.removal_status,
     })),
   })
 })
@@ -187,7 +195,7 @@ export const WorkspaceCleanupLive = Layer.effect(
     const propose = Effect.fn('WorkspaceCleanup.propose')(function* (thread: ChannelThread) {
       const existing = yield* sql<Record<string, unknown>>`
         SELECT * FROM workspace_cleanup_proposals
-        WHERE thread_id = ${thread.id} AND status = 'pending'
+        WHERE thread_id = ${thread.id} AND lifecycle_status IN ('pending', 'failed')
         ORDER BY created_at DESC
         LIMIT 1
       `
@@ -238,10 +246,10 @@ export const WorkspaceCleanupLive = Layer.effect(
         Effect.gen(function* () {
           yield* sql`
             INSERT INTO workspace_cleanup_proposals (
-              proposal_id, thread_id, status, workspace_path, estimated_bytes,
+              proposal_id, thread_id, status, lifecycle_status, workspace_path, estimated_bytes,
               created_at, applied_at, summary
             ) VALUES (
-              ${proposalId}, ${thread.id}, 'pending', ${workspace}, ${estimatedBytes},
+              ${proposalId}, ${thread.id}, 'pending', 'pending', ${workspace}, ${estimatedBytes},
               ${createdAt}, NULL, ${summary}
             )
           `
@@ -250,10 +258,10 @@ export const WorkspaceCleanupLive = Layer.effect(
             (resource) => sql`
               INSERT INTO workspace_cleanup_resources (
                 proposal_id, worktree_path, branch, head, common_directory,
-                status_porcelain, size_bytes
+                status_porcelain, size_bytes, removal_status
               ) VALUES (
                 ${proposalId}, ${resource.path}, ${resource.branch}, ${resource.head},
-                ${resource.commonDirectory}, ${resource.status}, ${resource.sizeBytes}
+                ${resource.commonDirectory}, ${resource.status}, ${resource.sizeBytes}, 'pending'
               )
             `,
             { discard: true },
@@ -271,8 +279,8 @@ export const WorkspaceCleanupLive = Layer.effect(
         Effect.gen(function* () {
           yield* sql`
             UPDATE workspace_cleanup_proposals
-            SET status = 'stale'
-            WHERE proposal_id = ${proposalId} AND status = 'pending'
+            SET status = 'stale', lifecycle_status = 'stale'
+            WHERE proposal_id = ${proposalId} AND lifecycle_status IN ('pending', 'failed')
           `
         }),
       )
@@ -303,7 +311,7 @@ export const WorkspaceCleanupLive = Layer.effect(
           detail: `Cleanup proposal '${proposalId}' must be applied from its owning channel workspace.`,
         })
       }
-      if (proposal.status !== 'pending') {
+      if (proposal.status !== 'pending' && proposal.status !== 'failed') {
         return yield* new WorkspaceCleanupError({
           operation: 'validate',
           detail: `Workspace cleanup proposal '${proposalId}' is already ${proposal.status}.`,
@@ -340,12 +348,28 @@ export const WorkspaceCleanupLive = Layer.effect(
           'the owning channel workspace changed after the proposal was created.',
         )
       }
-      // Validate every snapshot before deleting anything. This avoids a
-      // partially applied cleanup when a later worktree has gone stale.
-      yield* Effect.forEach(proposal.resources, validateRepositoryWorktreeSnapshot, {
-        discard: true,
-        concurrency: 1,
-      }).pipe(
+      // Validate every remaining snapshot before deleting anything. A retry
+      // of a failed proposal accepts an already-missing worktree because the
+      // prior attempt may have removed Git state before registry persistence
+      // failed; removeRepositoryWorktree reconciles that state idempotently.
+      const remaining = proposal.resources.filter(
+        (resource) => resource.removalStatus === 'pending',
+      )
+      yield* Effect.forEach(
+        remaining,
+        (resource) =>
+          proposal.status === 'failed'
+            ? inspectRepositoryWorktree(resource.path).pipe(
+                Effect.flatMap((current) =>
+                  current === null ? Effect.void : validateRepositoryWorktreeSnapshot(resource),
+                ),
+              )
+            : validateRepositoryWorktreeSnapshot(resource),
+        {
+          discard: true,
+          concurrency: 1,
+        },
+      ).pipe(
         Effect.catch(
           (
             error,
@@ -358,14 +382,31 @@ export const WorkspaceCleanupLive = Layer.effect(
           },
         ),
       )
-      yield* Effect.forEach(proposal.resources, (resource) => removeRepositoryWorktree(resource), {
-        discard: true,
-        concurrency: 1,
-      })
+      for (const resource of remaining) {
+        const step = yield* Effect.exit(
+          removeRepositoryWorktree(resource).pipe(
+            Effect.andThen(
+              sql`
+                UPDATE workspace_cleanup_resources
+                SET removal_status = 'removed'
+                WHERE proposal_id = ${proposalId} AND worktree_path = ${resource.path}
+              `,
+            ),
+          ),
+        )
+        if (step._tag === 'Failure') {
+          yield* sql`
+            UPDATE workspace_cleanup_proposals
+            SET lifecycle_status = 'failed'
+            WHERE proposal_id = ${proposalId}
+          `
+          return yield* Effect.failCause(step.cause)
+        }
+      }
       const appliedAt = DateTime.formatIso(yield* DateTime.now)
       yield* sql`
         UPDATE workspace_cleanup_proposals
-        SET status = 'applied', applied_at = ${appliedAt}
+        SET status = 'applied', lifecycle_status = 'applied', applied_at = ${appliedAt}
         WHERE proposal_id = ${proposalId}
       `
       return yield* get(proposalId)

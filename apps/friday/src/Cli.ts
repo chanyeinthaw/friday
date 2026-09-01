@@ -56,8 +56,8 @@ import {
 export const FRIDAY_VERSION = '0.0.0-nightly.12'
 
 /**
- * One node of the CLI command tree: the single typed source of dispatch,
- * validation, and help. A branch lists its children, a leaf parses the tokens
+ * One node of the CLI command tree: the typed source of parsing, validation,
+ * and help. A branch lists its children, a leaf parses the tokens
  * after its own command path, and a removed node rejects an old command form
  * with a pointer to its replacement while staying out of help.
  */
@@ -978,7 +978,7 @@ const parseWorkspaceCleanupList = Effect.fn('Cli.parseWorkspaceCleanupList')(fun
   return { type: 'workspace-cleanup-list' as const, json }
 })
 
-/** The complete Friday CLI command tree: dispatch, validation, and help all read it. */
+/** The complete Friday CLI command tree used by parsing, validation, and help. */
 export const cliCommandSpec: CliBranchSpec = {
   name: 'friday',
   summary: 'Friday — your personal agent.',
@@ -1275,10 +1275,12 @@ export const parseFridayCli = (
   return dispatchCommand([], cliCommandSpec, all, all)
 }
 
-const renderCleanup = (proposal: WorkspaceCleanupProposal): string => `Workspace cleanup applied
+const renderCleanup = (
+  proposal: WorkspaceCleanupProposal,
+): string => `Workspace cleanup ${proposal.status}
   Proposal: ${proposal.id}
-  Worktrees: ${proposal.resources.length}
-  Reclaimed: ${proposal.estimatedBytes} bytes`
+  Worktrees removed: ${proposal.resources.filter((resource) => resource.removalStatus === 'removed').length}/${proposal.resources.length}
+  Estimated reclaimed: ${proposal.estimatedBytes} bytes`
 
 export interface WorktreeRepositoryGroup {
   readonly url: string
@@ -1330,7 +1332,7 @@ export const renderWorkspaceCleanupList = (
           `    Workspace: ${proposal.workspacePath}`,
           ...proposal.resources.map(
             (resource) =>
-              `    Worktree: ${resource.path} (${resource.branch}, ${resource.sizeBytes} bytes)`,
+              `    Worktree: ${resource.path} (${resource.branch}, ${resource.sizeBytes} bytes, ${resource.removalStatus})`,
           ),
         ]),
       ].join('\n')
@@ -1532,6 +1534,111 @@ const renderWorktree = (worktree: ManagedWorktree): string => `Repository worktr
   Base: ${worktree.baseRef}
   Reused: ${worktree.reused ? 'yes' : 'no'}`
 
+export type FridayCliOperations<
+  E,
+  WorktreeError,
+  CleanupError,
+  ActivityDescriptionError,
+  GuildError,
+  ReloadError,
+  AdminError,
+  ConnectionError,
+> = {
+  readonly start: Effect.Effect<never, E>
+  readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ReloadError>
+  readonly addDiscordAdmin: (
+    userId: typeof DiscordUserId.Type,
+  ) => Effect.Effect<DiscordAdminAddOutcome, AdminError>
+  readonly removeDiscordAdmin: (
+    userId: typeof DiscordUserId.Type,
+  ) => Effect.Effect<DiscordAdminRemoveOutcome, AdminError>
+  readonly listDiscordAdmins: () => Effect.Effect<ReadonlyArray<string>, AdminError>
+  readonly addDiscordConnection: (
+    input: Extract<FridayCliAction, { readonly type: 'config-discord-connection-add' }>,
+  ) => Effect.Effect<DiscordConnectionAddOutcome, ConnectionError>
+  readonly updateDiscordConnection: (
+    action: Extract<FridayCliAction, { readonly type: 'config-discord-connection-update' }>,
+  ) => Effect.Effect<DiscordConnectionUpdateOutcome, ConnectionError>
+  readonly removeDiscordConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<DiscordConnectionRemoveOutcome, ConnectionError>
+  readonly enableDiscordConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<DiscordConnectionEnableOutcome, ConnectionError>
+  readonly disableDiscordConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<DiscordConnectionDisableOutcome, ConnectionError>
+  readonly getDiscordConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<Option.Option<DiscordConnectionDetail>, ConnectionError>
+  readonly listDiscordConnections: () => Effect.Effect<
+    ReadonlyArray<DiscordConnectionRecord>,
+    ConnectionError
+  >
+  readonly listDiscordGuilds: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<ReadonlyArray<DiscordGuildConfig>, GuildError>
+  readonly enableDiscordGuild: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+  ) => Effect.Effect<DiscordGuildEnableOutcome, GuildError>
+  readonly disableDiscordGuild: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+  ) => Effect.Effect<DiscordGuildDisableOutcome, GuildError>
+  readonly removeDiscordGuild: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+  ) => Effect.Effect<DiscordGuildRemoveOutcome, GuildError>
+  readonly setDiscordGuildInvocation: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+    mode: InvocationModeType,
+  ) => Effect.Effect<DiscordGuildUpdateOutcome, GuildError>
+  readonly setDiscordGuildUsers: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+    policy: AccessPolicy,
+  ) => Effect.Effect<DiscordGuildUpdateOutcome, GuildError>
+  readonly setDiscordGuildChannel: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+    channelId: typeof DiscordGuildChannelId.Type,
+    patch: DiscordGuildChannelPatch,
+  ) => Effect.Effect<DiscordGuildChannelUpdateOutcome, GuildError>
+  readonly resetDiscordGuildChannel: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+    channelId: typeof DiscordGuildChannelId.Type,
+  ) => Effect.Effect<DiscordGuildChannelResetOutcome, GuildError>
+  readonly ensureWorktree: (
+    action: Extract<FridayCliAction, { readonly type: 'worktree-ensure' }>,
+  ) => Effect.Effect<ManagedWorktree, WorktreeError>
+  readonly listWorktrees: () => Effect.Effect<
+    ReadonlyArray<ManagedWorktreeListEntry>,
+    WorktreeError
+  >
+  readonly setDiscordActivityDescription: (
+    action: Extract<
+      FridayCliAction,
+      {
+        readonly type:
+          | 'config-discord-activity-description-set'
+          | 'config-discord-activity-description-reset'
+      }
+    >,
+    enabled: boolean,
+  ) => Effect.Effect<void, ActivityDescriptionError>
+  readonly applyWorkspaceCleanup: (
+    action: Extract<FridayCliAction, { readonly type: 'workspace-cleanup-apply' }>,
+    currentWorkingDirectory: string,
+  ) => Effect.Effect<WorkspaceCleanupProposal, CleanupError>
+  readonly listWorkspaceCleanupProposals: () => Effect.Effect<
+    ReadonlyArray<WorkspaceCleanupProposal>,
+    CleanupError
+  >
+}
+
 export const runFridayCli = <
   E,
   WorktreeError,
@@ -1543,101 +1650,16 @@ export const runFridayCli = <
   ConnectionError,
 >(
   arguments_: ReadonlyArray<string>,
-  options: {
-    readonly start: Effect.Effect<never, E>
-    readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ReloadError>
-    readonly addDiscordAdmin: (
-      userId: typeof DiscordUserId.Type,
-    ) => Effect.Effect<DiscordAdminAddOutcome, AdminError>
-    readonly removeDiscordAdmin: (
-      userId: typeof DiscordUserId.Type,
-    ) => Effect.Effect<DiscordAdminRemoveOutcome, AdminError>
-    readonly listDiscordAdmins: () => Effect.Effect<ReadonlyArray<string>, AdminError>
-    readonly addDiscordConnection: (
-      input: Extract<FridayCliAction, { readonly type: 'config-discord-connection-add' }>,
-    ) => Effect.Effect<DiscordConnectionAddOutcome, ConnectionError>
-    readonly updateDiscordConnection: (
-      action: Extract<FridayCliAction, { readonly type: 'config-discord-connection-update' }>,
-    ) => Effect.Effect<DiscordConnectionUpdateOutcome, ConnectionError>
-    readonly removeDiscordConnection: (
-      connectionId: typeof PlatformConnectionId.Type,
-    ) => Effect.Effect<DiscordConnectionRemoveOutcome, ConnectionError>
-    readonly enableDiscordConnection: (
-      connectionId: typeof PlatformConnectionId.Type,
-    ) => Effect.Effect<DiscordConnectionEnableOutcome, ConnectionError>
-    readonly disableDiscordConnection: (
-      connectionId: typeof PlatformConnectionId.Type,
-    ) => Effect.Effect<DiscordConnectionDisableOutcome, ConnectionError>
-    readonly getDiscordConnection: (
-      connectionId: typeof PlatformConnectionId.Type,
-    ) => Effect.Effect<Option.Option<DiscordConnectionDetail>, ConnectionError>
-    readonly listDiscordConnections: () => Effect.Effect<
-      ReadonlyArray<DiscordConnectionRecord>,
-      ConnectionError
-    >
-    readonly listDiscordGuilds: (
-      connectionId: typeof PlatformConnectionId.Type,
-    ) => Effect.Effect<ReadonlyArray<DiscordGuildConfig>, GuildError>
-    readonly enableDiscordGuild: (
-      connectionId: typeof PlatformConnectionId.Type,
-      guildId: typeof DiscordGuildId.Type,
-    ) => Effect.Effect<DiscordGuildEnableOutcome, GuildError>
-    readonly disableDiscordGuild: (
-      connectionId: typeof PlatformConnectionId.Type,
-      guildId: typeof DiscordGuildId.Type,
-    ) => Effect.Effect<DiscordGuildDisableOutcome, GuildError>
-    readonly removeDiscordGuild: (
-      connectionId: typeof PlatformConnectionId.Type,
-      guildId: typeof DiscordGuildId.Type,
-    ) => Effect.Effect<DiscordGuildRemoveOutcome, GuildError>
-    readonly setDiscordGuildInvocation: (
-      connectionId: typeof PlatformConnectionId.Type,
-      guildId: typeof DiscordGuildId.Type,
-      mode: InvocationModeType,
-    ) => Effect.Effect<DiscordGuildUpdateOutcome, GuildError>
-    readonly setDiscordGuildUsers: (
-      connectionId: typeof PlatformConnectionId.Type,
-      guildId: typeof DiscordGuildId.Type,
-      policy: AccessPolicy,
-    ) => Effect.Effect<DiscordGuildUpdateOutcome, GuildError>
-    readonly setDiscordGuildChannel: (
-      connectionId: typeof PlatformConnectionId.Type,
-      guildId: typeof DiscordGuildId.Type,
-      channelId: typeof DiscordGuildChannelId.Type,
-      patch: DiscordGuildChannelPatch,
-    ) => Effect.Effect<DiscordGuildChannelUpdateOutcome, GuildError>
-    readonly resetDiscordGuildChannel: (
-      connectionId: typeof PlatformConnectionId.Type,
-      guildId: typeof DiscordGuildId.Type,
-      channelId: typeof DiscordGuildChannelId.Type,
-    ) => Effect.Effect<DiscordGuildChannelResetOutcome, GuildError>
-    readonly ensureWorktree: (
-      action: Extract<FridayCliAction, { readonly type: 'worktree-ensure' }>,
-    ) => Effect.Effect<ManagedWorktree, WorktreeError>
-    readonly listWorktrees: () => Effect.Effect<
-      ReadonlyArray<ManagedWorktreeListEntry>,
-      WorktreeError
-    >
-    readonly setDiscordActivityDescription: (
-      action: Extract<
-        FridayCliAction,
-        {
-          readonly type:
-            | 'config-discord-activity-description-set'
-            | 'config-discord-activity-description-reset'
-        }
-      >,
-      enabled: boolean,
-    ) => Effect.Effect<void, ActivityDescriptionError>
-    readonly applyWorkspaceCleanup: (
-      action: Extract<FridayCliAction, { readonly type: 'workspace-cleanup-apply' }>,
-      currentWorkingDirectory: string,
-    ) => Effect.Effect<WorkspaceCleanupProposal, CleanupError>
-    readonly listWorkspaceCleanupProposals: () => Effect.Effect<
-      ReadonlyArray<WorkspaceCleanupProposal>,
-      CleanupError
-    >
-  },
+  options: FridayCliOperations<
+    E,
+    WorktreeError,
+    CleanupError,
+    ActivityDescriptionError,
+    GuildError,
+    ReloadError,
+    AdminError,
+    ConnectionError
+  >,
 ): Effect.Effect<
   void,
   | FridayCliError
@@ -1818,5 +1840,9 @@ export const runFridayCli = <
       }
       case 'start':
         return yield* options.start
+      default: {
+        const unhandled: never = action
+        return unhandled
+      }
     }
   })

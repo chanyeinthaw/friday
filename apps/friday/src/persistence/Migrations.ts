@@ -238,6 +238,8 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       proposal_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'stale')),
+      lifecycle_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (lifecycle_status IN ('pending', 'applied', 'stale', 'failed')),
       workspace_path TEXT NOT NULL,
       estimated_bytes INTEGER NOT NULL,
       created_at TEXT NOT NULL,
@@ -246,6 +248,21 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
     )
   `
+
+  const cleanupProposalColumns = yield* sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info('workspace_cleanup_proposals')
+  `
+  if (!cleanupProposalColumns.some((column) => column.name === 'lifecycle_status')) {
+    yield* sql`
+      ALTER TABLE workspace_cleanup_proposals
+      ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (lifecycle_status IN ('pending', 'applied', 'stale', 'failed'))
+    `
+    yield* sql`
+      UPDATE workspace_cleanup_proposals
+      SET lifecycle_status = status
+    `
+  }
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS workspace_cleanup_resources (
@@ -256,10 +273,23 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       common_directory TEXT NOT NULL,
       status_porcelain TEXT NOT NULL,
       size_bytes INTEGER NOT NULL,
+      removal_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (removal_status IN ('pending', 'removed')),
       PRIMARY KEY (proposal_id, worktree_path),
       FOREIGN KEY (proposal_id) REFERENCES workspace_cleanup_proposals(proposal_id) ON DELETE CASCADE
     )
   `
+
+  const cleanupResourceColumns = yield* sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info('workspace_cleanup_resources')
+  `
+  if (!cleanupResourceColumns.some((column) => column.name === 'removal_status')) {
+    yield* sql`
+      ALTER TABLE workspace_cleanup_resources
+      ADD COLUMN removal_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (removal_status IN ('pending', 'removed'))
+    `
+  }
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS threads (

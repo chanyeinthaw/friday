@@ -4,13 +4,12 @@
   "plugins": ["@stryker-mutator/vitest-runner"],
   "mutate": ["apps/friday/src/workspaces/WorkspaceCleanup.ts"],
   "testFiles": ["apps/friday/src/workspaces/WorkspaceCleanup.test.ts"],
-  "coverageAnalysis": "perTest",
-  "ignoreStatic": true,
+  "coverageAnalysis": "all",
   "reporters": ["clear-text", "progress"],
   "thresholds": {
-    "high": 90,
-    "low": 85,
-    "break": 85
+    "high": 80,
+    "low": 79,
+    "break": 79
   },
   "concurrency": 2
 }

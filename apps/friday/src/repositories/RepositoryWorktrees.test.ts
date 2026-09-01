@@ -4,7 +4,7 @@ import { assert, describe, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -40,6 +40,12 @@ const commitAll = async (cwd: string, message: string) => {
 const git = async (cwd: string | undefined, ...arguments_: ReadonlyArray<string>) => {
   await exec('git', [...arguments_], cwd === undefined ? {} : { cwd })
 }
+
+const pathExistsForTest = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  )
 
 const makeSourceRepository = (root: string, name: string) =>
   Effect.gen(function* () {
@@ -235,6 +241,108 @@ describe('RepositoryWorktrees', () => {
       assert.strictEqual(again.reused, true)
       assert.strictEqual(again.path, isolated.path)
       assert.strictEqual((yield* listManagedWorktrees(home)).length, 3)
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('refuses unrelated and wrong-branch isolated worktrees without registering them', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-worktree-reuse-')))
+      const home = join(root, 'friday-home')
+      const primary = join(root, 'primary')
+      const other = join(root, 'other')
+      for (const repository of [primary, other]) {
+        yield* Effect.promise(() => exec('git', ['init', '--initial-branch=main', repository]))
+        yield* Effect.promise(() => exec('git', ['init', '--bare', `${repository}.git`]))
+        yield* Effect.promise(() =>
+          exec('git', ['-C', repository, 'remote', 'add', 'origin', `${repository}.git`]),
+        )
+        yield* Effect.promise(() => writeFile(join(repository, 'README.md'), repository, 'utf8'))
+        yield* Effect.promise(() => commitAll(repository, 'initial'))
+      }
+
+      const destination = `${primary}--abc123`
+      yield* Effect.promise(() =>
+        git(other, 'worktree', 'add', '-b', 'friday/task/abc123', destination, 'main'),
+      )
+      const unrelated = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-abc123' },
+        home,
+      ).pipe(Effect.flip)
+      assert(isWorktreeError(unrelated))
+      assert.strictEqual(unrelated.operation, 'validate')
+      assert.strictEqual(yield* readWorktreeRegistry(home), null)
+      yield* Effect.promise(() => git(other, 'worktree', 'remove', '--force', destination))
+      yield* Effect.promise(() => git(other, 'branch', '-D', 'friday/task/abc123'))
+
+      yield* Effect.promise(() =>
+        git(primary, 'worktree', 'add', '-b', 'other/task-branch', destination, 'main'),
+      )
+      const wrongBranch = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-abc123' },
+        home,
+      ).pipe(Effect.flip)
+      assert(isWorktreeError(wrongBranch))
+      assert.strictEqual(wrongBranch.operation, 'validate')
+      assert.strictEqual(yield* readWorktreeRegistry(home), null)
+      const currentBranch = yield* Effect.promise(() =>
+        exec('git', ['-C', destination, 'branch', '--show-current']).then((result) =>
+          result.stdout.trim(),
+        ),
+      )
+      assert.strictEqual(currentBranch, 'other/task-branch')
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('rolls back newly created worktrees when registry registration fails', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-worktree-rollback-')))
+      const home = join(root, 'friday-home')
+      const registryFile = worktreeRegistryPath(home)
+      yield* Effect.promise(() => mkdir(registryFile, { recursive: true }))
+      const { url } = yield* makeSourceRepository(root, 'rollback-source')
+      const workspace = join(root, 'workspace')
+      const failure = yield* ensureRepositoryWorktree({ url, workspaceRoot: workspace }, home).pipe(
+        Effect.flip,
+      )
+      assert(isWorktreeError(failure))
+      assert.strictEqual(
+        yield* Effect.promise(() => pathExistsForTest(join(workspace, 'rollback-source'))),
+        false,
+      )
+
+      const primary = join(root, 'primary')
+      const origin = join(root, 'origin.git')
+      yield* Effect.promise(() => exec('git', ['init', '--initial-branch=main', primary]))
+      yield* Effect.promise(() => exec('git', ['init', '--bare', origin]))
+      yield* Effect.promise(() => exec('git', ['-C', primary, 'remote', 'add', 'origin', origin]))
+      yield* Effect.promise(() => writeFile(join(primary, 'README.md'), 'primary', 'utf8'))
+      yield* Effect.promise(() => commitAll(primary, 'initial'))
+      const isolatedFailure = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-rollback' },
+        home,
+      ).pipe(Effect.flip)
+      assert(isWorktreeError(isolatedFailure))
+      assert.strictEqual(
+        yield* Effect.promise(() => pathExistsForTest(`${primary}--rollback`)),
+        false,
+      )
+      const branchExists = yield* Effect.promise(() =>
+        exec('git', [
+          '-C',
+          primary,
+          'show-ref',
+          '--verify',
+          'refs/heads/friday/task/rollback',
+        ]).then(
+          () => true,
+          () => false,
+        ),
+      )
+      assert.strictEqual(branchExists, false)
 
       yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
     }).pipe(Effect.scoped),

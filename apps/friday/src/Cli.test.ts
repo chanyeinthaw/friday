@@ -1777,6 +1777,7 @@ it.effect('dispatches worktree and cleanup listings with human and JSON output',
             commonDirectory: '/home/friday/.friday/repositories/cache.git',
             status: '',
             sizeBytes: 4096,
+            removalStatus: 'pending' as const,
           },
         ],
       },
@@ -2486,7 +2487,7 @@ it.effect('dispatches workspace cleanup apply and renders the applied proposal',
     const human = yield* lastLine
     assert.match(human, /Workspace cleanup applied/)
     assert.match(human, /Proposal: cleanup-9/)
-    assert.match(human, /Reclaimed: 2048 bytes/)
+    assert.match(human, /Estimated reclaimed: 2048 bytes/)
 
     const applyJson = recorder(proposal)
     yield* runFridayCli(['workspace', 'cleanup', 'apply', 'cleanup-9', '--json'], {
