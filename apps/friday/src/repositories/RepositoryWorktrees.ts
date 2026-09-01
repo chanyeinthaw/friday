@@ -3,6 +3,7 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { createHash } from 'node:crypto'
+import { readdir } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 
 import { FRIDAY_HOME } from '../FridayHome.ts'
@@ -159,6 +160,113 @@ export const inspectRepositoryWorktree = Effect.fn('RepositoryWorktrees.inspectM
     status,
     sizeBytes,
   })
+})
+
+/** One worktree registered with a Friday repository cache, from git's own registry. */
+export const ManagedWorktreeListEntry = Schema.Struct({
+  /** Remote URL of the repository cache the worktree was created from. */
+  url: Schema.String,
+  cachePath: Schema.String,
+  /** Absolute worktree path as registered with git; may no longer exist on disk. */
+  path: Schema.String,
+  /** Branch without `refs/heads/`; `null` for a detached head. */
+  branch: Schema.NullOr(Schema.String),
+  head: Schema.String,
+  /** True when git reports the worktree directory as missing (prunable). */
+  prunable: Schema.Boolean,
+})
+export type ManagedWorktreeListEntry = typeof ManagedWorktreeListEntry.Type
+
+interface WorktreeListRecord {
+  path?: string
+  head?: string
+  branch?: string
+  detached?: boolean
+  bare?: boolean
+  prunable?: boolean
+}
+
+const parseWorktreePorcelain = (output: string): ReadonlyArray<WorktreeListRecord> =>
+  output.split('\n\n').map((record) => {
+    const entry: WorktreeListRecord = {}
+    for (const line of record.split('\n')) {
+      const separator = line.indexOf(' ')
+      const key = separator === -1 ? line : line.slice(0, separator)
+      const value = separator === -1 ? undefined : line.slice(separator + 1)
+      if (key === 'worktree' && value !== undefined) entry.path = value
+      else if (key === 'HEAD' && value !== undefined) entry.head = value
+      else if (key === 'branch' && value !== undefined) {
+        entry.branch = value.replace(/^refs\/heads\//u, '')
+      } else if (key === 'detached') entry.detached = true
+      else if (key === 'bare') entry.bare = true
+      else if (key === 'prunable') entry.prunable = true
+    }
+    return entry
+  })
+
+/**
+ * Lists the repository worktrees registered with Friday's repository caches
+ * under `$FRIDAY_HOME/repositories`. Discovery is read-only and grounded in
+ * git's own worktree registry for the persisted caches; it never scans the
+ * file system for arbitrary git repositories. Missing caches yield an empty
+ * list instead of an error.
+ */
+export const listManagedWorktrees = Effect.fn('RepositoryWorktrees.listManaged')(function* () {
+  const repositoryDirectory = join(FRIDAY_HOME, 'repositories')
+  const caches = yield* Effect.tryPromise({
+    try: async () => {
+      // A missing cache directory simply means no worktrees were ever created.
+      const entries = await readdir(repositoryDirectory, { withFileTypes: true }).catch(
+        (cause: NodeJS.ErrnoException) => {
+          if (cause.code === 'ENOENT') return []
+          throw cause
+        },
+      )
+      return entries
+        .filter((entry) => entry.isDirectory() && entry.name.endsWith('.git'))
+        .map((entry) => join(repositoryDirectory, entry.name))
+        .toSorted()
+    },
+    catch: (cause) =>
+      new RepositoryWorktreeError({
+        operation: 'inspect',
+        detail: `Could not read the repository cache directory '${repositoryDirectory}'.`,
+        cause,
+      }),
+  })
+  const listCacheWorktrees = Effect.fn('RepositoryWorktrees.listCache')(function* (
+    cachePath: string,
+  ) {
+    const urlResult = yield* runGit([
+      '--git-dir',
+      cachePath,
+      'config',
+      '--get',
+      'remote.origin.url',
+    ])
+    const url = urlResult.exitCode === 0 ? urlResult.stdout : cachePath
+    const listing = yield* requireGit('inspect', [
+      '--git-dir',
+      cachePath,
+      'worktree',
+      'list',
+      '--porcelain',
+    ])
+    return parseWorktreePorcelain(listing)
+      .filter((record) => record.path !== undefined && !record.bare)
+      .map((record): ManagedWorktreeListEntry =>
+        ManagedWorktreeListEntry.make({
+          url,
+          cachePath,
+          path: record.path!,
+          branch: record.detached === true ? null : (record.branch ?? null),
+          head: record.head ?? '',
+          prunable: record.prunable === true,
+        }),
+      )
+  })
+  const entryGroups = yield* Effect.forEach(caches, listCacheWorktrees)
+  return entryGroups.flat().toSorted((left, right) => left.path.localeCompare(right.path))
 })
 
 export const removeRepositoryWorktree = Effect.fn('RepositoryWorktrees.removeManaged')(function* (

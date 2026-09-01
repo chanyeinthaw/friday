@@ -82,6 +82,8 @@ export interface WorkspaceCleanupContract {
   readonly get: (
     proposalId: WorkspaceCleanupProposalId,
   ) => Effect.Effect<WorkspaceCleanupProposal, WorkspaceCleanupError>
+  /** Lists all recorded proposals, most recently created first. */
+  readonly list: () => Effect.Effect<ReadonlyArray<WorkspaceCleanupProposal>, WorkspaceCleanupError>
   readonly apply: (
     proposalId: WorkspaceCleanupProposalId,
     currentWorkingDirectory: string,
@@ -304,6 +306,26 @@ export const WorkspaceCleanupLive = Layer.effect(
       return yield* get(proposalId)
     })
 
+    const list = Effect.fn('WorkspaceCleanup.list')(function* () {
+      const rows = yield* sql<Record<string, unknown>>`
+        SELECT proposal_id FROM workspace_cleanup_proposals
+        ORDER BY created_at DESC, proposal_id DESC
+      `
+      const ids = yield* Effect.forEach(rows, (row) =>
+        decodeProposalId(row.proposal_id).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkspaceCleanupError({
+                operation: 'load',
+                detail: 'Stored workspace cleanup proposal identity is invalid.',
+                cause,
+              }),
+          ),
+        ),
+      )
+      return yield* Effect.forEach(ids, get, { concurrency: 'unbounded' })
+    })
+
     const mapFailure =
       (operation: WorkspaceCleanupError['operation']) =>
       (cause: unknown): WorkspaceCleanupError =>
@@ -318,6 +340,7 @@ export const WorkspaceCleanupLive = Layer.effect(
     return WorkspaceCleanup.of({
       propose: (thread) => propose(thread).pipe(Effect.mapError(mapFailure('inspect'))),
       get: (proposalId) => get(proposalId).pipe(Effect.mapError(mapFailure('load'))),
+      list: () => list().pipe(Effect.mapError(mapFailure('load'))),
       apply: (proposalId, currentWorkingDirectory) =>
         apply(proposalId, currentWorkingDirectory).pipe(Effect.mapError(mapFailure('apply'))),
     })

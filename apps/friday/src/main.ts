@@ -16,7 +16,10 @@ import {
   FRIDAY_LOG_PATH,
   isPackagedBuild,
 } from './FridayHome.ts'
-import { ensureRepositoryWorktree } from './repositories/RepositoryWorktrees.ts'
+import {
+  ensureRepositoryWorktree,
+  listManagedWorktrees,
+} from './repositories/RepositoryWorktrees.ts'
 import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
 import { withFridayLogging } from './logging/Live.ts'
@@ -103,6 +106,11 @@ const application = Effect.scoped(
               : descriptions.reset(action.connectionId),
           ),
           Effect.provide(DiscordActivityDescriptionsConfiguredLive),
+        ),
+      updateDiscordConnection: (action) =>
+        DiscordConnections.pipe(
+          Effect.flatMap((connections) => connections.updateConnection(action)),
+          Effect.provide(DiscordConnectionsConfiguredLive),
         ),
       addDiscordConnection: (input) =>
         DiscordConnections.pipe(
@@ -198,6 +206,16 @@ const application = Effect.scoped(
           Effect.provide(BunFileSystem.layer),
           Effect.provide(BunCrypto.layer),
         ),
+      listWorkspaceCleanupProposals: () =>
+        WorkspaceCleanup.pipe(
+          Effect.flatMap((cleanup) => cleanup.list()),
+          Effect.provide(WorkspaceCleanupLive),
+          Effect.provide(ThreadPersistenceLive),
+          Effect.provide(FridaySqliteLive),
+          Effect.provide(BunFileSystem.layer),
+          Effect.provide(BunCrypto.layer),
+        ),
+      listWorktrees: () => listManagedWorktrees(),
       ensureWorktree: (action) => {
         const workspaceRoot = action.workspace ?? process.env.FRIDAY_WORKSPACE_ROOT ?? process.cwd()
         return action.ref === undefined

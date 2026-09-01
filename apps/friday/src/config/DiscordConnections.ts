@@ -59,6 +59,25 @@ export type DiscordConnectionAddOutcome = 'added' | 'connection-exists' | 'appli
 export type DiscordConnectionRemoveOutcome = 'removed' | 'missing'
 export type DiscordConnectionEnableOutcome = 'enabled' | 'already-enabled' | 'missing'
 export type DiscordConnectionDisableOutcome = 'disabled' | 'already-disabled' | 'missing'
+export type DiscordConnectionUpdateOutcome =
+  | 'updated'
+  | 'unchanged'
+  | 'application-exists'
+  | 'missing'
+
+/**
+ * Partial update of one stored Discord connection; absent fields keep their
+ * current value. The bot token stays indirected: only the environment
+ * variable name is ever stored.
+ */
+export interface DiscordConnectionUpdate {
+  readonly connectionId: PlatformConnectionId
+  readonly name?: string
+  readonly applicationId?: DiscordSnowflake
+  readonly publicKey?: DiscordPublicKey
+  readonly botTokenEnv?: BotTokenEnvName
+  readonly respondToGlobalMentions?: boolean
+}
 
 export class DiscordConnectionError extends Schema.Error<DiscordConnectionError>(
   'DiscordConnectionError',
@@ -108,6 +127,16 @@ export interface DiscordConnectionsContract {
   readonly disableConnection: (
     connectionId: PlatformConnectionId,
   ) => Effect.Effect<DiscordConnectionDisableOutcome, DiscordConnectionError>
+  /**
+   * Updates the stored fields of a configured Discord connection, preserving
+   * every unspecified field. Idempotent: when all given fields already match,
+   * reports `unchanged` without writing. Application IDs stay unique across
+   * connections; any change requires a restart like the other lifecycle
+   * operations.
+   */
+  readonly updateConnection: (
+    update: DiscordConnectionUpdate,
+  ) => Effect.Effect<DiscordConnectionUpdateOutcome, DiscordConnectionError>
 }
 
 export class DiscordConnections extends Context.Service<
@@ -138,6 +167,14 @@ const PlatformRow = Schema.Struct({ platform: Schema.String })
 const decodePlatformRows = Schema.decodeUnknownEffect(Schema.Array(PlatformRow))
 const ApplicationOwnerRow = Schema.Struct({ connection_id: Schema.String })
 const decodeApplicationOwnerRows = Schema.decodeUnknownEffect(Schema.Array(ApplicationOwnerRow))
+const CurrentConnectionRow = Schema.Struct({
+  name: Schema.String,
+  application_id: Schema.String,
+  public_key: Schema.String,
+  bot_token_env: Schema.String,
+  respond_to_global_mentions: Schema.Number,
+})
+const decodeCurrentConnectionRows = Schema.decodeUnknownEffect(Schema.Array(CurrentConnectionRow))
 
 /**
  * Direct SQLite administration of Discord connection lifecycle. Like the other
@@ -305,6 +342,76 @@ export const DiscordConnectionsLive = Layer.effect(
                   .pipe(Effect.mapError(writeError(connectionId))),
           ),
           Effect.mapError(writeError(connectionId)),
+        ),
+
+      updateConnection: (update) =>
+        platformOf(update.connectionId).pipe(
+          Effect.flatMap((platform) =>
+            platform !== 'discord'
+              ? Effect.succeed<DiscordConnectionUpdateOutcome>('missing')
+              : sql
+                  .withTransaction(
+                    Effect.gen(function* () {
+                      const rows = yield* sql<Record<string, unknown>>`
+                        SELECT
+                          platform_connections.name AS name,
+                          discord_connections.application_id AS application_id,
+                          discord_connections.public_key AS public_key,
+                          discord_connections.bot_token_env AS bot_token_env,
+                          discord_connections.respond_to_global_mentions
+                            AS respond_to_global_mentions
+                        FROM platform_connections
+                        JOIN discord_connections USING (connection_id)
+                        WHERE platform_connections.connection_id = ${update.connectionId}
+                        LIMIT 1
+                      `
+                      const current = (yield* decodeCurrentConnectionRows(rows))[0]
+                      if (current === undefined) return 'missing' as const
+                      const nextName = update.name ?? current.name
+                      const nextApplicationId = update.applicationId ?? current.application_id
+                      const nextPublicKey = update.publicKey ?? current.public_key
+                      const nextBotTokenEnv = update.botTokenEnv ?? current.bot_token_env
+                      const nextRespondToGlobalMentions =
+                        update.respondToGlobalMentions ?? current.respond_to_global_mentions === 1
+                      if (
+                        nextName === current.name &&
+                        nextApplicationId === current.application_id &&
+                        nextPublicKey === current.public_key &&
+                        nextBotTokenEnv === current.bot_token_env &&
+                        nextRespondToGlobalMentions === (current.respond_to_global_mentions === 1)
+                      ) {
+                        return 'unchanged' as const
+                      }
+                      if (nextApplicationId !== current.application_id) {
+                        const owners = yield* sql<Record<string, unknown>>`
+                          SELECT connection_id FROM discord_connections
+                          WHERE application_id = ${nextApplicationId}
+                            AND connection_id <> ${update.connectionId}
+                          LIMIT 1
+                        `
+                        if ((yield* decodeApplicationOwnerRows(owners))[0] !== undefined) {
+                          return 'application-exists' as const
+                        }
+                      }
+                      yield* sql`
+                        UPDATE platform_connections
+                        SET name = ${nextName}, updated_at = CURRENT_TIMESTAMP
+                        WHERE connection_id = ${update.connectionId}
+                      `
+                      yield* sql`
+                        UPDATE discord_connections
+                        SET application_id = ${nextApplicationId},
+                          public_key = ${nextPublicKey},
+                          bot_token_env = ${nextBotTokenEnv},
+                          respond_to_global_mentions = ${nextRespondToGlobalMentions ? 1 : 0}
+                        WHERE connection_id = ${update.connectionId}
+                      `
+                      return 'updated' as const
+                    }),
+                  )
+                  .pipe(Effect.mapError(writeError(update.connectionId))),
+          ),
+          Effect.mapError(writeError(update.connectionId)),
         ),
 
       enableConnection: (connectionId) =>

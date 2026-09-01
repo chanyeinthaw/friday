@@ -12,7 +12,14 @@ resolves the secret at load time.
 
 Connections are the lifecycle boundary: Discord gateway resources are built
 once per process, so connection topology is pinned to the startup snapshot and
-only changes on restart.
+only changes on restart. Stored connection fields can be edited with
+`connection update` (name, application ID, public key, bot token environment
+variable, global-mention behavior); unspecified fields are preserved,
+application IDs stay unique across connections, and the bot token itself is
+never stored — only the environment variable name. Any applied change requires
+a restart. Setting or resetting the activity-description flag is the one
+exception: the running process watches that flag and applies it live within
+about a second.
 
 ## Guilds
 
@@ -67,6 +74,10 @@ Friday applies the changes on its next configuration reload
 friday config discord connection add <connection-id> --name <name>
     --application-id <snowflake> --public-key <64-hex-digits>
     --bot-token-env <environment-variable-name> [--respond-to-global-mentions]
+friday config discord connection update <connection-id> [--name <name>]
+    [--application-id <snowflake>] [--public-key <64-hex-digits>]
+    [--bot-token-env <environment-variable-name>]
+    [--respond-to-global-mentions|--no-respond-to-global-mentions]
 friday config discord connection remove <connection-id> --yes
 friday config discord connection enable <connection-id>
 friday config discord connection disable <connection-id>
@@ -74,15 +85,35 @@ friday config discord connection get <connection-id> [--json]
 friday config discord connection list [--json]
 friday config discord guild enable <connection-id> <guild-id>
 friday config discord guild disable <connection-id> <guild-id>
-friday config discord guild remove <connection-id> <guild-id>
+friday config discord guild remove <connection-id> <guild-id> --yes
 friday config discord guild list <connection-id> [--json]
-friday config discord guild invocation set <connection-id> <guild-id> <mention-only|all-messages>
-friday config discord guild users set <connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>
+friday config discord guild set-invocation <connection-id> <guild-id> <mention-only|all-messages>
+friday config discord guild set-users <connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>
 friday config discord guild channel set <connection-id> <guild-id> <channel-id>
     [--invocation <mention-only|all-messages>] [--users <policy>]
     [--reply-in-thread|--reply-in-channel]
 friday config discord guild channel reset <connection-id> <guild-id> <channel-id>
+friday config discord activity-description set <connection-id>
+friday config discord activity-description reset <connection-id>
 ```
+
+Connection add stores the bot token environment variable name, never the token.
+Application IDs are unique across Discord connections. Add and remove update the
+platform and Discord connection tables in one transaction. Remove requires
+`--yes` because it also deletes the connection's guild and channel configuration.
+Add, remove, update, enable, and disable report idempotent outcomes (update
+reports `unchanged` when nothing differs) and require a Friday restart. Get and
+list only read stored configuration.
+
+Guild removal also deletes the guild's channel overrides, so it requires `--yes`
+before it dispatches. The old `config discord guild invocation set` and
+`config discord guild users set` forms and the old
+`platform activity-description set|reset` form were removed and are rejected
+with a pointer to their replacements.
+
+Activity-description changes apply live: the running Discord adapter watches
+the stored flag on a ~1 second loop, so `set` and `reset` take effect without a
+reload or restart. `reset` additionally clears Friday-owned description text.
 
 Connection add stores the bot token environment variable name, never the token.
 Application IDs are unique across Discord connections. Add and remove update the
@@ -95,6 +126,15 @@ Guild, channel, and user IDs are validated as Discord snowflakes. Permission
 policies are `all`, `allow=<id>[,<id>...]`, or `deny=<id>[,<id>...]`.
 `channel set` upserts the row and only touches the flags given, so a channel
 can carry a single override; `channel reset` removes the row entirely.
+
+## CLI help
+
+`friday --help` renders the full command listing from the same typed command
+registry the parser dispatches on. Every command prefix accepts `--help`:
+`friday config discord guild --help` lists the guild subcommands, and
+`friday config discord guild set-users --help` prints that command's exact
+usage. The rendered help is the single source of command truth; there is no
+separate usage file to drift.
 
 ## Migration from connection-scoped configuration
 

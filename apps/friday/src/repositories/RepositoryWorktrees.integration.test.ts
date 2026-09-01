@@ -11,11 +11,15 @@ import * as Effect from 'effect/Effect'
 import {
   inspectRepositoryWorktree,
   ManagedWorktree,
+  ManagedWorktreeListEntry,
   removeRepositoryWorktree,
 } from './RepositoryWorktrees.ts'
 
 const temporaryDirectories: Array<string> = []
 const decodeWorktree = Schema.decodeSync(Schema.fromJsonString(ManagedWorktree))
+const decodeWorktreeList = Schema.decodeSync(
+  Schema.fromJsonString(Schema.Array(ManagedWorktreeListEntry)),
+)
 
 const makeTemporaryDirectory = async (prefix: string) => {
   const directory = await mkdtemp(join(tmpdir(), prefix))
@@ -93,6 +97,62 @@ test('creates and reuses one managed worktree in the channel workspace', async (
   expect(second.branch).toBe(first.branch)
   expect(second.reused).toBe(true)
   expect(await Bun.file(join(first.path, 'README.md')).text()).toBe('Friday worktree test\n')
+})
+
+test('lists managed worktrees from the persisted repository caches', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-list-test-')
+  const source = join(root, 'source-repository')
+  const workspace = join(root, 'workspace')
+  const fridayHome = join(root, 'friday-home')
+  await Promise.all([Bun.write(join(source, '.keep'), ''), Bun.write(join(workspace, '.keep'), '')])
+  await command(['git', 'init', '--initial-branch=main', source])
+  await Bun.write(join(source, 'README.md'), 'Friday worktree list test\n')
+  await command(['git', '-C', source, 'add', 'README.md'])
+  await command([
+    'git',
+    '-C',
+    source,
+    '-c',
+    'user.name=Friday',
+    '-c',
+    'user.email=friday@example.com',
+    'commit',
+    '-m',
+    'initial',
+  ])
+
+  const runFriday = (arguments_: ReadonlyArray<string>) =>
+    command(['bun', 'run', './src/main.ts', ...arguments_], {
+      FRIDAY_HOME: fridayHome,
+      NODE_ENV: 'test',
+    })
+
+  // Before any worktree exists the listing is empty and succeeds.
+  expect(await runFriday(['worktree', 'list', '--json'])).toBe('[]')
+
+  const ensured = decodeWorktree(
+    await runFriday(['worktree', 'ensure', source, '--workspace', workspace, '--json']),
+  )
+  const listed = decodeWorktreeList(await runFriday(['worktree', 'list', '--json']))
+  expect(listed.length).toBe(1)
+  expect(listed[0]!.path).toBe(ensured.path)
+  expect(listed[0]!.branch).toBe(ensured.branch)
+  // The porcelain listing reports the concrete head commit.
+  expect(listed[0]!.head).toMatch(/^[0-9a-f]{40}$/)
+  expect(listed[0]!.url).toBe(source)
+  expect(listed[0]!.prunable).toBe(false)
+
+  // The human listing names the worktree path and branch without JSON brackets.
+  const human = await runFriday(['worktree', 'list'])
+  expect(human.includes(ensured.path)).toBe(true)
+  expect(human.includes(ensured.branch)).toBe(true)
+  expect(human.startsWith('[')).toBe(false)
+
+  // Deleting the worktree directory out-of-band shows up as prunable state, not an error.
+  await rm(listed[0]!.path, { recursive: true, force: true })
+  const pruned = decodeWorktreeList(await runFriday(['worktree', 'list', '--json']))
+  expect(pruned.length).toBe(1)
+  expect(pruned[0]!.prunable).toBe(true)
 })
 
 test('removes an approved dirty worktree after revalidating its snapshot', async () => {
