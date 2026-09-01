@@ -62,7 +62,7 @@ it('answers unknown subcommands with usage guidance', () => {
 it('replies with the harness reload outcome', () => {
   assert.match(
     harnessReloadReply(harnessReloadSucceeded()),
-    /Harness reloaded \(extensions and settings refreshed; conversation preserved\)\./,
+    /Harness reloaded \(system prompt, extensions, and settings refreshed; conversation preserved\)\./,
   )
   assert.match(
     harnessReloadReply(harnessReloadRefused('busy', 'A turn is active in this thread.')),

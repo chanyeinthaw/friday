@@ -42,6 +42,7 @@ import {
 } from '../../conversation/ThreadRuntime.ts'
 import {
   renderModelHint,
+  type SystemPromptTemplateError,
   type SystemPromptTemplatesContract,
 } from '../../system-prompt/SystemPromptTemplates.ts'
 import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
@@ -116,7 +117,7 @@ export interface MakePiThreadRuntimeOptions {
     thread: Thread,
   ) => Effect.Effect<PiAgentSessionContract, PiThreadRuntimeError>
   readonly systemPromptTemplates?: SystemPromptTemplatesContract
-  readonly availableAgentModels?: AppConfig['models']['subagents']
+  readonly availableAgentModels?: () => AppConfig['models']['subagents']
   readonly tasks?: PiTaskOperations
   readonly platforms?: Pick<PlatformRegistryContract, 'searchMessages'>
 }
@@ -295,6 +296,32 @@ export const projectPiSessionEvent = Effect.fn('projectPiSessionEvent')(function
   }
 })
 
+const renderSystemPrompt = (
+  options: MakePiThreadRuntimeOptions,
+  operation: 'create-session' | 'reload',
+): Effect.Effect<string | undefined, PiThreadRuntimeError> => {
+  if (!options.systemPromptTemplates) return Effect.succeed(undefined)
+  const rendered: Effect.Effect<string | undefined, SystemPromptTemplateError> =
+    options.thread.audience === 'user'
+      ? options.systemPromptTemplates.renderChannelAgent({
+          thread: options.thread,
+          availableAgentModels: options.availableAgentModels?.() ?? [],
+        })
+      : options.thread.role === 'bootstrap'
+        ? options.systemPromptTemplates.renderBootstrapAgent(options.thread.workingDirectory)
+        : Effect.succeed(undefined)
+  return rendered.pipe(
+    Effect.mapError(
+      (cause) =>
+        new PiThreadRuntimeError({
+          operation,
+          detail: cause.detail,
+          cause,
+        }),
+    ),
+  )
+}
+
 const makeSession = Effect.fn('makePiAgentSession')(function* (
   options: MakePiThreadRuntimeOptions,
   taskContext: { activeTurnId: TurnId | null },
@@ -337,38 +364,7 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
     onSome: ({ sessionFile }) =>
       SessionManager.open(sessionFile, undefined, options.thread.workingDirectory),
   })
-  const systemPrompt = options.systemPromptTemplates
-    ? options.thread.audience === 'user'
-      ? yield* options.systemPromptTemplates
-          .renderChannelAgent({
-            thread: options.thread,
-            availableAgentModels: options.availableAgentModels ?? [],
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new PiThreadRuntimeError({
-                  operation: 'create-session',
-                  detail: cause.detail,
-                  cause,
-                }),
-            ),
-          )
-      : options.thread.role === 'bootstrap'
-        ? yield* options.systemPromptTemplates
-            .renderBootstrapAgent(options.thread.workingDirectory)
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new PiThreadRuntimeError({
-                    operation: 'create-session',
-                    detail: cause.detail,
-                    cause,
-                  }),
-              ),
-            )
-        : undefined
-    : undefined
+  let systemPrompt = yield* renderSystemPrompt(options, 'create-session')
   const subagentModelHint =
     options.thread.audience === 'agent' && options.thread.role === 'subagent'
       ? renderModelHint(options.thread)
@@ -444,7 +440,24 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
         cause,
       }),
   })
-  return created
+  return {
+    ...created,
+    refreshSystemPrompt: Effect.suspend(() => renderSystemPrompt(options, 'reload')).pipe(
+      Effect.map((nextSystemPrompt) => {
+        const previousSystemPrompt = systemPrompt
+        systemPrompt = nextSystemPrompt
+        return Effect.sync(() => {
+          systemPrompt = previousSystemPrompt
+        }).pipe(
+          Effect.andThen(
+            resourceLoader
+              ? Effect.tryPromise(() => resourceLoader.reload()).pipe(Effect.ignore)
+              : Effect.void,
+          ),
+        )
+      }),
+    ),
+  }
 })
 
 interface PiTaskContext {
@@ -455,9 +468,13 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   options: MakePiThreadRuntimeOptions,
 ) {
   const taskContext: PiTaskContext = { activeTurnId: null }
-  const session = options.sessionFactory
-    ? yield* options.sessionFactory(options.thread)
-    : (yield* makeSession(options, taskContext)).session
+  const created = options.sessionFactory
+    ? {
+        session: yield* options.sessionFactory(options.thread),
+        refreshSystemPrompt: Effect.succeed(Effect.void),
+      }
+    : yield* makeSession(options, taskContext)
+  const session = created.session
   const crypto = yield* Crypto.Crypto
   const makeActivityId = crypto.randomUUIDv4.pipe(
     Effect.map((id) => decodeActivityId(`activity-${id}`)),
@@ -747,6 +764,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
               'A turn is active in this thread; wait for it to finish before reloading.',
             )
           }
+          const restoreSystemPrompt = yield* created.refreshSystemPrompt
           yield* Effect.tryPromise({
             try: () => session.reload(),
             catch: (cause) =>
@@ -755,7 +773,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
                 detail: errorDetail(cause),
                 cause,
               }),
-          })
+          }).pipe(Effect.tapError(() => restoreSystemPrompt))
           yield* Effect.logInfo('pi.session.reloaded').pipe(
             Effect.annotateLogs({
               component: 'pi',

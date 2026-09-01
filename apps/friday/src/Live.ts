@@ -44,9 +44,9 @@ const ThreadRuntimesLive = Layer.effect(
           thread,
           modelRuntime,
           systemPromptTemplates,
-          // Read at open time so reloaded profiles apply to newly opened
-          // runtimes; active runtimes keep their resolved sessions.
-          availableAgentModels: config.current().models.subagents,
+          // Read when the system prompt renders so harness reloads see the
+          // latest configured profiles without replacing the Pi session.
+          availableAgentModels: () => config.current().models.subagents,
           tasks,
           platforms,
         }).pipe(

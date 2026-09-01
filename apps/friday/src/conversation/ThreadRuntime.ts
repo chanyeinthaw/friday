@@ -66,8 +66,8 @@ export type ThreadRuntimeEvent =
 
 /**
  * Structured result of a harness reload against one live runtime. Reloads
- * refresh harness extensions/settings in place and always preserve the
- * conversation; refusals (busy, absent runtime) and failures never throw
+ * refresh the system prompt, harness extensions, and settings in place while
+ * preserving the conversation; refusals (busy, absent runtime) and failures never throw
  * across the transport boundary.
  */
 export const HarnessReloadOutcome = Schema.Union([
@@ -98,7 +98,7 @@ export const harnessReloadFailed = (detail: string): HarnessReloadOutcome => ({
 /** Human-readable one-line summary shared by the Discord reply. */
 export const formatHarnessReloadOutcome = (outcome: HarnessReloadOutcome): string =>
   outcome.ok
-    ? 'Harness reloaded (extensions and settings refreshed; conversation preserved).'
+    ? 'Harness reloaded (system prompt, extensions, and settings refreshed; conversation preserved).'
     : outcome.reason === 'reload-failed'
       ? `Harness reload failed: ${outcome.detail}`
       : `Harness reload refused (${outcome.reason}): ${outcome.detail}`
