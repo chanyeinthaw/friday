@@ -286,13 +286,6 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
 
   yield* sql`
     UPDATE threads
-    SET payload_json = json_set(payload_json, '$.channelRole', 'channel')
-    WHERE audience = 'user'
-      AND json_extract(payload_json, '$.channelRole') IS NULL
-  `
-
-  yield* sql`
-    UPDATE threads
     SET payload_json = json_set(
       payload_json,
       '$.channelContext',

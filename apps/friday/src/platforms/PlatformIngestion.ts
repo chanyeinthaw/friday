@@ -116,7 +116,7 @@ export const PlatformIngestionLive = Layer.effect(
                 )
               }
               if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
-              if (created && found.channelRole !== 'system') {
+              if (created) {
                 const currentModels = config.current().models
                 yield* textGeneration
                   .generateThreadTitle({

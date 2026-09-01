@@ -8,13 +8,12 @@ import type { SubagentProfile } from '../config/AppConfig.ts'
 import { FRIDAY_CLI_PATH } from '../FridayHome.ts'
 import bootstrapAgentTemplate from './templates/bootstrap-agent.md' with { type: 'text' }
 import channelAgentTemplate from './templates/channel-agent.md' with { type: 'text' }
-import systemAgentTemplate from './templates/system-agent.md' with { type: 'text' }
 
 export class SystemPromptTemplateError extends Schema.Error<SystemPromptTemplateError>(
   'SystemPromptTemplateError',
 )({
   _tag: Schema.tag('SystemPromptTemplateError'),
-  template: Schema.Literals(['channel-agent', 'system-agent', 'bootstrap-agent']),
+  template: Schema.Literals(['channel-agent', 'bootstrap-agent']),
   detail: Schema.String,
 }) {}
 
@@ -43,7 +42,7 @@ const unresolvedVariables = (source: string): ReadonlyArray<string> =>
   Array.from(source.matchAll(TemplateVariable), ([, variable]) => variable ?? '')
 
 const renderTemplate = (
-  template: 'channel-agent' | 'system-agent' | 'bootstrap-agent',
+  template: 'channel-agent' | 'bootstrap-agent',
   source: string,
   variables: Readonly<Record<string, string>>,
 ): Effect.Effect<string, SystemPromptTemplateError> =>
@@ -77,28 +76,19 @@ const renderAvailableModels = (profiles: ReadonlyArray<SubagentProfile>): string
 
 export const makeSystemPromptTemplates = (templates: {
   readonly channelAgent: string
-  readonly systemAgent?: string
   readonly bootstrapAgent: string
 }): SystemPromptTemplatesContract =>
   SystemPromptTemplates.of({
     renderChannelAgent: (context) =>
-      context.thread.channelRole === 'system'
-        ? renderTemplate('system-agent', templates.systemAgent ?? templates.channelAgent, {
-            currentWorkingDirectory: context.thread.workingDirectory,
-            modelHint: renderModelHint(context.thread),
-            availableAgentModels: renderAvailableModels(context.availableAgentModels),
-            fridayCliPath: FRIDAY_CLI_PATH,
-          })
-        : renderTemplate('channel-agent', templates.channelAgent, {
-            platform: context.thread.conversationBinding.platform,
-            channelName: context.thread.channelContext.name,
-            channelDescription:
-              context.thread.channelContext.description || '(No channel description)',
-            currentWorkingDirectory: context.thread.workingDirectory,
-            modelHint: renderModelHint(context.thread),
-            availableAgentModels: renderAvailableModels(context.availableAgentModels),
-            fridayCliPath: FRIDAY_CLI_PATH,
-          }),
+      renderTemplate('channel-agent', templates.channelAgent, {
+        platform: context.thread.conversationBinding.platform,
+        channelName: context.thread.channelContext.name,
+        channelDescription: context.thread.channelContext.description || '(No channel description)',
+        currentWorkingDirectory: context.thread.workingDirectory,
+        modelHint: renderModelHint(context.thread),
+        availableAgentModels: renderAvailableModels(context.availableAgentModels),
+        fridayCliPath: FRIDAY_CLI_PATH,
+      }),
     renderBootstrapAgent: (currentWorkingDirectory) =>
       renderTemplate('bootstrap-agent', templates.bootstrapAgent, {
         currentWorkingDirectory,
@@ -110,7 +100,6 @@ export const SystemPromptTemplatesLive = Layer.succeed(
   SystemPromptTemplates,
   makeSystemPromptTemplates({
     channelAgent: channelAgentTemplate,
-    systemAgent: systemAgentTemplate,
     bootstrapAgent: bootstrapAgentTemplate,
   }),
 )
