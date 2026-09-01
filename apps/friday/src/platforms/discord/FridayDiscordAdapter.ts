@@ -67,6 +67,53 @@ export class FridayDiscordAdapter extends DiscordAdapter {
       : super.createDiscordThread(channelId, messageId)
   }
 
+  /**
+   * Guild gate for application commands (`/friday`, `/harness`): an interaction
+   * from an unregistered or disabled guild is dropped before any handler runs,
+   * so it can neither invoke configuration operations nor receive a Friday
+   * response (Discord surfaces its own "no response" state). Direct messages
+   * (`@me`) have no guild and stay operational.
+   */
+  protected override handleApplicationCommandInteraction(
+    // SAFETY: The adapter's declared context shape is structural; the gate only
+    // reads channelId before delegating the original arguments unchanged.
+    context: Parameters<DiscordAdapter['handleApplicationCommandInteraction']>[0],
+    initialResponseFlags?: Parameters<DiscordAdapter['handleApplicationCommandInteraction']>[1],
+    options?: Parameters<DiscordAdapter['handleApplicationCommandInteraction']>[2],
+  ): void {
+    if (context !== null) {
+      try {
+        const location = this.decodeThreadId(context.channelId)
+        if (
+          location.guildId !== '@me' &&
+          this.resolveChannelPolicy(location.guildId, location.channelId) === undefined
+        ) {
+          this.logger.debug('Ignored application command from unknown or disabled guild', {
+            guildId: location.guildId,
+            channelId: context.channelId,
+            command: context.command,
+          })
+          return
+        }
+      } catch {
+        // A malformed channel id has no resolvable guild; treat it as outside
+        // every configured guild and drop it.
+        this.logger.debug('Ignored application command with unresolvable location', {
+          channelId: context.channelId,
+          command: context.command,
+        })
+        return
+      }
+    }
+    // SAFETY: the arguments are the adapter's own context/flags/options shapes;
+    // the base class accepts exactly what it produced.
+    return super.handleApplicationCommandInteraction(
+      context as never,
+      initialResponseFlags,
+      options,
+    )
+  }
+
   protected override handleGatewayMessage(
     // SAFETY: The gateway dispatches discord.js messages; the gate only reads
     // location and author fields.
