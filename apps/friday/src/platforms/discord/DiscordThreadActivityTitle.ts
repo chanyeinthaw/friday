@@ -44,9 +44,12 @@ export interface DiscordThreadTitleAdapter {
 
 const truncateTitle = (title: string): string => Array.from(title).slice(0, titleLimit).join('')
 
-// Fresh schedule per use: schedules are stateful. Caps cleanup restores at 3 attempts
-// (1 initial + 2 retries) with bounded exponential backoff; no background reaper.
-const cleanupSchedule = () => Schedule.exponential('50 millis', 2).pipe(Schedule.upTo({ times: 2 }))
+/**
+ * Reusable cleanup restore policy (schedules are immutable; each `Effect.retry` run
+ * starts a fresh driver). One initial attempt plus two retries with bounded
+ * exponential backoff (50ms then 100ms); no periodic reconciliation.
+ */
+const cleanupSchedule = Schedule.exponential('50 millis', 2).pipe(Schedule.upTo({ times: 2 }))
 
 const bestEffort = <A>(
   conversationId: string,
@@ -225,7 +228,7 @@ export const withDiscordThreadActivityTitle = (
             // and if every attempt fails keep the idle entry so a later activity
             // cycle on the thread retries the restore.
             yield* applyActivityTitle(conversationId, state).pipe(
-              Effect.retry(cleanupSchedule()),
+              Effect.retry(cleanupSchedule),
               Effect.tapError(() =>
                 Effect.sync(() => {
                   cleanupFailed = true
