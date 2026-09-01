@@ -55,7 +55,6 @@ import {
 } from './DiscordHarnessCommand.ts'
 import { FridayDiscordAdapter, type FridayDiscordAdapterConfig } from './FridayDiscordAdapter.ts'
 import { searchDiscordMessages } from './DiscordMessageSearch.ts'
-import { withDiscordThreadActivityTitle } from './DiscordThreadActivityTitle.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
@@ -172,8 +171,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
             searchMessages: (query) => searchDiscordMessages(discord, query),
           },
         )
-        const platform = withDiscordThreadActivityTitle(discord, chatSdkPlatform)
-        yield* platforms.register(platform)
+        yield* platforms.register(chatSdkPlatform)
         // Harness reload targets the thread bound to the invoking conversation
         // and its already-open runtime; both lookups are connection-scoped.
         const persistence = yield* ThreadPersistence
@@ -374,7 +372,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
             enabledGuildCount: discordConfig.guilds.filter((guild) => guild.enabled).length,
           }),
         )
-        return { connectionId: discordConfig.connectionId, platform }
+        return { connectionId: discordConfig.connectionId, platform: chatSdkPlatform }
       }),
     { concurrency: 'unbounded' },
   )

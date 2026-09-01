@@ -46,7 +46,6 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
     'discard-working',
     'set-conversation-title',
     'set-agent-activity',
-    'set-thread-activity-title',
     'lookup-channel',
     'set-application-description',
   ]),
