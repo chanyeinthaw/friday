@@ -10,13 +10,16 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
 import { ThreadPersistence } from '../conversation/ThreadPersistence.ts'
 import {
   inspectRepositoryWorktree,
   removeRepositoryWorktree,
+  RepositoryWorktreeError,
   RepositoryWorktreeSnapshot,
+  validateRepositoryWorktreeSnapshot,
 } from '../repositories/RepositoryWorktrees.ts'
 
 const NonEmptyString = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
@@ -75,6 +78,24 @@ export class WorkspaceCleanupError extends Schema.Error<WorkspaceCleanupError>(
   }
 }
 
+/**
+ * Typed rejection for an approved proposal whose owning workspace or recorded
+ * worktrees changed after the proposal was created. The proposal is marked
+ * `stale` transactionally before this error surfaces, so `workspace cleanup
+ * list` no longer reports it pending.
+ */
+export class WorkspaceCleanupStaleError extends Schema.Error<WorkspaceCleanupStaleError>(
+  'WorkspaceCleanupStaleError',
+)({
+  _tag: Schema.tag('WorkspaceCleanupStaleError'),
+  proposalId: WorkspaceCleanupProposalId,
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return this.detail
+  }
+}
+
 export interface WorkspaceCleanupContract {
   readonly propose: (
     thread: ChannelThread,
@@ -87,14 +108,19 @@ export interface WorkspaceCleanupContract {
   readonly apply: (
     proposalId: WorkspaceCleanupProposalId,
     currentWorkingDirectory: string,
-  ) => Effect.Effect<WorkspaceCleanupProposal, WorkspaceCleanupError>
+  ) => Effect.Effect<WorkspaceCleanupProposal, WorkspaceCleanupError | WorkspaceCleanupStaleError>
 }
 
 export class WorkspaceCleanup extends Context.Service<WorkspaceCleanup, WorkspaceCleanupContract>()(
   'friday/workspaces/WorkspaceCleanup',
 ) {}
 
-const isDirectChild = (workspace: string, candidate: string): boolean => {
+/**
+ * Guards the proposal inspection: only entries that are direct children of the
+ * channel workspace (never `..`, absolute paths, or nested escapes) are
+ * inspected as its repository worktrees.
+ */
+export const isDirectChild = (workspace: string, candidate: string): boolean => {
   const path = relative(workspace, candidate)
   return path.length > 0 && !path.startsWith('..') && !isAbsolute(path) && !path.includes('/')
 }
@@ -237,6 +263,35 @@ export const WorkspaceCleanupLive = Layer.effect(
       return yield* get(proposalId)
     })
 
+    /** Marks a still-pending proposal stale inside one committed transaction. */
+    const markStale = (
+      proposalId: WorkspaceCleanupProposalId,
+    ): Effect.Effect<void, SqlError, never> =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+            UPDATE workspace_cleanup_proposals
+            SET status = 'stale'
+            WHERE proposal_id = ${proposalId} AND status = 'pending'
+          `
+        }),
+      )
+
+    const stale = (
+      proposalId: WorkspaceCleanupProposalId,
+      detail: string,
+    ): Effect.Effect<never, WorkspaceCleanupStaleError | SqlError> =>
+      markStale(proposalId).pipe(
+        Effect.flatMap(() =>
+          Effect.fail(
+            new WorkspaceCleanupStaleError({
+              proposalId,
+              detail: `Workspace cleanup proposal '${proposalId}' is stale: ${detail}`,
+            }),
+          ),
+        ),
+      )
+
     const apply = Effect.fn('WorkspaceCleanup.apply')(function* (
       proposalId: WorkspaceCleanupProposalId,
       currentWorkingDirectory: string,
@@ -280,23 +335,33 @@ export const WorkspaceCleanupLive = Layer.effect(
         })
       }
       if (resolve(thread.value.workingDirectory) !== resolve(proposal.workspacePath)) {
-        return yield* new WorkspaceCleanupError({
-          operation: 'validate',
-          detail: 'The channel workspace changed after cleanup approval was requested.',
-        })
+        return yield* stale(
+          proposalId,
+          'the owning channel workspace changed after the proposal was created.',
+        )
       }
-      yield* Effect.forEach(proposal.resources, removeRepositoryWorktree, {
+      // Validate every snapshot before deleting anything. This avoids a
+      // partially applied cleanup when a later worktree has gone stale.
+      yield* Effect.forEach(proposal.resources, validateRepositoryWorktreeSnapshot, {
         discard: true,
         concurrency: 1,
       }).pipe(
-        Effect.tapError(() =>
-          sql`
-            UPDATE workspace_cleanup_proposals
-            SET status = 'stale'
-            WHERE proposal_id = ${proposalId}
-          `.pipe(Effect.ignore),
+        Effect.catch(
+          (
+            error,
+          ): Effect.Effect<
+            never,
+            RepositoryWorktreeError | WorkspaceCleanupStaleError | SqlError
+          > => {
+            if (error.operation === 'validate') return stale(proposalId, error.message)
+            return Effect.fail(error)
+          },
         ),
       )
+      yield* Effect.forEach(proposal.resources, (resource) => removeRepositoryWorktree(resource), {
+        discard: true,
+        concurrency: 1,
+      })
       const appliedAt = DateTime.formatIso(yield* DateTime.now)
       yield* sql`
         UPDATE workspace_cleanup_proposals
@@ -342,7 +407,15 @@ export const WorkspaceCleanupLive = Layer.effect(
       get: (proposalId) => get(proposalId).pipe(Effect.mapError(mapFailure('load'))),
       list: () => list().pipe(Effect.mapError(mapFailure('load'))),
       apply: (proposalId, currentWorkingDirectory) =>
-        apply(proposalId, currentWorkingDirectory).pipe(Effect.mapError(mapFailure('apply'))),
+        apply(proposalId, currentWorkingDirectory).pipe(
+          // The typed stale outcome passes through untouched.
+          Effect.mapError((cause) =>
+            cause instanceof WorkspaceCleanupError || cause instanceof WorkspaceCleanupStaleError
+              ? cause
+              : mapFailure('apply')(cause),
+          ),
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ),
     })
   }),
 )

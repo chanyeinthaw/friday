@@ -56,232 +56,61 @@ import {
 export const FRIDAY_VERSION = '0.0.0-nightly.12'
 
 /**
- * One node of the CLI command tree: the single typed source of command and
- * help truth. Leaves may carry usage fragments; branch nodes carry children.
+ * One node of the CLI command tree: the single typed source of dispatch,
+ * validation, and help. A branch lists its children, a leaf parses the tokens
+ * after its own command path, and a removed node rejects an old command form
+ * with a pointer to its replacement while staying out of help.
  */
-export interface CliCommandSpec {
+export interface CliLeafSpec {
   readonly name: string
   readonly summary: string
   /** Usage fragments for a leaf command; fragments continue on wrapped lines. */
   readonly arguments?: ReadonlyArray<string>
-  readonly children?: ReadonlyArray<CliCommandSpec>
+  /**
+   * Parses the tokens after the leaf's command path into a typed action.
+   * `all` is the complete original argument list, for error reporting.
+   */
+  readonly parse: (
+    tokens: ReadonlyArray<string>,
+    all: ReadonlyArray<string>,
+  ) => Effect.Effect<FridayCliAction, FridayCliError>
 }
+
+export interface CliBranchSpec {
+  readonly name: string
+  readonly summary: string
+  readonly children: ReadonlyArray<CliCommandSpec>
+}
+
+export interface CliRemovedSpec {
+  readonly name: string
+  /** The removed command form, named in the rejection message. */
+  readonly removed: string
+  /** The replacement command form, named in the rejection message. */
+  readonly replacement: string
+}
+
+export type CliCommandSpec = CliLeafSpec | CliBranchSpec | CliRemovedSpec
+
+export const isCliBranch = (node: CliCommandSpec): node is CliBranchSpec => 'children' in node
+export const isCliRemoved = (node: CliCommandSpec): node is CliRemovedSpec => 'removed' in node
+const isLeaf = (node: CliCommandSpec): node is CliLeafSpec =>
+  !isCliBranch(node) && !isCliRemoved(node)
 
 const permissionPoliciesNote = `Permission policies are "all", "allow=<id>[,<id>...]", or "deny=<id>[,<id>...]".
 The default reply mode is reply-in-thread; channels already inside a
 user-created thread always stay in that thread.`
 
-/** The complete Friday CLI command tree, in help and dispatch order. */
-export const cliCommandSpec: CliCommandSpec = {
-  name: 'friday',
-  summary: 'Friday — your personal agent.',
-  children: [
-    { name: 'start', summary: 'Start Friday (the default when no command is given).' },
-    {
-      name: 'config',
-      summary: "View or change Friday's stored configuration.",
-      children: [
-        { name: 'reload', summary: 'Reload the running Friday configuration.' },
-        {
-          name: 'admin',
-          summary: "Manage Friday's administrator allow-list (changes need a restart).",
-          children: [
-            {
-              name: 'discord',
-              summary: 'Manage the Discord administrator allow-list.',
-              children: [
-                { name: 'add', summary: 'Add a Discord administrator.', arguments: ['<user-id>'] },
-                {
-                  name: 'remove',
-                  summary: 'Remove a Discord administrator.',
-                  arguments: ['<user-id>'],
-                },
-                {
-                  name: 'list',
-                  summary: 'List configured Discord administrators.',
-                  arguments: ['[--json]'],
-                },
-              ],
-            },
-          ],
-        },
-        {
-          name: 'discord',
-          summary: 'Manage Discord connections, their guilds, and live activity publication.',
-          children: [
-            {
-              name: 'connection',
-              summary: "Manage one bot connection's stored topology (changes need a restart).",
-              children: [
-                {
-                  name: 'add',
-                  summary: 'Add a Discord bot connection (needs a restart).',
-                  arguments: [
-                    '<connection-id> --name <name> --application-id <snowflake>',
-                    '--public-key <64-hex-digits> --bot-token-env <env-name>',
-                    '[--respond-to-global-mentions]',
-                  ],
-                },
-                {
-                  name: 'update',
-                  summary:
-                    'Update stored connection fields, preserving the rest (changes need a restart).',
-                  arguments: [
-                    '<connection-id> [--name <name>] [--application-id <snowflake>]',
-                    '[--public-key <64-hex-digits>] [--bot-token-env <env-name>]',
-                    '[--respond-to-global-mentions|--no-respond-to-global-mentions]',
-                  ],
-                },
-                {
-                  name: 'remove',
-                  summary: 'Remove a connection and its Discord configuration (needs a restart).',
-                  arguments: ['<connection-id> --yes'],
-                },
-                {
-                  name: 'enable',
-                  summary: 'Enable a configured connection (needs a restart).',
-                  arguments: ['<connection-id>'],
-                },
-                {
-                  name: 'disable',
-                  summary: 'Disable a configured connection (needs a restart).',
-                  arguments: ['<connection-id>'],
-                },
-                {
-                  name: 'get',
-                  summary: "Show one connection's stored configuration.",
-                  arguments: ['<connection-id> [--json]'],
-                },
-                {
-                  name: 'list',
-                  summary: 'List configured Discord connections.',
-                  arguments: ['[--json]'],
-                },
-              ],
-            },
-            {
-              name: 'guild',
-              summary: 'Manage guild configuration (applies on the next configuration reload).',
-              children: [
-                {
-                  name: 'enable',
-                  summary: 'Enable Friday in a guild.',
-                  arguments: ['<connection-id> <guild-id>'],
-                },
-                {
-                  name: 'disable',
-                  summary: 'Disable Friday in a guild.',
-                  arguments: ['<connection-id> <guild-id>'],
-                },
-                {
-                  name: 'remove',
-                  summary: "Remove a guild's configuration and its channel overrides.",
-                  arguments: ['<connection-id> <guild-id> --yes'],
-                },
-                {
-                  name: 'list',
-                  summary: "List a connection's guild configuration.",
-                  arguments: ['<connection-id> [--json]'],
-                },
-                {
-                  name: 'set-invocation',
-                  summary: 'Set the guild-wide invocation default.',
-                  arguments: ['<connection-id> <guild-id> <mention-only|all-messages>'],
-                },
-                {
-                  name: 'set-users',
-                  summary: 'Set the guild-wide user permission default.',
-                  arguments: ['<connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>'],
-                },
-                {
-                  name: 'channel',
-                  summary: 'Override guild defaults for a single channel.',
-                  children: [
-                    {
-                      name: 'set',
-                      summary: 'Set channel overrides; only the given flags change.',
-                      arguments: [
-                        '<connection-id> <guild-id> <channel-id>',
-                        '[--invocation <mention-only|all-messages>] [--users <policy>]',
-                        '[--reply-in-thread|--reply-in-channel]',
-                      ],
-                    },
-                    {
-                      name: 'reset',
-                      summary: 'Remove channel overrides; guild defaults apply again.',
-                      arguments: ['<connection-id> <guild-id> <channel-id>'],
-                    },
-                  ],
-                },
-              ],
-            },
-            {
-              name: 'activity-description',
-              summary:
-                'Publish current task activity publicly; the running process watches this live.',
-              children: [
-                {
-                  name: 'set',
-                  summary: 'Enable public activity description for a connection now.',
-                  arguments: ['<connection-id>'],
-                },
-                {
-                  name: 'reset',
-                  summary: 'Disable it and clear Friday-owned description text now.',
-                  arguments: ['<connection-id>'],
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    },
-    {
-      name: 'worktree',
-      summary: "Manage repository worktrees registered with Friday's repository caches.",
-      children: [
-        {
-          name: 'ensure',
-          summary: 'Ensure a reusable repository worktree for the current channel workspace.',
-          arguments: ['<repository-url> [--ref <ref>] [--workspace <path>] [--json]'],
-        },
-        {
-          name: 'list',
-          summary: "List repository worktrees registered with Friday's repository caches.",
-          arguments: ['[--json]'],
-        },
-      ],
-    },
-    {
-      name: 'workspace',
-      summary: 'Manage channel workspaces and their cleanup proposals.',
-      children: [
-        {
-          name: 'cleanup',
-          summary: 'Apply or inspect workspace cleanup proposals.',
-          children: [
-            {
-              name: 'apply',
-              summary: 'Apply an approved workspace cleanup proposal.',
-              arguments: ['<proposal-id> [--json]'],
-            },
-            {
-              name: 'list',
-              summary: 'List recorded workspace cleanup proposals.',
-              arguments: ['[--json]'],
-            },
-          ],
-        },
-      ],
-    },
-  ],
-}
-
-const findCommandSpec = (path: ReadonlyArray<string>): CliCommandSpec | undefined => {
-  let node: CliCommandSpec | undefined = cliCommandSpec
+/** Resolves the command node at a topic path, if the path names a live node. */
+export const findCommandSpec = (path: ReadonlyArray<string>): CliCommandSpec | undefined => {
+  let node: CliCommandSpec = cliCommandSpec
   for (const name of path) {
-    node = node?.children?.find((child) => child.name === name)
-    if (node === undefined) return undefined
+    if (!isCliBranch(node)) return undefined
+    const child: CliCommandSpec | undefined = node.children.find(
+      (candidate) => candidate.name === name,
+    )
+    if (child === undefined) return undefined
+    node = child
   }
   return node
 }
@@ -289,47 +118,52 @@ const findCommandSpec = (path: ReadonlyArray<string>): CliCommandSpec | undefine
 /** Resolves the deepest command prefix of the arguments as the help topic. */
 const helpTopic = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> => {
   const topic: string[] = []
-  let node = cliCommandSpec
+  let node: CliCommandSpec = cliCommandSpec
   for (const argument of arguments_) {
-    const child = node.children?.find((candidate) => candidate.name === argument)
-    if (child === undefined) break
+    if (!isCliBranch(node)) break
+    const child: CliCommandSpec | undefined = node.children.find(
+      (candidate) => candidate.name === argument,
+    )
+    // Removed command forms are not help topics; help falls back to their parent.
+    if (child === undefined || isCliRemoved(child)) break
     topic.push(child.name)
     node = child
   }
   return topic
 }
 
-const renderEntry = (path: ReadonlyArray<string>, leaf: CliCommandSpec): ReadonlyArray<string> => [
+const renderEntry = (path: ReadonlyArray<string>, leaf: CliLeafSpec): ReadonlyArray<string> => [
   `  ${path.join(' ')}${leaf.arguments?.[0] === undefined ? '' : ` ${leaf.arguments[0]}`}`,
   ...(leaf.arguments ?? []).slice(1).map((line) => `      ${line}`),
   `      ${leaf.summary}`,
 ]
 
 const renderLeafEntries = (
-  node: CliCommandSpec,
+  node: CliBranchSpec,
   path: ReadonlyArray<string>,
 ): ReadonlyArray<string> =>
-  (node.children ?? []).flatMap((child): ReadonlyArray<string> => {
+  node.children.flatMap((child): ReadonlyArray<string> => {
+    if (isCliRemoved(child)) return []
     const childPath = [...path, child.name]
-    return child.children === undefined
-      ? renderEntry(childPath, child)
-      : renderLeafEntries(child, childPath)
+    return isCliBranch(child) ? renderLeafEntries(child, childPath) : renderEntry(childPath, child)
   })
 
-const renderChildEntries = (node: CliCommandSpec): ReadonlyArray<string> =>
-  (node.children ?? []).flatMap((child): ReadonlyArray<string> =>
-    child.children === undefined
-      ? renderEntry([child.name], child)
-      : [`  ${child.name}`, `      ${child.summary}`],
-  )
+const renderChildEntries = (node: CliBranchSpec): ReadonlyArray<string> =>
+  node.children.flatMap((child): ReadonlyArray<string> => {
+    if (isCliRemoved(child)) return []
+    return isCliBranch(child)
+      ? [`  ${child.name}`, `      ${child.summary}`]
+      : renderEntry([child.name], child)
+  })
 
 /**
  * Renders help for one command topic: the full command listing for the empty
- * topic, child commands for a branch, or the exact usage for a leaf.
+ * topic, child commands for a branch, or the exact usage for a leaf. Removed
+ * forms and unknown topics fall back to the full listing.
  */
 export const renderCliHelp = (topic: ReadonlyArray<string> = []): string => {
   const node = findCommandSpec(topic)
-  if (node === undefined) return renderCliHelp([])
+  if (node === undefined || isCliRemoved(node)) return renderCliHelp([])
   if (topic.length === 0) {
     return [
       'Friday — your personal agent',
@@ -348,7 +182,7 @@ export const renderCliHelp = (topic: ReadonlyArray<string> = []): string => {
       '  -v, --version  Show the version',
     ].join('\n')
   }
-  if (node.children === undefined) {
+  if (isLeaf(node)) {
     return [
       node.summary,
       '',
@@ -515,201 +349,148 @@ export const parseAccessPolicySpec = (spec: string): Effect.Effect<AccessPolicy,
     return { mode: match[1] as 'allow' | 'deny', ids: [...ids] }
   })
 
-const discordArgumentsError = (arguments_: ReadonlyArray<string>) =>
-  new FridayCliError({ argument: arguments_.join(' ') })
+const discordArgumentsError = (all: ReadonlyArray<string>) =>
+  new FridayCliError({ argument: all.join(' ') })
 
 /** A typed rejection explaining the removal of a command form. */
-const removedCommandError = (
-  arguments_: ReadonlyArray<string>,
-  removed: string,
-  replacement: string,
-) =>
+const removedCommandError = (all: ReadonlyArray<string>, removed: string, replacement: string) =>
   new FridayCliError({
-    argument: arguments_.join(' '),
+    argument: all.join(' '),
     detail: `The '${removed}' command was removed; use '${replacement}' instead.`,
   })
 
-/** A typed rejection naming the known subcommands at a command prefix. */
-const unknownSubcommandError = (path: ReadonlyArray<string>, arguments_: ReadonlyArray<string>) => {
-  // Every call site passes a branch node, so the child list is always present.
-  const known = findCommandSpec(path)
-    ?.children?.map((child) => child.name)
+/** Names a command prefix; the root command is plain `friday`. */
+const commandPathName = (path: ReadonlyArray<string>): string => ['friday', ...path].join(' ')
+
+/** The usable subcommand names of a branch: removed forms are not usable. */
+const knownSubcommandNames = (branch: CliBranchSpec): string =>
+  branch.children
+    .filter((child) => !isCliRemoved(child))
+    .map((child) => child.name)
     .join(', ')
-  return new FridayCliError({
-    argument: arguments_.join(' '),
-    detail: `Unknown 'friday ${path.join(' ')}' subcommand '${arguments_[path.length] ?? ''}'. Known subcommands: ${known}.`,
+
+/** A typed rejection naming the known subcommands at a command prefix. */
+const unknownSubcommandError = (
+  path: ReadonlyArray<string>,
+  head: string,
+  branch: CliBranchSpec,
+  all: ReadonlyArray<string>,
+) =>
+  new FridayCliError({
+    argument: all.join(' '),
+    detail: `Unknown '${commandPathName(path)}' subcommand '${head}'. Known subcommands: ${knownSubcommandNames(branch)}.`,
   })
+
+/** A typed rejection when a command prefix stops without its subcommand. */
+const missingSubcommandError = (
+  path: ReadonlyArray<string>,
+  branch: CliBranchSpec,
+  all: ReadonlyArray<string>,
+) =>
+  new FridayCliError({
+    argument: all.join(' '),
+    detail: `Provide a subcommand of '${commandPathName(path)}'. Known subcommands: ${knownSubcommandNames(branch)}.`,
+  })
+
+/** Parses one required positional token, rejecting flags and missing values. */
+const positionalToken = (
+  tokens: ReadonlyArray<string>,
+  index: number,
+  all: ReadonlyArray<string>,
+): Effect.Effect<string, FridayCliError> => {
+  const token = tokens[index]
+  return token === undefined || token.startsWith('-')
+    ? Effect.fail(discordArgumentsError(all))
+    : Effect.succeed(token)
 }
 
-const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
-  arguments_: ReadonlyArray<string>,
+/** Parses an optional trailing `--json` output flag and nothing else. */
+const parseTrailingJson = (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+): Effect.Effect<boolean, FridayCliError> =>
+  tokens.length > 1 || (tokens.length === 1 && tokens[0] !== '--json')
+    ? Effect.fail(discordArgumentsError(all))
+    : Effect.succeed(tokens[0] === '--json')
+
+const parseStart = Effect.fn('Cli.parseStart')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
 ) {
-  const urlArgument = arguments_[2]
-  if (!urlArgument || urlArgument.startsWith('-')) {
-    return yield* discordArgumentsError(arguments_)
-  }
-  const url = yield* decodeRepositoryUrl(urlArgument).pipe(
-    Effect.mapError(() => discordArgumentsError(arguments_)),
+  if (tokens.length > 0) return yield* discordArgumentsError(all)
+  return { type: 'start' as const }
+})
+
+const parseConfigReload = Effect.fn('Cli.parseConfigReload')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length > 0) return yield* discordArgumentsError(all)
+  return { type: 'config-reload' as const }
+})
+
+const parseAdminDiscordAdd = Effect.fn('Cli.parseAdminDiscordAdd')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 1) return yield* discordArgumentsError(all)
+  const userId = yield* decodeDiscordUserId(tokens[0] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
   )
-  let workspace: string | undefined
-  let ref: string | undefined
-  let json = false
-  for (let index = 3; index < arguments_.length; index += 1) {
-    const argument = arguments_[index]
-    if (argument === '--json') {
-      json = true
-      continue
-    }
-    if (argument === '--workspace' || argument === '--ref') {
-      const value = arguments_[index + 1]
-      if (!value || value.startsWith('-')) {
-        return yield* discordArgumentsError(arguments_)
-      }
-      if (argument === '--workspace') workspace = value
-      else ref = value
-      index += 1
-      continue
-    }
-    return yield* discordArgumentsError(arguments_)
-  }
-  if (workspace !== undefined && ref !== undefined) {
-    return { type: 'worktree-ensure' as const, url, workspace, ref, json }
-  }
-  if (workspace !== undefined) return { type: 'worktree-ensure' as const, url, workspace, json }
-  if (ref !== undefined) return { type: 'worktree-ensure' as const, url, ref, json }
-  return { type: 'worktree-ensure' as const, url, json }
+  return { type: 'config-admin-discord-add' as const, userId }
 })
 
-const parseWorktreeList = Effect.fn('Cli.parseWorktreeList')(function* (
-  arguments_: ReadonlyArray<string>,
+const parseAdminDiscordRemove = Effect.fn('Cli.parseAdminDiscordRemove')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
 ) {
-  const trailing = arguments_.slice(2)
-  if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
-    return yield* discordArgumentsError(arguments_)
-  }
-  return { type: 'worktree-list' as const, json: trailing[0] === '--json' }
-})
-
-const parseWorkspaceCleanupApply = Effect.fn('Cli.parseWorkspaceCleanupApply')(function* (
-  arguments_: ReadonlyArray<string>,
-) {
-  const proposalArgument = arguments_[3]
-  if (!proposalArgument || proposalArgument.startsWith('-')) {
-    return yield* discordArgumentsError(arguments_)
-  }
-  const proposalId = yield* decodeWorkspaceCleanupProposalId(proposalArgument).pipe(
-    Effect.mapError(() => discordArgumentsError(arguments_)),
+  if (tokens.length !== 1) return yield* discordArgumentsError(all)
+  const userId = yield* decodeDiscordUserId(tokens[0] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
   )
-  const trailing = arguments_.slice(4)
-  if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
-    return yield* discordArgumentsError(arguments_)
-  }
-  return { type: 'workspace-cleanup-apply' as const, proposalId, json: trailing[0] === '--json' }
+  return { type: 'config-admin-discord-remove' as const, userId }
 })
 
-const parseWorkspaceCleanupList = Effect.fn('Cli.parseWorkspaceCleanupList')(function* (
-  arguments_: ReadonlyArray<string>,
+const parseAdminDiscordList = Effect.fn('Cli.parseAdminDiscordList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
 ) {
-  const trailing = arguments_.slice(3)
-  if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
-    return yield* discordArgumentsError(arguments_)
-  }
-  return { type: 'workspace-cleanup-list' as const, json: trailing[0] === '--json' }
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'config-admin-discord-list' as const, json }
 })
 
-const parseConfigAdminDiscord = Effect.fn('Cli.parseConfigAdminDiscord')(function* (
-  arguments_: ReadonlyArray<string>,
-) {
-  const operation = arguments_[3]
-  if (operation === 'add' || operation === 'remove') {
-    const userIdArgument = arguments_[4]
-    if (arguments_.length !== 5 || !userIdArgument) {
-      return yield* discordArgumentsError(arguments_)
-    }
-    const userId = yield* decodeDiscordUserId(userIdArgument).pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
-    )
-    return operation === 'add'
-      ? { type: 'config-admin-discord-add' as const, userId }
-      : { type: 'config-admin-discord-remove' as const, userId }
-  }
-  if (operation === 'list') {
-    const trailing = arguments_.slice(4)
-    if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
-      return yield* discordArgumentsError(arguments_)
-    }
-    return { type: 'config-admin-discord-list' as const, json: trailing[0] === '--json' }
-  }
-  return yield* unknownSubcommandError(['config', 'admin', 'discord'], arguments_)
-})
-
-const parseConfigDiscordActivityDescription = Effect.fn(
-  'Cli.parseConfigDiscordActivityDescription',
-)(function* (arguments_: ReadonlyArray<string>) {
-  const operation = arguments_[3]
-  if (arguments_.length !== 5 || (operation !== 'set' && operation !== 'reset')) {
-    return yield* discordArgumentsError(arguments_)
-  }
-  const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
-    Effect.mapError(() => discordArgumentsError(arguments_)),
-  )
-  return {
-    type: `config-discord-activity-description-${operation}` as const,
-    connectionId,
-  }
-})
-
-const parseConfigDiscordConnection = Effect.fn('Cli.parseConfigDiscordConnection')(function* (
-  arguments_: ReadonlyArray<string>,
-) {
-  const operation = arguments_[3]
-  if (operation === 'list') {
-    const trailing = arguments_.slice(4)
-    if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
-      return yield* discordArgumentsError(arguments_)
-    }
-    return { type: 'config-discord-connection-list' as const, json: trailing[0] === '--json' }
-  }
-  if (operation === 'add') return yield* parseConfigDiscordConnectionAdd(arguments_)
-  if (operation === 'update') return yield* parseConfigDiscordConnectionUpdate(arguments_)
-  if (operation === 'remove') return yield* parseConfigDiscordConnectionRemove(arguments_)
-  if (operation === 'enable' || operation === 'disable') {
-    if (arguments_.length !== 5) return yield* discordArgumentsError(arguments_)
-    const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
+const parseActivityDescription = (enabled: boolean) =>
+  Effect.fn('Cli.parseActivityDescription')(function* (
+    tokens: ReadonlyArray<string>,
+    all: ReadonlyArray<string>,
+  ) {
+    if (tokens.length !== 1) return yield* discordArgumentsError(all)
+    const connectionId = yield* decodePlatformConnectionId(tokens[0] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
     )
     return {
-      type: `config-discord-connection-${operation}` as const,
+      type: enabled
+        ? ('config-discord-activity-description-set' as const)
+        : ('config-discord-activity-description-reset' as const),
       connectionId,
     }
-  }
-  if (operation === 'get') {
-    if (arguments_.length < 5 || arguments_.length > 6) {
-      return yield* discordArgumentsError(arguments_)
-    }
-    const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
-    )
-    const trailing = arguments_.slice(5)
-    if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
-      return yield* discordArgumentsError(arguments_)
-    }
-    return {
-      type: 'config-discord-connection-get' as const,
-      connectionId,
-      json: trailing[0] === '--json',
-    }
-  }
-  return yield* unknownSubcommandError(['config', 'discord', 'connection'], arguments_)
+  })
+
+const parseConnectionList = Effect.fn('Cli.parseConnectionList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'config-discord-connection-list' as const, json }
 })
 
 /** Rejects missing and flag-like values before a command-specific decoder runs. */
 const connectionFlagValue = (
   value: string | undefined,
-  arguments_: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
 ): Effect.Effect<string, FridayCliError> =>
   value === undefined || value.startsWith('-')
-    ? Effect.fail(discordArgumentsError(arguments_))
+    ? Effect.fail(discordArgumentsError(all))
     : Effect.succeed(value)
 
 const decodeConnectionName = Schema.decodeUnknownEffect(
@@ -718,9 +499,9 @@ const decodeConnectionName = Schema.decodeUnknownEffect(
 const decodeDiscordPublicKey = Schema.decodeUnknownEffect(DiscordPublicKey)
 const decodeBotTokenEnvName = Schema.decodeUnknownEffect(BotTokenEnvName)
 
-const missingUpdateFieldError = (arguments_: ReadonlyArray<string>) =>
+const missingUpdateFieldError = (all: ReadonlyArray<string>) =>
   new FridayCliError({
-    argument: arguments_.join(' '),
+    argument: all.join(' '),
     detail:
       'Provide at least one field to update: --name, --application-id, --public-key, --bot-token-env, --respond-to-global-mentions, or --no-respond-to-global-mentions.',
   })
@@ -737,72 +518,70 @@ interface ParsedDiscordConnectionUpdate {
 }
 
 const parseConfigDiscordConnectionUpdate = Effect.fn('Cli.parseConfigDiscordConnectionUpdate')(
-  function* (arguments_: ReadonlyArray<string>) {
-    if (arguments_.length < 5) return yield* missingUpdateFieldError(arguments_)
-    const connectionArgument = yield* positionalArgument(arguments_, 4).pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
-    )
-    const connectionId = yield* decodePlatformConnectionId(connectionArgument).pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length < 1) return yield* missingUpdateFieldError(all)
+    const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+      Effect.flatMap(decodePlatformConnectionId),
+      Effect.mapError(() => discordArgumentsError(all)),
     )
     let name: string | undefined
     let applicationId: typeof DiscordSnowflake.Type | undefined
     let publicKey: typeof DiscordPublicKey.Type | undefined
     let botTokenEnv: typeof BotTokenEnvName.Type | undefined
     let respondToGlobalMentions: boolean | undefined
-    let index = 5
-    while (index < arguments_.length) {
-      const flag = arguments_[index]
+    let index = 1
+    while (index < tokens.length) {
+      const flag = tokens[index]
       if (flag === '--respond-to-global-mentions') {
-        if (respondToGlobalMentions !== undefined) return yield* discordArgumentsError(arguments_)
+        if (respondToGlobalMentions !== undefined) return yield* discordArgumentsError(all)
         respondToGlobalMentions = true
         index += 1
         continue
       }
       if (flag === '--no-respond-to-global-mentions') {
-        if (respondToGlobalMentions !== undefined) return yield* discordArgumentsError(arguments_)
+        if (respondToGlobalMentions !== undefined) return yield* discordArgumentsError(all)
         respondToGlobalMentions = false
         index += 1
         continue
       }
-      const value = arguments_[index + 1]
+      const value = tokens[index + 1]
       if (flag === '--name') {
-        if (name !== undefined) return yield* discordArgumentsError(arguments_)
-        name = yield* connectionFlagValue(value, arguments_).pipe(
+        if (name !== undefined) return yield* discordArgumentsError(all)
+        name = yield* connectionFlagValue(value, all).pipe(
           Effect.flatMap(decodeConnectionName),
-          Effect.mapError(() => discordArgumentsError(arguments_)),
+          Effect.mapError(() => discordArgumentsError(all)),
         )
         index += 2
         continue
       }
       if (flag === '--application-id') {
-        if (applicationId !== undefined) return yield* discordArgumentsError(arguments_)
-        applicationId = yield* connectionFlagValue(value, arguments_).pipe(
+        if (applicationId !== undefined) return yield* discordArgumentsError(all)
+        applicationId = yield* connectionFlagValue(value, all).pipe(
           Effect.flatMap(decodeDiscordSnowflake),
-          Effect.mapError(() => discordArgumentsError(arguments_)),
+          Effect.mapError(() => discordArgumentsError(all)),
         )
         index += 2
         continue
       }
       if (flag === '--public-key') {
-        if (publicKey !== undefined) return yield* discordArgumentsError(arguments_)
-        publicKey = yield* connectionFlagValue(value, arguments_).pipe(
+        if (publicKey !== undefined) return yield* discordArgumentsError(all)
+        publicKey = yield* connectionFlagValue(value, all).pipe(
           Effect.flatMap(decodeDiscordPublicKey),
-          Effect.mapError(() => discordArgumentsError(arguments_)),
+          Effect.mapError(() => discordArgumentsError(all)),
         )
         index += 2
         continue
       }
       if (flag === '--bot-token-env') {
-        if (botTokenEnv !== undefined) return yield* discordArgumentsError(arguments_)
-        botTokenEnv = yield* connectionFlagValue(value, arguments_).pipe(
+        if (botTokenEnv !== undefined) return yield* discordArgumentsError(all)
+        botTokenEnv = yield* connectionFlagValue(value, all).pipe(
           Effect.flatMap(decodeBotTokenEnvName),
-          Effect.mapError(() => discordArgumentsError(arguments_)),
+          Effect.mapError(() => discordArgumentsError(all)),
         )
         index += 2
         continue
       }
-      return yield* discordArgumentsError(arguments_)
+      return yield* discordArgumentsError(all)
     }
     if (
       name === undefined &&
@@ -811,7 +590,7 @@ const parseConfigDiscordConnectionUpdate = Effect.fn('Cli.parseConfigDiscordConn
       botTokenEnv === undefined &&
       respondToGlobalMentions === undefined
     ) {
-      return yield* missingUpdateFieldError(arguments_)
+      return yield* missingUpdateFieldError(all)
     }
     // Mutable assembly shape: exactOptionalPropertyTypes allows assigning a
     // property only when the flag was present on the command line.
@@ -831,63 +610,64 @@ const parseConfigDiscordConnectionUpdate = Effect.fn('Cli.parseConfigDiscordConn
 )
 
 const parseConfigDiscordConnectionAdd = Effect.fn('Cli.parseConfigDiscordConnectionAdd')(function* (
-  arguments_: ReadonlyArray<string>,
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
 ) {
-  if (arguments_.length < 10) return yield* discordArgumentsError(arguments_)
-  const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
-    Effect.mapError(() => discordArgumentsError(arguments_)),
+  const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodePlatformConnectionId),
+    Effect.mapError(() => discordArgumentsError(all)),
   )
   let name: string | undefined
   let applicationId: typeof DiscordSnowflake.Type | undefined
   let publicKey: typeof DiscordPublicKey.Type | undefined
   let botTokenEnv: typeof BotTokenEnvName.Type | undefined
   let respondToGlobalMentions = false
-  let index = 5
-  while (index < arguments_.length) {
-    const flag = arguments_[index]
+  let index = 1
+  while (index < tokens.length) {
+    const flag = tokens[index]
     if (flag === '--respond-to-global-mentions') {
       respondToGlobalMentions = true
       index += 1
       continue
     }
-    const value = arguments_[index + 1]
+    const value = tokens[index + 1]
     if (flag === '--name') {
-      if (name !== undefined) return yield* discordArgumentsError(arguments_)
-      name = yield* connectionFlagValue(value, arguments_).pipe(
+      if (name !== undefined) return yield* discordArgumentsError(all)
+      name = yield* connectionFlagValue(value, all).pipe(
         Effect.flatMap(decodeConnectionName),
-        Effect.mapError(() => discordArgumentsError(arguments_)),
+        Effect.mapError(() => discordArgumentsError(all)),
       )
       index += 2
       continue
     }
     if (flag === '--application-id') {
-      if (applicationId !== undefined) return yield* discordArgumentsError(arguments_)
-      applicationId = yield* connectionFlagValue(value, arguments_).pipe(
+      if (applicationId !== undefined) return yield* discordArgumentsError(all)
+      applicationId = yield* connectionFlagValue(value, all).pipe(
         Effect.flatMap(decodeDiscordSnowflake),
-        Effect.mapError(() => discordArgumentsError(arguments_)),
+        Effect.mapError(() => discordArgumentsError(all)),
       )
       index += 2
       continue
     }
     if (flag === '--public-key') {
-      if (publicKey !== undefined) return yield* discordArgumentsError(arguments_)
-      publicKey = yield* connectionFlagValue(value, arguments_).pipe(
+      if (publicKey !== undefined) return yield* discordArgumentsError(all)
+      publicKey = yield* connectionFlagValue(value, all).pipe(
         Effect.flatMap(decodeDiscordPublicKey),
-        Effect.mapError(() => discordArgumentsError(arguments_)),
+        Effect.mapError(() => discordArgumentsError(all)),
       )
       index += 2
       continue
     }
     if (flag === '--bot-token-env') {
-      if (botTokenEnv !== undefined) return yield* discordArgumentsError(arguments_)
-      botTokenEnv = yield* connectionFlagValue(value, arguments_).pipe(
+      if (botTokenEnv !== undefined) return yield* discordArgumentsError(all)
+      botTokenEnv = yield* connectionFlagValue(value, all).pipe(
         Effect.flatMap(decodeBotTokenEnvName),
-        Effect.mapError(() => discordArgumentsError(arguments_)),
+        Effect.mapError(() => discordArgumentsError(all)),
       )
       index += 2
       continue
     }
-    return yield* discordArgumentsError(arguments_)
+    return yield* discordArgumentsError(all)
   }
   if (
     name === undefined ||
@@ -895,7 +675,7 @@ const parseConfigDiscordConnectionAdd = Effect.fn('Cli.parseConfigDiscordConnect
     publicKey === undefined ||
     botTokenEnv === undefined
   ) {
-    return yield* discordArgumentsError(arguments_)
+    return yield* discordArgumentsError(all)
   }
   return {
     type: 'config-discord-connection-add' as const,
@@ -909,12 +689,12 @@ const parseConfigDiscordConnectionAdd = Effect.fn('Cli.parseConfigDiscordConnect
 })
 
 const parseConfigDiscordConnectionRemove = Effect.fn('Cli.parseConfigDiscordConnectionRemove')(
-  function* (arguments_: ReadonlyArray<string>) {
-    if (arguments_.length !== 6 || arguments_[5] !== '--yes') {
-      return yield* discordArgumentsError(arguments_)
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length !== 2 || tokens[1] !== '--yes') {
+      return yield* discordArgumentsError(all)
     }
-    const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
+    const connectionId = yield* decodePlatformConnectionId(tokens[0] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
     )
     return {
       type: 'config-discord-connection-remove' as const,
@@ -924,121 +704,122 @@ const parseConfigDiscordConnectionRemove = Effect.fn('Cli.parseConfigDiscordConn
   },
 )
 
-/** Parses one required positional argument, rejecting flags and missing values. */
-const positionalArgument = (
-  arguments_: ReadonlyArray<string>,
-  index: number,
-): Effect.Effect<string, FridayCliError> => {
-  const argument = arguments_[index]
-  return argument === undefined || argument.startsWith('-')
-    ? Effect.fail(discordArgumentsError(arguments_))
-    : Effect.succeed(argument)
-}
+const parseConnectionEnableDisable = (enable: boolean) =>
+  Effect.fn('Cli.parseConnectionEnableDisable')(function* (
+    tokens: ReadonlyArray<string>,
+    all: ReadonlyArray<string>,
+  ) {
+    if (tokens.length !== 1) return yield* discordArgumentsError(all)
+    const connectionId = yield* decodePlatformConnectionId(tokens[0] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    return {
+      type: enable
+        ? ('config-discord-connection-enable' as const)
+        : ('config-discord-connection-disable' as const),
+      connectionId,
+    }
+  })
+
+const parseConfigDiscordConnectionGet = Effect.fn('Cli.parseConfigDiscordConnectionGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length < 1 || tokens.length > 2) return yield* discordArgumentsError(all)
+  const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodePlatformConnectionId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const json = yield* parseTrailingJson(tokens.slice(1), all)
+  return { type: 'config-discord-connection-get' as const, connectionId, json }
+})
 
 const parseConnectionGuild = Effect.fn('Cli.parseConnectionGuild')(function* (
-  arguments_: ReadonlyArray<string>,
+  tokens: ReadonlyArray<string>,
   connectionIndex: number,
   guildIndex: number,
+  all: ReadonlyArray<string>,
 ) {
-  const connectionArgument = yield* positionalArgument(arguments_, connectionIndex)
-  const guildArgument = yield* positionalArgument(arguments_, guildIndex)
+  const connectionArgument = yield* positionalToken(tokens, connectionIndex, all)
+  const guildArgument = yield* positionalToken(tokens, guildIndex, all)
   const connectionId = yield* decodePlatformConnectionId(connectionArgument).pipe(
-    Effect.mapError(() => discordArgumentsError(arguments_)),
+    Effect.mapError(() => discordArgumentsError(all)),
   )
   const guildId = yield* decodeDiscordGuildId(guildArgument).pipe(
-    Effect.mapError(() => discordArgumentsError(arguments_)),
+    Effect.mapError(() => discordArgumentsError(all)),
   )
   return { connectionId, guildId }
 })
 
-const guildRemoveConfirmationError = (arguments_: ReadonlyArray<string>) =>
+const guildRemoveConfirmationError = (all: ReadonlyArray<string>) =>
   new FridayCliError({
-    argument: arguments_.join(' '),
+    argument: all.join(' '),
     detail:
       "Guild removal also deletes the guild's channel overrides; re-run with --yes to confirm.",
   })
 
-const parseConfigDiscordGuild = Effect.fn('Cli.parseConfigDiscordGuild')(function* (
-  arguments_: ReadonlyArray<string>,
+const parseConfigDiscordGuildEnable = Effect.fn('Cli.parseConfigDiscordGuildEnable')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
 ) {
-  const operation = arguments_[3]
-  if (operation === 'enable' || operation === 'disable') {
-    if (arguments_.length !== 6) return yield* discordArgumentsError(arguments_)
-    const { connectionId, guildId } = yield* parseConnectionGuild(arguments_, 4, 5)
-    return {
-      type: `config-discord-guild-${operation}` as const,
-      connectionId,
-      guildId,
-    }
+  if (tokens.length !== 2) return yield* discordArgumentsError(all)
+  const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+  return { type: 'config-discord-guild-enable' as const, connectionId, guildId }
+})
+
+const parseConfigDiscordGuildDisable = Effect.fn('Cli.parseConfigDiscordGuildDisable')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 2) return yield* discordArgumentsError(all)
+  const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+  return { type: 'config-discord-guild-disable' as const, connectionId, guildId }
+})
+
+const parseConfigDiscordGuildRemove = Effect.fn('Cli.parseConfigDiscordGuildRemove')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length === 2) return yield* guildRemoveConfirmationError(all)
+  if (tokens.length !== 3 || tokens[2] !== '--yes') {
+    return yield* discordArgumentsError(all)
   }
-  if (operation === 'remove') {
-    if (arguments_.length === 6) return yield* guildRemoveConfirmationError(arguments_)
-    if (arguments_.length !== 7 || arguments_[6] !== '--yes') {
-      return yield* discordArgumentsError(arguments_)
-    }
-    const { connectionId, guildId } = yield* parseConnectionGuild(arguments_, 4, 5)
-    return { type: 'config-discord-guild-remove' as const, connectionId, guildId, yes: true }
-  }
-  if (operation === 'list') {
-    if (arguments_.length < 5 || arguments_.length > 6) {
-      return yield* discordArgumentsError(arguments_)
-    }
-    const connectionArgument = yield* positionalArgument(arguments_, 4)
-    const connectionId = yield* decodePlatformConnectionId(connectionArgument).pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
+  const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+  return { type: 'config-discord-guild-remove' as const, connectionId, guildId, yes: true }
+})
+
+const parseConfigDiscordGuildList = Effect.fn('Cli.parseConfigDiscordGuildList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length < 1 || tokens.length > 2) return yield* discordArgumentsError(all)
+  const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodePlatformConnectionId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const json = yield* parseTrailingJson(tokens.slice(1), all)
+  return { type: 'config-discord-guild-list' as const, connectionId, json }
+})
+
+const parseConfigDiscordGuildSetInvocation = Effect.fn('Cli.parseConfigDiscordGuildSetInvocation')(
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length !== 3) return yield* discordArgumentsError(all)
+    const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+    const mode = yield* decodeInvocationMode(tokens[2] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
     )
-    const trailing = arguments_.slice(5)
-    if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
-      return yield* discordArgumentsError(arguments_)
-    }
-    return {
-      type: 'config-discord-guild-list' as const,
-      connectionId,
-      json: trailing[0] === '--json',
-    }
-  }
-  if (operation === 'set-invocation') {
-    if (arguments_.length !== 7) return yield* discordArgumentsError(arguments_)
-    const { connectionId, guildId } = yield* parseConnectionGuild(arguments_, 4, 5)
-    const mode = yield* decodeInvocationMode(arguments_[6] ?? '').pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
-    )
-    return {
-      type: 'config-discord-guild-set-invocation' as const,
-      connectionId,
-      guildId,
-      mode,
-    }
-  }
-  if (operation === 'set-users') {
-    if (arguments_.length !== 7) return yield* discordArgumentsError(arguments_)
-    const { connectionId, guildId } = yield* parseConnectionGuild(arguments_, 4, 5)
-    const policy = yield* parseAccessPolicySpec(arguments_[6] ?? '')
-    return {
-      type: 'config-discord-guild-set-users' as const,
-      connectionId,
-      guildId,
-      policy,
-    }
-  }
-  if (operation === 'invocation') {
-    return yield* removedCommandError(
-      arguments_,
-      'config discord guild invocation set',
-      'friday config discord guild set-invocation <connection-id> <guild-id> <mode>',
-    )
-  }
-  if (operation === 'users') {
-    return yield* removedCommandError(
-      arguments_,
-      'config discord guild users set',
-      'friday config discord guild set-users <connection-id> <guild-id> <policy>',
-    )
-  }
-  if (operation === 'channel') {
-    return yield* parseConfigDiscordGuildChannel(arguments_)
-  }
-  return yield* unknownSubcommandError(['config', 'discord', 'guild'], arguments_)
+    return { type: 'config-discord-guild-set-invocation' as const, connectionId, guildId, mode }
+  },
+)
+
+const parseConfigDiscordGuildSetUsers = Effect.fn('Cli.parseConfigDiscordGuildSetUsers')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 3) return yield* discordArgumentsError(all)
+  const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+  const policy = yield* parseAccessPolicySpec(tokens[2] ?? '')
+  return { type: 'config-discord-guild-set-users' as const, connectionId, guildId, policy }
 })
 
 /** Mutable assembly shape for the channel patch parsed from CLI flags. */
@@ -1061,15 +842,12 @@ const buildChannelPatch = (
   return patch
 }
 
-const parseConfigDiscordGuildChannel = Effect.fn('Cli.parseConfigDiscordGuildChannel')(function* (
-  arguments_: ReadonlyArray<string>,
-) {
-  const operation = arguments_[4]
-  if (operation === 'reset') {
-    if (arguments_.length !== 8) return yield* discordArgumentsError(arguments_)
-    const { connectionId, guildId } = yield* parseConnectionGuild(arguments_, 5, 6)
-    const channelId = yield* decodeDiscordGuildChannelId(arguments_[7] ?? '').pipe(
-      Effect.mapError(() => discordArgumentsError(arguments_)),
+const parseConfigDiscordGuildChannelReset = Effect.fn('Cli.parseConfigDiscordGuildChannelReset')(
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length !== 3) return yield* discordArgumentsError(all)
+    const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+    const channelId = yield* decodeDiscordGuildChannelId(tokens[2] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
     )
     return {
       type: 'config-discord-guild-channel-reset' as const,
@@ -1077,114 +855,424 @@ const parseConfigDiscordGuildChannel = Effect.fn('Cli.parseConfigDiscordGuildCha
       guildId,
       channelId,
     }
-  }
-  if (operation !== 'set') return yield* discordArgumentsError(arguments_)
-  if (arguments_.length < 8) return yield* discordArgumentsError(arguments_)
-  const { connectionId, guildId } = yield* parseConnectionGuild(arguments_, 5, 6)
-  const channelArgument = yield* positionalArgument(arguments_, 7)
-  const channelId = yield* decodeDiscordGuildChannelId(channelArgument).pipe(
-    Effect.mapError(() => discordArgumentsError(arguments_)),
+  },
+)
+
+const parseConfigDiscordGuildChannelSet = Effect.fn('Cli.parseConfigDiscordGuildChannelSet')(
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length < 3) return yield* discordArgumentsError(all)
+    const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+    const channelId = yield* positionalToken(tokens, 2, all).pipe(
+      Effect.flatMap(decodeDiscordGuildChannelId),
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    let invocationMode: InvocationModeType | undefined
+    let users: AccessPolicy | undefined
+    let replyMode: 'reply-in-thread' | 'reply-in-channel' | undefined
+    let index = 3
+    while (index < tokens.length) {
+      const flag = tokens[index]
+      if (flag === '--reply-in-thread' || flag === '--reply-in-channel') {
+        if (replyMode !== undefined) return yield* discordArgumentsError(all)
+        replyMode = flag === '--reply-in-thread' ? 'reply-in-thread' : 'reply-in-channel'
+        index += 1
+        continue
+      }
+      const value = tokens[index + 1]
+      if (flag === '--invocation') {
+        if (invocationMode !== undefined || value === undefined) {
+          return yield* discordArgumentsError(all)
+        }
+        invocationMode = yield* decodeInvocationMode(value).pipe(
+          Effect.mapError(() => discordArgumentsError(all)),
+        )
+        index += 2
+        continue
+      }
+      if (flag === '--users') {
+        if (users !== undefined || value === undefined) {
+          return yield* discordArgumentsError(all)
+        }
+        users = yield* parseAccessPolicySpec(value)
+        index += 2
+        continue
+      }
+      return yield* discordArgumentsError(all)
+    }
+    if (invocationMode === undefined && users === undefined && replyMode === undefined) {
+      // A channel set with no overrides would be a no-op row.
+      return yield* discordArgumentsError(all)
+    }
+    return {
+      type: 'config-discord-guild-channel-set' as const,
+      connectionId,
+      guildId,
+      channelId,
+      patch: buildChannelPatch(invocationMode, users, replyMode),
+    }
+  },
+)
+
+const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const url = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeRepositoryUrl),
+    Effect.mapError(() => discordArgumentsError(all)),
   )
-  let invocationMode: InvocationModeType | undefined
-  let users: AccessPolicy | undefined
-  let replyMode: 'reply-in-thread' | 'reply-in-channel' | undefined
-  let index = 8
-  while (index < arguments_.length) {
-    const flag = arguments_[index]
-    if (flag === '--reply-in-thread' || flag === '--reply-in-channel') {
-      if (replyMode !== undefined) return yield* discordArgumentsError(arguments_)
-      replyMode = flag === '--reply-in-thread' ? 'reply-in-thread' : 'reply-in-channel'
+  let workspace: string | undefined
+  let ref: string | undefined
+  let json = false
+  for (let index = 1; index < tokens.length; index += 1) {
+    const flag = tokens[index]
+    if (flag === '--json') {
+      json = true
+      continue
+    }
+    if (flag === '--workspace' || flag === '--ref') {
+      const value = tokens[index + 1]
+      if (!value || value.startsWith('-')) {
+        return yield* discordArgumentsError(all)
+      }
+      if (flag === '--workspace') workspace = value
+      else ref = value
       index += 1
       continue
     }
-    const value = arguments_[index + 1]
-    if (flag === '--invocation') {
-      if (invocationMode !== undefined || value === undefined) {
-        return yield* discordArgumentsError(arguments_)
-      }
-      invocationMode = yield* decodeInvocationMode(value).pipe(
-        Effect.mapError(() => discordArgumentsError(arguments_)),
-      )
-      index += 2
-      continue
-    }
-    if (flag === '--users') {
-      if (users !== undefined || value === undefined) {
-        return yield* discordArgumentsError(arguments_)
-      }
-      users = yield* parseAccessPolicySpec(value)
-      index += 2
-      continue
-    }
-    return yield* discordArgumentsError(arguments_)
+    return yield* discordArgumentsError(all)
   }
-  if (invocationMode === undefined && users === undefined && replyMode === undefined) {
-    // A channel set with no overrides would be a no-op row.
-    return yield* discordArgumentsError(arguments_)
+  if (workspace !== undefined && ref !== undefined) {
+    return { type: 'worktree-ensure' as const, url, workspace, ref, json }
   }
-  return {
-    type: 'config-discord-guild-channel-set' as const,
-    connectionId,
-    guildId,
-    channelId,
-    patch: buildChannelPatch(invocationMode, users, replyMode),
-  }
+  if (workspace !== undefined) return { type: 'worktree-ensure' as const, url, workspace, json }
+  if (ref !== undefined) return { type: 'worktree-ensure' as const, url, ref, json }
+  return { type: 'worktree-ensure' as const, url, json }
 })
 
-export const parseFridayCli = (
-  arguments_: ReadonlyArray<string>,
+const parseWorktreeList = Effect.fn('Cli.parseWorktreeList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'worktree-list' as const, json }
+})
+
+const parseWorkspaceCleanupApply = Effect.fn('Cli.parseWorkspaceCleanupApply')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const proposalId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeWorkspaceCleanupProposalId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const json = yield* parseTrailingJson(tokens.slice(1), all)
+  return { type: 'workspace-cleanup-apply' as const, proposalId, json }
+})
+
+const parseWorkspaceCleanupList = Effect.fn('Cli.parseWorkspaceCleanupList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'workspace-cleanup-list' as const, json }
+})
+
+/** The complete Friday CLI command tree: dispatch, validation, and help all read it. */
+export const cliCommandSpec: CliBranchSpec = {
+  name: 'friday',
+  summary: 'Friday — your personal agent.',
+  children: [
+    {
+      name: 'start',
+      summary: 'Start Friday (the default when no command is given).',
+      parse: parseStart,
+    },
+    {
+      name: 'config',
+      summary: "View or change Friday's stored configuration.",
+      children: [
+        {
+          name: 'reload',
+          summary: 'Reload the running Friday configuration.',
+          parse: parseConfigReload,
+        },
+        {
+          name: 'admin',
+          summary: "Manage Friday's administrator allow-list (changes need a restart).",
+          children: [
+            {
+              name: 'discord',
+              summary: 'Manage the Discord administrator allow-list.',
+              children: [
+                {
+                  name: 'add',
+                  summary: 'Add a Discord administrator.',
+                  arguments: ['<user-id>'],
+                  parse: parseAdminDiscordAdd,
+                },
+                {
+                  name: 'remove',
+                  summary: 'Remove a Discord administrator.',
+                  arguments: ['<user-id>'],
+                  parse: parseAdminDiscordRemove,
+                },
+                {
+                  name: 'list',
+                  summary: 'List configured Discord administrators.',
+                  arguments: ['[--json]'],
+                  parse: parseAdminDiscordList,
+                },
+              ],
+            },
+          ],
+        },
+        {
+          name: 'discord',
+          summary: 'Manage Discord connections, their guilds, and live activity publication.',
+          children: [
+            {
+              name: 'connection',
+              summary: "Manage one bot connection's stored topology (changes need a restart).",
+              children: [
+                {
+                  name: 'add',
+                  summary: 'Add a Discord bot connection (needs a restart).',
+                  arguments: [
+                    '<connection-id> --name <name> --application-id <snowflake>',
+                    '--public-key <64-hex-digits> --bot-token-env <env-name>',
+                    '[--respond-to-global-mentions]',
+                  ],
+                  parse: parseConfigDiscordConnectionAdd,
+                },
+                {
+                  name: 'update',
+                  summary:
+                    'Update stored connection fields, preserving the rest (changes need a restart).',
+                  arguments: [
+                    '<connection-id> [--name <name>] [--application-id <snowflake>]',
+                    '[--public-key <64-hex-digits>] [--bot-token-env <env-name>]',
+                    '[--respond-to-global-mentions|--no-respond-to-global-mentions]',
+                  ],
+                  parse: parseConfigDiscordConnectionUpdate,
+                },
+                {
+                  name: 'remove',
+                  summary: 'Remove a connection and its Discord configuration (needs a restart).',
+                  arguments: ['<connection-id> --yes'],
+                  parse: parseConfigDiscordConnectionRemove,
+                },
+                {
+                  name: 'enable',
+                  summary: 'Enable a configured connection (needs a restart).',
+                  arguments: ['<connection-id>'],
+                  parse: parseConnectionEnableDisable(true),
+                },
+                {
+                  name: 'disable',
+                  summary: 'Disable a configured connection (needs a restart).',
+                  arguments: ['<connection-id>'],
+                  parse: parseConnectionEnableDisable(false),
+                },
+                {
+                  name: 'get',
+                  summary: "Show one connection's stored configuration.",
+                  arguments: ['<connection-id> [--json]'],
+                  parse: parseConfigDiscordConnectionGet,
+                },
+                {
+                  name: 'list',
+                  summary: 'List configured Discord connections.',
+                  arguments: ['[--json]'],
+                  parse: parseConnectionList,
+                },
+              ],
+            },
+            {
+              name: 'guild',
+              summary: 'Manage guild configuration (applies on the next configuration reload).',
+              children: [
+                {
+                  name: 'enable',
+                  summary: 'Enable Friday in a guild.',
+                  arguments: ['<connection-id> <guild-id>'],
+                  parse: parseConfigDiscordGuildEnable,
+                },
+                {
+                  name: 'disable',
+                  summary: 'Disable Friday in a guild.',
+                  arguments: ['<connection-id> <guild-id>'],
+                  parse: parseConfigDiscordGuildDisable,
+                },
+                {
+                  name: 'remove',
+                  summary: "Remove a guild's configuration and its channel overrides.",
+                  arguments: ['<connection-id> <guild-id> --yes'],
+                  parse: parseConfigDiscordGuildRemove,
+                },
+                {
+                  name: 'list',
+                  summary: "List a connection's guild configuration.",
+                  arguments: ['<connection-id> [--json]'],
+                  parse: parseConfigDiscordGuildList,
+                },
+                {
+                  name: 'set-invocation',
+                  summary: 'Set the guild-wide invocation default.',
+                  arguments: ['<connection-id> <guild-id> <mention-only|all-messages>'],
+                  parse: parseConfigDiscordGuildSetInvocation,
+                },
+                {
+                  name: 'set-users',
+                  summary: 'Set the guild-wide user permission default.',
+                  arguments: ['<connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>'],
+                  parse: parseConfigDiscordGuildSetUsers,
+                },
+                {
+                  name: 'channel',
+                  summary: 'Override guild defaults for a single channel.',
+                  children: [
+                    {
+                      name: 'set',
+                      summary: 'Set channel overrides; only the given flags change.',
+                      arguments: [
+                        '<connection-id> <guild-id> <channel-id>',
+                        '[--invocation <mention-only|all-messages>] [--users <policy>]',
+                        '[--reply-in-thread|--reply-in-channel]',
+                      ],
+                      parse: parseConfigDiscordGuildChannelSet,
+                    },
+                    {
+                      name: 'reset',
+                      summary: 'Remove channel overrides; guild defaults apply again.',
+                      arguments: ['<connection-id> <guild-id> <channel-id>'],
+                      parse: parseConfigDiscordGuildChannelReset,
+                    },
+                  ],
+                },
+                {
+                  name: 'invocation',
+                  removed: 'config discord guild invocation set',
+                  replacement:
+                    'friday config discord guild set-invocation <connection-id> <guild-id> <mode>',
+                },
+                {
+                  name: 'users',
+                  removed: 'config discord guild users set',
+                  replacement:
+                    'friday config discord guild set-users <connection-id> <guild-id> <policy>',
+                },
+              ],
+            },
+            {
+              name: 'activity-description',
+              summary:
+                'Publish current task activity publicly; the running process watches this live.',
+              children: [
+                {
+                  name: 'set',
+                  summary: 'Enable public activity description for a connection now.',
+                  arguments: ['<connection-id>'],
+                  parse: parseActivityDescription(true),
+                },
+                {
+                  name: 'reset',
+                  summary: 'Disable it and clear Friday-owned description text now.',
+                  arguments: ['<connection-id>'],
+                  parse: parseActivityDescription(false),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'worktree',
+      summary: 'Manage repository worktrees registered with Friday.',
+      children: [
+        {
+          name: 'ensure',
+          summary: 'Ensure a reusable repository worktree for the current channel workspace.',
+          arguments: ['<repository-url> [--ref <ref>] [--workspace <path>] [--json]'],
+          parse: parseWorktreeEnsure,
+        },
+        {
+          name: 'list',
+          summary: 'List repository worktrees registered with Friday.',
+          arguments: ['[--json]'],
+          parse: parseWorktreeList,
+        },
+      ],
+    },
+    {
+      name: 'workspace',
+      summary: 'Manage channel workspaces and their cleanup proposals.',
+      children: [
+        {
+          name: 'cleanup',
+          summary: 'Apply or inspect workspace cleanup proposals.',
+          children: [
+            {
+              name: 'apply',
+              summary: 'Apply an approved workspace cleanup proposal.',
+              arguments: ['<proposal-id> [--json]'],
+              parse: parseWorkspaceCleanupApply,
+            },
+            {
+              name: 'list',
+              summary: 'List recorded workspace cleanup proposals.',
+              arguments: ['[--json]'],
+              parse: parseWorkspaceCleanupList,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'platform',
+      removed: 'platform activity-description set|reset',
+      replacement: 'friday config discord activity-description set|reset <connection-id>',
+    },
+  ],
+}
+
+/**
+ * Walks the typed command tree: a matched child deepens the path, a branch
+ * prefix without or with an unknown subcommand fails with the known child
+ * list, a removed form fails with its replacement pointer, and a leaf parses
+ * its own remaining tokens.
+ */
+const dispatchCommand = (
+  path: ReadonlyArray<string>,
+  node: CliCommandSpec,
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
 ): Effect.Effect<FridayCliAction, FridayCliError> => {
-  const helpIndex = arguments_.findIndex((argument) => argument === '-h' || argument === '--help')
+  if (isCliRemoved(node)) {
+    return Effect.fail(removedCommandError(all, node.removed, node.replacement))
+  }
+  if (isLeaf(node)) return node.parse(tokens, all)
+  const [head, ...rest] = tokens
+  if (head === undefined) return Effect.fail(missingSubcommandError(path, node, all))
+  const child = node.children.find((candidate) => candidate.name === head)
+  if (child === undefined) return Effect.fail(unknownSubcommandError(path, head, node, all))
+  return dispatchCommand([...path, child.name], child, rest, all)
+}
+
+export const parseFridayCli = (
+  all: ReadonlyArray<string>,
+): Effect.Effect<FridayCliAction, FridayCliError> => {
+  const helpIndex = all.findIndex((argument) => argument === '-h' || argument === '--help')
   if (helpIndex >= 0) {
-    return Effect.succeed({ type: 'help', topic: helpTopic(arguments_.slice(0, helpIndex)) })
+    return Effect.succeed({ type: 'help', topic: helpTopic(all.slice(0, helpIndex)) })
   }
-  if (arguments_.length === 0 || (arguments_.length === 1 && arguments_[0] === 'start')) {
-    return Effect.succeed({ type: 'start' })
-  }
-  if (arguments_.length === 1 && (arguments_[0] === '--version' || arguments_[0] === '-v')) {
+  if (all.length === 1 && (all[0] === '--version' || all[0] === '-v')) {
     return Effect.succeed({ type: 'version' })
   }
-  if (arguments_.length === 2 && arguments_[0] === 'config' && arguments_[1] === 'reload') {
-    return Effect.succeed({ type: 'config-reload' })
-  }
-  if (arguments_[0] === 'config' && arguments_[1] === 'admin' && arguments_[2] === 'discord') {
-    return parseConfigAdminDiscord(arguments_)
-  }
-  if (arguments_[0] === 'config' && arguments_[1] === 'discord') {
-    if (arguments_[2] === 'connection') return parseConfigDiscordConnection(arguments_)
-    if (arguments_[2] === 'guild') return parseConfigDiscordGuild(arguments_)
-    if (arguments_[2] === 'activity-description') {
-      return parseConfigDiscordActivityDescription(arguments_)
-    }
-    return Effect.fail(unknownSubcommandError(['config', 'discord'], arguments_))
-  }
-  if (arguments_[0] === 'worktree' && arguments_[1] === 'ensure') {
-    return parseWorktreeEnsure(arguments_)
-  }
-  if (arguments_[0] === 'worktree' && arguments_[1] === 'list') {
-    return parseWorktreeList(arguments_)
-  }
-  if (arguments_[0] === 'worktree') {
-    return Effect.fail(unknownSubcommandError(['worktree'], arguments_))
-  }
-  if (arguments_[0] === 'platform' && arguments_[1] === 'activity-description') {
-    return Effect.fail(
-      removedCommandError(
-        arguments_,
-        'platform activity-description set|reset',
-        'friday config discord activity-description set|reset <connection-id>',
-      ),
-    )
-  }
-  if (arguments_[0] === 'workspace' && arguments_[1] === 'cleanup') {
-    if (arguments_[2] === 'apply') return parseWorkspaceCleanupApply(arguments_)
-    if (arguments_[2] === 'list') return parseWorkspaceCleanupList(arguments_)
-    return Effect.fail(unknownSubcommandError(['workspace', 'cleanup'], arguments_))
-  }
-  if (arguments_[0] === 'workspace') {
-    return Effect.fail(unknownSubcommandError(['workspace'], arguments_))
-  }
-  return Effect.fail(discordArgumentsError(arguments_))
+  // With no arguments Friday starts; `start` is also a regular tree command.
+  if (all.length === 0) return Effect.succeed({ type: 'start' })
+  return dispatchCommand([], cliCommandSpec, all, all)
 }
 
 const renderCleanup = (proposal: WorkspaceCleanupProposal): string => `Workspace cleanup applied
@@ -1192,14 +1280,41 @@ const renderCleanup = (proposal: WorkspaceCleanupProposal): string => `Workspace
   Worktrees: ${proposal.resources.length}
   Reclaimed: ${proposal.estimatedBytes} bytes`
 
+export interface WorktreeRepositoryGroup {
+  readonly url: string
+  readonly worktrees: ReadonlyArray<ManagedWorktreeListEntry>
+}
+
+/** Groups the flat registry listing by owning repository for human output. */
+export const groupWorktreesByRepository = (
+  worktrees: ReadonlyArray<ManagedWorktreeListEntry>,
+): ReadonlyArray<WorktreeRepositoryGroup> => {
+  const groups = new Map<string, Array<ManagedWorktreeListEntry>>()
+  for (const worktree of worktrees) {
+    const existing = groups.get(worktree.url)
+    if (existing === undefined) groups.set(worktree.url, [worktree])
+    else existing.push(worktree)
+  }
+  return [...groups.entries()]
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([url, grouped]) => ({
+      url,
+      worktrees: grouped.toSorted((left, right) => left.path.localeCompare(right.path)),
+    }))
+}
+
+const renderWorktreeLine = (worktree: ManagedWorktreeListEntry): string =>
+  `    ${worktree.path}  ${worktree.branch === null ? '(detached head)' : worktree.branch}  ${worktree.head.slice(0, 12)}${worktree.prunable ? '  (missing on disk)' : ''}`
+
+/** Human output groups registered worktrees by their owning repository. */
 export const renderWorktreeList = (worktrees: ReadonlyArray<ManagedWorktreeListEntry>): string =>
   worktrees.length === 0
-    ? "No repository worktrees are registered with Friday's repository caches."
+    ? 'No repository worktrees are registered with Friday.'
     : [
         'Repository worktrees:',
-        ...worktrees.flatMap((worktree) => [
-          `  ${worktree.url}`,
-          `    ${worktree.path}  ${worktree.branch === null ? '(detached head)' : worktree.branch}  ${worktree.head.slice(0, 12)}${worktree.prunable ? '  (missing on disk)' : ''}`,
+        ...groupWorktreesByRepository(worktrees).flatMap((group) => [
+          `  ${group.url}`,
+          ...group.worktrees.map(renderWorktreeLine),
         ]),
       ].join('\n')
 

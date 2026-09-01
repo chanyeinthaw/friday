@@ -115,13 +115,6 @@ Activity-description changes apply live: the running Discord adapter watches
 the stored flag on a ~1 second loop, so `set` and `reset` take effect without a
 reload or restart. `reset` additionally clears Friday-owned description text.
 
-Connection add stores the bot token environment variable name, never the token.
-Application IDs are unique across Discord connections. Add and remove update the
-platform and Discord connection tables in one transaction. Remove requires
-`--yes` because it also deletes the connection's guild and channel configuration.
-Add, remove, enable, and disable report idempotent outcomes and require a Friday
-restart. Get and list only read stored configuration.
-
 Guild, channel, and user IDs are validated as Discord snowflakes. Permission
 policies are `all`, `allow=<id>[,<id>...]`, or `deny=<id>[,<id>...]`.
 `channel set` upserts the row and only touches the flags given, so a channel

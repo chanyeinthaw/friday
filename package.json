@@ -17,7 +17,11 @@
     "release:build": "bun scripts/build-release.ts",
     "release:version": "bun scripts/release-version.ts",
     "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts' --exclude '**/*.live.test.ts' && pnpm --filter @friday/friday test:integration",
-    "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test"
+    "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test",
+    "mutation:cli": "stryker run stryker.cli.config.json --inPlace",
+    "mutation:connections": "stryker run stryker.connections.config.json --inPlace",
+    "mutation:worktrees": "stryker run stryker.worktrees.config.json --inPlace",
+    "mutation:cleanup": "stryker run stryker.cleanup.config.json --inPlace"
   },
   "devDependencies": {
     "@effect/tsgo": "catalog:",

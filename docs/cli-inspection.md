@@ -7,29 +7,51 @@ command prefix for the authoritative command and usage listing.
 
 ## `friday worktree list [--json]`
 
-Lists the repository worktrees registered with Friday's repository caches
-under `$FRIDAY_HOME/repositories`. Discovery is grounded in git's own worktree
-registry for those persisted caches — the same registry `worktree ensure`,
-isolated task worktrees, and cleanup removal operate on. The command never
-scans the file system for arbitrary git repositories, so it cannot misreport
-unrelated clones as Friday-managed worktrees.
+Lists the repository worktrees Friday manages, using a persisted registry as
+the source of truth for what is Friday-managed. The registry lives at
+`$FRIDAY_HOME/repositories/worktrees.json` and is written only by Friday's own
+worktree lifecycle operations: `worktree ensure` registers the worktree it
+creates or adopts, isolated task worktrees register at creation, and cleanup
+removal unregisters the entry it removed. Because the registry is the only
+source of entries, the command never scans the file system for arbitrary git
+repositories and never claims caches or worktrees it did not create.
+
+For every registered entry, the current branch, head, and prunable state are
+read from git's own worktree registry at the entry's recorded common
+directory. Entries whose owning repository is gone, was pruned, or whose
+directory was removed out-of-band are still listed as missing on disk, so
+stale registrations are visible before a cleanup proposal is applied.
 
 Each entry reports:
 
-- `url` — the remote URL of the repository cache the worktree was created from
-- `path` — the absolute worktree path as registered with git; the directory may
-  no longer exist on disk
+- `url` — the remote URL Friday used when creating or adopting the worktree
+- `commonDirectory` — the git common directory that owns the registration
+  (a Friday bare repository cache, or the primary repository for isolated
+  task worktrees)
+- `path` — the absolute worktree path as registered with git; the directory
+  may no longer exist on disk
 - `branch` — the checked-out branch, or `null` for a detached head
 - `head` — the concrete head commit
-- `prunable` — true when git reports the worktree directory as missing
+- `prunable` — true when the worktree is missing or deregistered in git
 
-Human output groups entries by repository and shows one line per worktree; a
-missing directory is surfaced as `(missing on disk)` rather than hidden, so
-stale registrations are visible before a cleanup proposal is applied. With
-`--json`, the command prints a JSON array of the entries above. Worktrees
-created from a user's own clone (outside Friday's caches) are intentionally
-not listed: Friday has no persisted record of them, and guessing would be
-misleading.
+Human output groups entries under their owning repository URL, one line per
+worktree; a missing directory is surfaced as `(missing on disk)` rather than
+hidden. With `--json`, the command prints a JSON array of the entries above.
+
+### Pre-registry worktrees
+
+A missing registry means Friday cannot prove ownership of existing worktrees.
+`worktree list` therefore returns no entries until a Friday lifecycle operation
+registers an exact worktree path. This is deliberately conservative. A cache
+under `$FRIDAY_HOME/repositories` is not enough evidence by itself because an
+operator or another tool may have placed it there.
+
+`worktree ensure` registers an existing matching worktree when it adopts it.
+Task creation registers an existing matching isolated task worktree when it
+reuses it. Cleanup removal updates registrations as it removes worktrees. The
+registry writer uses an atomic rename, so listing never reads a partly written
+file. A malformed registry is a typed error rather than silently discarded
+state.
 
 ## `friday workspace cleanup list [--json]`
 
@@ -47,6 +69,8 @@ prints a JSON array of full proposal records (the same shape
 `workspace cleanup apply --json` returns for a single proposal, including the
 `resources` snapshots).
 
-Listing does not validate a proposal against the live file system; freshness
-is enforced at apply time, where a changed workspace or worktree fails
-validation and marks the proposal stale.
+Listing does not validate a proposal against the live file system. Freshness
+is enforced at apply time: when the owning channel workspace or a recorded
+worktree changed since the proposal was created, apply marks the proposal
+`stale` transactionally and fails with a typed stale error, so it immediately
+stops showing as pending in `workspace cleanup list`.

@@ -99,7 +99,7 @@ test('creates and reuses one managed worktree in the channel workspace', async (
   expect(await Bun.file(join(first.path, 'README.md')).text()).toBe('Friday worktree test\n')
 })
 
-test('lists managed worktrees from the persisted repository caches', async () => {
+test('lists managed worktrees from the persisted Friday registry', async () => {
   const root = await makeTemporaryDirectory('friday-worktree-list-test-')
   const source = join(root, 'source-repository')
   const workspace = join(root, 'workspace')
@@ -197,6 +197,6 @@ test('removes an approved dirty worktree after revalidating its snapshot', async
   expect(snapshot).not.toBeNull()
   if (snapshot === null) return
   expect(snapshot.status).toContain('?? dirty.txt')
-  await Effect.runPromise(removeRepositoryWorktree(snapshot))
+  await Effect.runPromise(removeRepositoryWorktree(snapshot, fridayHome))
   expect(await Bun.file(created.path).exists()).toBe(false)
 })

@@ -23,6 +23,10 @@ import {
   formatDiscordGuildInvocation,
   formatDiscordGuildRemove,
   formatDiscordGuildUsers,
+  cliCommandSpec,
+  findCommandSpec,
+  isCliBranch,
+  isCliRemoved,
   parseAccessPolicySpec,
   parseFridayCli,
   renderCliHelp,
@@ -34,6 +38,7 @@ import {
   renderWorkspaceCleanupList,
   runFridayCli,
 } from './Cli.ts'
+import type { CliCommandSpec } from './Cli.ts'
 import { DiscordGuildChannelId, DiscordGuildId } from './config/DiscordGuilds.ts'
 import { BotTokenEnvName, DiscordPublicKey } from './config/DiscordConnections.ts'
 import { InvocationMode } from './config/AppConfig.ts'
@@ -230,8 +235,8 @@ it.effect('rejects Discord connection secrets and unsafe removal', () =>
       ],
     ]
     for (const command of commands) {
-      const exit = yield* Effect.exit(parseFridayCli(command))
-      assert(Exit.isFailure(exit))
+      const error = yield* parseFridayCli(command).pipe(Effect.flip)
+      assert(isFridayCliError(error), `expected typed failure: ${command.join(' ')}`)
     }
   }),
 )
@@ -610,6 +615,7 @@ it.effect('parses permission policy specifications', () =>
     )
     const emptyIds = yield* parseAccessPolicySpec('allow=').pipe(Effect.flip)
     assert(isFridayCliError(emptyIds))
+    assert.strictEqual(emptyIds.argument, 'allow=')
     const trailingComma = yield* parseAccessPolicySpec('allow=123456789012345678,').pipe(
       Effect.flip,
     )
@@ -868,6 +874,204 @@ it.effect('resolves --help at any depth to the matching command topic', () =>
   }),
 )
 
+it.effect('reports unknown subcommands with the known sibling list at every depth', () =>
+  Effect.gen(function* () {
+    const cases: ReadonlyArray<{
+      readonly arguments_: ReadonlyArray<string>
+      readonly prefix: string
+      readonly head: string
+      readonly known: string
+    }> = [
+      {
+        arguments_: ['wat'],
+        prefix: 'friday',
+        head: 'wat',
+        known: 'start, config, worktree, workspace',
+      },
+      {
+        arguments_: ['config', 'wat'],
+        prefix: 'friday config',
+        head: 'wat',
+        known: 'reload, admin, discord',
+      },
+      {
+        arguments_: ['config', 'admin', 'wat'],
+        prefix: 'friday config admin',
+        head: 'wat',
+        known: 'discord',
+      },
+      {
+        arguments_: ['config', 'admin', 'discord', 'wat'],
+        prefix: 'friday config admin discord',
+        head: 'wat',
+        known: 'add, remove, list',
+      },
+      {
+        arguments_: ['config', 'discord', 'wat'],
+        prefix: 'friday config discord',
+        head: 'wat',
+        known: 'connection, guild, activity-description',
+      },
+      {
+        arguments_: ['config', 'discord', 'connection', 'wat'],
+        prefix: 'friday config discord connection',
+        head: 'wat',
+        known: 'add, update, remove, enable, disable, get, list',
+      },
+      {
+        arguments_: ['config', 'discord', 'guild', 'wat'],
+        prefix: 'friday config discord guild',
+        head: 'wat',
+        known: 'enable, disable, remove, list, set-invocation, set-users, channel',
+      },
+      {
+        arguments_: ['config', 'discord', 'guild', 'channel', 'wat'],
+        prefix: 'friday config discord guild channel',
+        head: 'wat',
+        known: 'set, reset',
+      },
+      {
+        arguments_: ['worktree', 'dance'],
+        prefix: 'friday worktree',
+        head: 'dance',
+        known: 'ensure, list',
+      },
+      {
+        arguments_: ['workspace', 'dance'],
+        prefix: 'friday workspace',
+        head: 'dance',
+        known: 'cleanup',
+      },
+      {
+        arguments_: ['workspace', 'cleanup', 'dance'],
+        prefix: 'friday workspace cleanup',
+        head: 'dance',
+        known: 'apply, list',
+      },
+    ]
+    for (const { arguments_, prefix, head, known } of cases) {
+      const error = yield* parseFridayCli(arguments_).pipe(Effect.flip)
+      assert.strictEqual(
+        error.message,
+        `Unknown '${prefix}' subcommand '${head}'. Known subcommands: ${known}.`,
+        `unexpected rejection for: ${arguments_.join(' ')}`,
+      )
+    }
+  }),
+)
+
+it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
+  Effect.gen(function* () {
+    const cases: ReadonlyArray<{
+      readonly arguments_: ReadonlyArray<string>
+      readonly prefix: string
+      readonly known: string
+    }> = [
+      {
+        arguments_: ['config'],
+        prefix: 'friday config',
+        known: 'reload, admin, discord',
+      },
+      {
+        arguments_: ['config', 'admin'],
+        prefix: 'friday config admin',
+        known: 'discord',
+      },
+      {
+        arguments_: ['config', 'admin', 'discord'],
+        prefix: 'friday config admin discord',
+        known: 'add, remove, list',
+      },
+      {
+        arguments_: ['config', 'discord'],
+        prefix: 'friday config discord',
+        known: 'connection, guild, activity-description',
+      },
+      {
+        arguments_: ['config', 'discord', 'connection'],
+        prefix: 'friday config discord connection',
+        known: 'add, update, remove, enable, disable, get, list',
+      },
+      {
+        arguments_: ['config', 'discord', 'guild'],
+        prefix: 'friday config discord guild',
+        known: 'enable, disable, remove, list, set-invocation, set-users, channel',
+      },
+      {
+        arguments_: ['config', 'discord', 'guild', 'channel'],
+        prefix: 'friday config discord guild channel',
+        known: 'set, reset',
+      },
+      {
+        arguments_: ['worktree'],
+        prefix: 'friday worktree',
+        known: 'ensure, list',
+      },
+      {
+        arguments_: ['workspace'],
+        prefix: 'friday workspace',
+        known: 'cleanup',
+      },
+      {
+        arguments_: ['workspace', 'cleanup'],
+        prefix: 'friday workspace cleanup',
+        known: 'apply, list',
+      },
+    ]
+    for (const { arguments_, prefix, known } of cases) {
+      const error = yield* parseFridayCli(arguments_).pipe(Effect.flip)
+      assert.strictEqual(
+        error.message,
+        `Provide a subcommand of '${prefix}'. Known subcommands: ${known}.`,
+        `unexpected rejection for: ${arguments_.join(' ')}`,
+      )
+    }
+  }),
+)
+
+it.effect('renders help that covers every branch and leaf of the command tree', () =>
+  Effect.sync(() => {
+    const help = renderCliHelp([])
+    const leafPaths: Array<string> = []
+    const branchPaths: Array<ReadonlyArray<string>> = []
+    const walk = (node: CliCommandSpec, path: ReadonlyArray<string>): void => {
+      if (isCliRemoved(node)) return
+      const nextPath = [...path, node.name]
+      if (isCliBranch(node)) {
+        branchPaths.push(nextPath)
+        node.children.forEach((child) => walk(child, nextPath))
+        return
+      }
+      // Leaf entries render the name path plus the first usage fragment.
+      leafPaths.push(
+        `${nextPath.join(' ')}${node.arguments?.[0] === undefined ? '' : ` ${node.arguments[0]}`}`,
+      )
+    }
+    cliCommandSpec.children.forEach((child) => walk(child, []))
+    // Every live leaf appears exactly once in the full listing.
+    for (const leafPath of leafPaths) {
+      assert.strictEqual(
+        help.split(`  ${leafPath}`).length - 1,
+        1,
+        `expected exactly one '${leafPath}' entry in help`,
+      )
+    }
+    // Every branch topic's own help names all of its live children.
+    for (const branchPath of branchPaths) {
+      const branchHelp = renderCliHelp(branchPath)
+      const node = findCommandSpec(branchPath)
+      assert(node !== undefined && isCliBranch(node))
+      for (const child of node.children) {
+        if (isCliRemoved(child)) continue
+        assert(
+          branchHelp.includes(`  ${child.name}`),
+          `expected '${child.name}' in help for '${branchPath.join(' ')}'`,
+        )
+      }
+    }
+  }),
+)
+
 it.effect('names known subcommands and removals in validation errors', () =>
   Effect.gen(function* () {
     const unknownGuild = yield* parseFridayCli([
@@ -885,7 +1089,8 @@ it.effect('names known subcommands and removals in validation errors', () =>
     assert.match(unknownGuild.message, /set-invocation, set-users/)
 
     const unknownTop = yield* parseFridayCli(['wat']).pipe(Effect.flip)
-    assert.match(unknownTop.message, /Unknown or invalid Friday command: wat/)
+    assert.match(unknownTop.message, /Unknown 'friday' subcommand 'wat'/)
+    assert.match(unknownTop.message, /Known subcommands: start, config, worktree, workspace/)
   }),
 )
 
@@ -907,8 +1112,9 @@ it.effect('parses the config reload command', () =>
     assert.deepStrictEqual(yield* parseFridayCli(['config', 'reload']), {
       type: 'config-reload',
     })
-    const exit = yield* parseFridayCli(['config', 'reload', '--force']).pipe(Effect.exit)
-    assert(Exit.isFailure(exit))
+    const forced = yield* parseFridayCli(['config', 'reload', '--force']).pipe(Effect.flip)
+    assert(isFridayCliError(forced))
+    assert.strictEqual(forced.argument, 'config reload --force')
   }),
 )
 
@@ -949,8 +1155,8 @@ it.effect('rejects invalid Discord user IDs and malformed admin commands', () =>
       ['config', 'admin', 'discord', 'upsert', '123456789012345678'],
     ]
     for (const arguments_ of invalid) {
-      const exit = yield* parseFridayCli(arguments_).pipe(Effect.exit)
-      assert(Exit.isFailure(exit), `expected failure: ${arguments_.join(' ')}`)
+      const error = yield* parseFridayCli(arguments_).pipe(Effect.flip)
+      assert(isFridayCliError(error), `expected failure: ${arguments_.join(' ')}`)
     }
 
     // Failure errors carry the full offending argument list.
@@ -1525,7 +1731,7 @@ it.effect('dispatches worktree and cleanup listings with human and JSON output',
     const worktrees = [
       {
         url: 'git@github.com:one-terrace/timezone-relay-bot.git',
-        cachePath: '/home/friday/.friday/repositories/cache.git',
+        commonDirectory: '/home/friday/.friday/repositories/cache.git',
         path: '/tmp/channel/timezone-relay-bot',
         branch: 'friday/channel/abc123',
         head: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
@@ -1599,21 +1805,41 @@ it.effect('renders empty worktree and cleanup listings', () =>
   Effect.sync(() => {
     assert.strictEqual(
       renderWorktreeList([]),
-      "No repository worktrees are registered with Friday's repository caches.",
+      'No repository worktrees are registered with Friday.',
     )
+    // Entries group under their owning repository, sorted within the group.
     assert.strictEqual(
       renderWorktreeList([
         {
           url: 'git@github.com:one-terrace/timezone-relay-bot.git',
-          cachePath: '/home/friday/.friday/repositories/cache.git',
+          commonDirectory: '/home/friday/.friday/repositories/cache.git',
           path: '/tmp/channel/timezone-relay-bot',
           branch: null,
           head: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
           prunable: true,
         },
+        {
+          url: 'git@github.com:one-terrace/second-repo.git',
+          commonDirectory: '/home/friday/.friday/repositories/cache-2.git',
+          path: '/tmp/channel/second-repo',
+          branch: 'friday/channel/def456',
+          head: 'b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1',
+          prunable: false,
+        },
+        {
+          url: 'git@github.com:one-terrace/second-repo.git',
+          commonDirectory: '/home/friday/.friday/repositories/cache-2.git',
+          path: '/tmp/channel/another-second',
+          branch: 'friday/channel/abc123',
+          head: 'c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2',
+          prunable: false,
+        },
       ]),
       [
         'Repository worktrees:',
+        '  git@github.com:one-terrace/second-repo.git',
+        '    /tmp/channel/another-second  friday/channel/abc123  c3d4e5f6a7b8',
+        '    /tmp/channel/second-repo  friday/channel/def456  b2c3d4e5f6a7',
         '  git@github.com:one-terrace/timezone-relay-bot.git',
         '    /tmp/channel/timezone-relay-bot  (detached head)  a1b2c3d4e5f6  (missing on disk)',
       ].join('\n'),
@@ -1795,6 +2021,13 @@ it.effect('renders help per topic: full tree, branch children, leaf usage, and f
         `expected exactly one '${path}' entry in help`,
       )
     }
+    // The header renders exactly, one blank line between each block.
+    assert.strictEqual(
+      help.split('\n').slice(0, 6).join('\n'),
+      ['Friday — your personal agent', '', 'Usage:', '  friday [command]', '', 'Commands:'].join(
+        '\n',
+      ),
+    )
     assert(help.includes('Notes:'))
     assert(
       help.includes(
@@ -1802,6 +2035,9 @@ it.effect('renders help per topic: full tree, branch children, leaf usage, and f
       ),
     )
     assert(help.includes('-v, --version  Show the version'))
+    assert(
+      help.includes('  -h, --help     Show help; add a command prefix for help on that command'),
+    )
     // The default command renders as a bare leaf entry with no usage fragment.
     assert.ok(help.split('\n').includes('  start'))
     assert(!help.includes('platform activity-description'))
@@ -1838,7 +2074,7 @@ it.effect('renders help per topic: full tree, branch children, leaf usage, and f
     assert.strictEqual(
       renderCliHelp(['worktree', 'list']),
       [
-        "List repository worktrees registered with Friday's repository caches.",
+        'List repository worktrees registered with Friday.',
         '',
         'Usage:',
         '  friday worktree list [--json]',
@@ -2190,7 +2426,7 @@ it.effect(
         path: '/tmp/channel/timezone-relay-bot',
         branch: 'friday/channel/abc123',
         baseRef: 'origin/main',
-        cachePath: '/home/friday/.friday/repositories/cache.git',
+        commonDirectory: '/home/friday/.friday/repositories/cache.git',
         reused: false,
       })
       yield* runFridayCli(
@@ -2204,7 +2440,7 @@ it.effect(
           path: '/tmp/channel/timezone-relay-bot',
           branch: 'friday/channel/abc123',
           baseRef: 'origin/main',
-          cachePath: '/home/friday/.friday/repositories/cache.git',
+          commonDirectory: '/home/friday/.friday/repositories/cache.git',
           reused: false,
         }),
       )
