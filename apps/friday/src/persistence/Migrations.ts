@@ -166,12 +166,36 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
     )
   `
 
+  // Older databases predate the guild channel scope column; NULL means the
+  // guild admits every channel, which matches pre-scope behavior.
+  const guildColumns = yield* sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info('discord_guilds')
+  `
+  if (!guildColumns.some((column) => column.name === 'channels_mode')) {
+    yield* sql`
+      ALTER TABLE discord_guilds
+      ADD COLUMN channels_mode TEXT CHECK (channels_mode IN ('all', 'allow', 'deny'))
+    `
+  }
+
   yield* sql`
     CREATE TABLE IF NOT EXISTS discord_guild_users (
       connection_id TEXT NOT NULL,
       guild_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       PRIMARY KEY (connection_id, guild_id, user_id),
+      FOREIGN KEY (connection_id, guild_id)
+        REFERENCES discord_guilds(connection_id, guild_id) ON DELETE CASCADE
+    )
+  `
+
+  // Scope subjects: the channel ids listed by an allow/deny guild channel scope.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS discord_guild_channel_scope (
+      connection_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      PRIMARY KEY (connection_id, guild_id, channel_id),
       FOREIGN KEY (connection_id, guild_id)
         REFERENCES discord_guilds(connection_id, guild_id) ON DELETE CASCADE
     )

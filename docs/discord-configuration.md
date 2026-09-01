@@ -33,6 +33,12 @@ Each configured guild carries guild-wide defaults:
 - `invocation.defaultMode` — `mention-only` or `all-messages`
 - `users` (optional) — the guild-wide user permission default; when absent it
   inherits the connection-wide user policy
+- `channelScope` (optional) — the guild-wide channel scope; when absent it is
+  `all`, so every channel of the guild admits Friday
+
+The channel scope controls which channels admit Friday at all. It uses the same
+policy shape as the user policies: `all`, `allow=<channel-id>[,...]`, or
+`deny=<channel-id>[,...]`.
 
 ## Channels
 
@@ -43,10 +49,20 @@ optional, so a row only carries the overrides it needs:
 - `users` — override of the guild user permission default
 - `replyMode` — `reply-in-thread` (the default) or `reply-in-channel`
 
+Channel entries are overrides only. They never grant admission: a channel that
+the guild channel scope does not admit stays closed even when it carries an
+entry. Scope lives on the guild (`channelScope`), overrides live on the channel
+rows — the two are configured with separate commands and must not be confused.
+
 ## Resolution rules
 
 For a message in an enabled guild:
 
+- **Channel admission**: the guild's channel scope decides first. A channel
+  outside the scope (`allow` without the channel, `deny` with it) resolves to no
+  policy at all: Friday does not invoke, does not create threads, and does not
+  reply there. Messages already inside a thread resolve from the parent channel,
+  so a thread rooted in a channel that loses admission goes quiet.
 - **Invocation**: channel override → guild default. `mention-only` invokes on
   mentions (user, configured role, or global per the connection topology);
   `all-messages` invokes on every message.
@@ -56,7 +72,7 @@ For a message in an enabled guild:
 - **Reply mode**: channel override → `reply-in-thread`.
 
 Direct messages have no guild: they resolve against the connection-wide user
-policy and always invoke.
+policy and always invoke; the guild channel scope never applies to them.
 
 Messages that already live in a thread (user-created or previously created by
 Friday) always stay in that thread; their policy resolves from the parent
@@ -89,6 +105,7 @@ friday config discord guild remove <connection-id> <guild-id> --yes
 friday config discord guild list <connection-id> [--json]
 friday config discord guild set-invocation <connection-id> <guild-id> <mention-only|all-messages>
 friday config discord guild set-users <connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>
+friday config discord guild set-channels <connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>
 friday config discord guild channel set <connection-id> <guild-id> <channel-id>
     [--invocation <mention-only|all-messages>] [--users <policy>]
     [--reply-in-thread|--reply-in-channel]
@@ -117,8 +134,12 @@ reload or restart. `reset` additionally clears Friday-owned description text.
 
 Guild, channel, and user IDs are validated as Discord snowflakes. Permission
 policies are `all`, `allow=<id>[,<id>...]`, or `deny=<id>[,<id>...]`.
-`channel set` upserts the row and only touches the flags given, so a channel
-can carry a single override; `channel reset` removes the row entirely.
+`guild set-users` replaces the guild-wide user permission default and
+`guild set-channels` replaces the guild-wide channel scope; both affect every
+channel without its own override. `channel set` upserts the per-channel
+overrides row and only touches the flags given, so a channel can carry a single
+override — it never changes which channels admit Friday; `channel reset`
+removes the row entirely.
 
 ## CLI help
 
