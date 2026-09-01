@@ -4,6 +4,7 @@ import * as Effect from 'effect/Effect'
 import type { PlatformInput } from '../PlatformAdapter.ts'
 import { ChatSdkCallbackError } from '../chat-sdk/Errors.ts'
 import { projectChatSdkContextMessage } from '../chat-sdk/MessageProjection.ts'
+import { discordChannelConversationId, isDiscordThread } from './DiscordConversationScope.ts'
 
 const MaximumRenderedCharacters = 8_000
 
@@ -51,10 +52,9 @@ export const loadDiscordInitialContext = Effect.fn('loadDiscordInitialContext')(
     try: () => discord.decodeThreadId(String(input.binding.conversationId)),
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
   })
-  const historySource =
-    location.threadId === undefined
-      ? discord.encodeThreadId({ guildId: location.guildId, channelId: location.channelId })
-      : String(input.binding.conversationId)
+  const historySource = isDiscordThread(location)
+    ? String(input.binding.conversationId)
+    : discordChannelConversationId(discord, location)
   const result = yield* Effect.tryPromise({
     try: () => discord.fetchMessages(historySource, { limit: recentMessageCount }),
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),

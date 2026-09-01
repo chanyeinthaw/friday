@@ -5,6 +5,7 @@ import * as Semaphore from 'effect/Semaphore'
 
 import type { PlatformAdapter, PlatformAgentActivity } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
+import { isDiscordThread } from './DiscordConversationScope.ts'
 
 const activityPrefix = '⚡ '
 const activityPrefixPattern = /^⚡ /u
@@ -135,7 +136,7 @@ export const withDiscordThreadActivityTitle = (
 
   const locationFor = (conversationId: string): DiscordThreadLocation | null => {
     const location = discord.decodeThreadId(conversationId)
-    return location.threadId ? location : null
+    return isDiscordThread(location) ? location : null
   }
 
   const fetchThreadName = (

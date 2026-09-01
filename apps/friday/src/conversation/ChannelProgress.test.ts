@@ -269,6 +269,32 @@ it.effect('does not let a hung channel block progress in another channel', () =>
   ),
 )
 
+it.effect('falls back to publishing when finalization times out', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const finalizationStarted = yield* Deferred.make<void>()
+      const platform = {
+        ...makePlatform(events),
+        finalizeWorking: () =>
+          Deferred.succeed(finalizationStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      }
+      const progress = yield* makeProgress(
+        platform,
+        makeChannelProgressLive({ operationTimeout: '1 second' }),
+      )
+
+      yield* progress.accept(thread, userMessage('Do work.'))
+      const finalization = yield* progress.finalize(thread, 'Done.').pipe(Effect.forkChild)
+      yield* Deferred.await(finalizationStarted)
+      yield* TestClock.adjust('1 second')
+      yield* Fiber.join(finalization)
+
+      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'publish:Done.'])
+    }),
+  ),
+)
+
 it.effect('falls back to publishing when finalization fails', () =>
   Effect.scoped(
     Effect.gen(function* () {

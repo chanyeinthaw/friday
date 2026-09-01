@@ -54,14 +54,15 @@ it.effect('keeps an ordinary channel message in the parent channel', () =>
       'discord',
       {
         decodeThreadId: () => ({ guildId: 'guild-1', channelId: 'channel-1' }),
-        encodeThreadId: () => 'unused',
+        encodeThreadId: ({ guildId, channelId, threadId }) =>
+          `discord:${guildId}:${channelId}:${threadId}`,
         fetchChannelInfo: () => Promise.reject(new Error('not found')),
       },
       thread,
       message,
     )
 
-    assert.strictEqual(input.binding.conversationId, 'discord:guild-1:channel-1')
+    assert.strictEqual(input.binding.conversationId, 'discord:guild-1:channel-1:channel-1')
   }),
 )
 

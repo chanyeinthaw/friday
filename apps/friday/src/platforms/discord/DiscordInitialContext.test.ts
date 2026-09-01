@@ -81,8 +81,13 @@ it.effect('loads parent-channel context for a normal channel start', () =>
     const fetched: Array<string> = []
     const input = yield* loadDiscordInitialContext(
       {
-        decodeThreadId: () => ({ guildId: 'guild-1', channelId: 'channel-1' }),
-        encodeThreadId: ({ guildId, channelId }) => `discord:${guildId}:${channelId}`,
+        decodeThreadId: () => ({
+          guildId: 'guild-1',
+          channelId: 'channel-1',
+          threadId: 'channel-1',
+        }),
+        encodeThreadId: ({ guildId, channelId, threadId }) =>
+          `discord:${guildId}:${channelId}:${threadId}`,
         fetchMessages: (threadId) => {
           fetched.push(threadId)
           return Promise.resolve({ messages: [message('earlier-1', 'Channel context.')] })
@@ -92,13 +97,13 @@ it.effect('loads parent-channel context for a normal channel start', () =>
       {
         binding: {
           ...binding,
-          conversationId: decodeConversationId('discord:guild-1:channel-1'),
+          conversationId: decodeConversationId('discord:guild-1:channel-1:channel-1'),
         },
         message: trigger,
       },
     )
 
-    assert.deepStrictEqual(fetched, ['discord:guild-1:channel-1'])
+    assert.deepStrictEqual(fetched, ['discord:guild-1:channel-1:channel-1'])
     assert.strictEqual(input.initialContext?.[0]?.content.text, 'Channel context.')
   }),
 )

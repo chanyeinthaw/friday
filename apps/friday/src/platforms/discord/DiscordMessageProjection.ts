@@ -3,6 +3,7 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import { ChatSdkCallbackError } from '../chat-sdk/Errors.ts'
+import { discordChannelConversationId, isDiscordThread } from './DiscordConversationScope.ts'
 import {
   projectChatSdkMessage,
   type ChatSdkMessageProjectionSource,
@@ -32,8 +33,14 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
     try: () => discord.decodeThreadId(thread.id),
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
   })
-  if (location.threadId !== undefined || location.guildId === '@me') {
-    return projectChatSdkMessage(connectionId, thread, message)
+  if (isDiscordThread(location)) return projectChatSdkMessage(connectionId, thread, message)
+
+  const channelThread = {
+    ...thread,
+    id: discordChannelConversationId(discord, location),
+  }
+  if (location.guildId === '@me' || location.threadId === location.channelId) {
+    return projectChatSdkMessage(connectionId, channelThread, message)
   }
 
   const existingThread = yield* Effect.promise(() =>
@@ -47,7 +54,7 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
     existingThread._tag === 'None' ||
     existingThread.value.parent_id !== location.channelId
   ) {
-    return projectChatSdkMessage(connectionId, thread, message)
+    return projectChatSdkMessage(connectionId, channelThread, message)
   }
 
   const repairedThread = {

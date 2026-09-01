@@ -35,7 +35,8 @@ it.effect('searches the current thread and returns attributed messages', () =>
           channelId: 'channel-1',
           threadId: 'thread-1',
         }),
-        encodeThreadId: ({ guildId, channelId }) => `discord:${guildId}:${channelId}`,
+        encodeThreadId: ({ guildId, channelId, threadId }) =>
+          `discord:${guildId}:${channelId}:${threadId}`,
         fetchMessages: (source) => {
           sources.push(source)
           return Promise.resolve({
@@ -67,7 +68,8 @@ it.effect('fetches from the parent channel when channel scope is requested', () 
           channelId: 'channel-1',
           threadId: 'thread-1',
         }),
-        encodeThreadId: ({ guildId, channelId }) => `discord:${guildId}:${channelId}`,
+        encodeThreadId: ({ guildId, channelId, threadId }) =>
+          `discord:${guildId}:${channelId}:${threadId}`,
         fetchMessages: (source) => {
           sources.push(source)
           return Promise.resolve({ messages: [] })
@@ -76,6 +78,6 @@ it.effect('fetches from the parent channel when channel scope is requested', () 
       { binding, scope: 'channel', limit: 20 },
     )
 
-    assert.deepStrictEqual(sources, ['discord:guild-1:channel-1'])
+    assert.deepStrictEqual(sources, ['discord:guild-1:channel-1:channel-1'])
   }),
 )

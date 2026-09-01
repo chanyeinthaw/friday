@@ -587,3 +587,63 @@ test('skips the migration when the legacy tables are absent', async () =>
       assert.deepStrictEqual(yield* legacyTableNames, [])
     }).pipe(Effect.provide(database)),
   ))
+
+test('canonicalizes Discord channel bindings and closes newer active duplicates', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* runMigrations()
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO threads (
+          thread_id, audience, status, payload_json, created_at, updated_at, closed_at
+        ) VALUES
+          (
+            'channel-old', 'user', 'active',
+            '{"id":"channel-old","status":"active","conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"discord:111111111111111111:999999999999999901","conversationId":"discord:111111111111111111:999999999999999901"}}',
+            '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+          ),
+          (
+            'channel-new', 'user', 'active',
+            '{"id":"channel-new","status":"active","conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"discord:111111111111111111:999999999999999901","conversationId":"discord:111111111111111111:999999999999999901:999999999999999901"}}',
+            '2026-09-01T01:00:00.000Z', '2026-09-01T01:00:00.000Z', NULL
+          ),
+          (
+            'channel-only', 'user', 'active',
+            '{"id":"channel-only","status":"active","conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"discord:111111111111111111:999999999999999902","conversationId":"discord:111111111111111111:999999999999999902"}}',
+            '2026-09-01T02:00:00.000Z', '2026-09-01T02:00:00.000Z', NULL
+          )
+      `
+
+      yield* runMigrations()
+
+      const rows = yield* sql<{
+        readonly thread_id: string
+        readonly status: string
+        readonly conversation_id: string
+      }>`
+        SELECT
+          thread_id,
+          status,
+          json_extract(payload_json, '$.conversationBinding.conversationId') AS conversation_id
+        FROM threads
+        ORDER BY thread_id
+      `
+      assert.deepStrictEqual(rows, [
+        {
+          thread_id: 'channel-new',
+          status: 'closed',
+          conversation_id: 'discord:111111111111111111:999999999999999901:999999999999999901',
+        },
+        {
+          thread_id: 'channel-old',
+          status: 'active',
+          conversation_id: 'discord:111111111111111111:999999999999999901:999999999999999901',
+        },
+        {
+          thread_id: 'channel-only',
+          status: 'active',
+          conversation_id: 'discord:111111111111111111:999999999999999902:999999999999999902',
+        },
+      ])
+    }).pipe(Effect.provide(database)),
+  ))

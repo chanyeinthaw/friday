@@ -30,7 +30,7 @@ const channelBinding = decodeBinding({
   connectionId: 'discord',
   channelId: 'discord:guild-1:channel-1',
   sourceMessageId: 'm-1',
-  conversationId: 'discord:guild-1:channel-1',
+  conversationId: 'discord:guild-1:channel-1:channel-1',
 })
 
 interface DiscordStub extends DiscordThreadTitleAdapter {

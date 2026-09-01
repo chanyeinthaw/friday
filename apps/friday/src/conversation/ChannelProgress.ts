@@ -116,6 +116,7 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
       // Working-message decoration is best-effort and bounded; it must never block a turn.
       const attempt = (operation: string, effect: Effect.Effect<void, ProgressError>) =>
         effect.pipe(
+          Effect.as(true),
           Effect.timeoutOrElse({
             duration: operationTimeout,
             orElse: () =>

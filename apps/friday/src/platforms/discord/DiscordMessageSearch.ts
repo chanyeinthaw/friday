@@ -11,6 +11,7 @@ import type {
 } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 import { projectChatSdkContextMessage } from '../chat-sdk/MessageProjection.ts'
+import { discordChannelConversationId, isDiscordThread } from './DiscordConversationScope.ts'
 
 const MaximumScanCount = 500
 const decodeMessageId = Schema.decodeUnknownSync(PlatformMessageId)
@@ -20,10 +21,10 @@ const targetThreadId = (
   query: PlatformMessageQuery,
 ): string => {
   const location = discord.decodeThreadId(String(query.binding.conversationId))
-  if (query.scope === 'thread' && location.threadId !== undefined) {
+  if (query.scope === 'thread' && isDiscordThread(location)) {
     return String(query.binding.conversationId)
   }
-  return discord.encodeThreadId({ guildId: location.guildId, channelId: location.channelId })
+  return discordChannelConversationId(discord, location)
 }
 
 const recordFrom = (message: Message): PlatformMessageRecord => {

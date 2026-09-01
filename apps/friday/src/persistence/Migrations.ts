@@ -343,6 +343,77 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
     CREATE UNIQUE INDEX IF NOT EXISTS activities_turn_sequence
     ON activities (turn_id, sequence)
   `
+
+  // Discord channel conversations use the channel id as their fourth segment.
+  // Close newer active duplicates before canonicalizing older three-part bindings.
+  yield* sql`
+    UPDATE threads AS duplicate
+    SET
+      status = 'closed',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+      closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+      payload_json = json_set(
+        duplicate.payload_json,
+        '$.status',
+        'closed',
+        '$.updatedAt',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        '$.closedAt',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      )
+    WHERE duplicate.audience = 'user'
+      AND duplicate.status = 'active'
+      AND json_extract(duplicate.payload_json, '$.conversationBinding.platform') = 'discord'
+      AND EXISTS (
+        SELECT 1
+        FROM threads AS survivor
+        WHERE survivor.thread_id != duplicate.thread_id
+          AND survivor.audience = 'user'
+          AND survivor.status = 'active'
+          AND json_extract(survivor.payload_json, '$.conversationBinding.platform') = 'discord'
+          AND json_extract(survivor.payload_json, '$.conversationBinding.connectionId') =
+            json_extract(duplicate.payload_json, '$.conversationBinding.connectionId')
+          AND CASE
+            WHEN length(json_extract(survivor.payload_json, '$.conversationBinding.conversationId')) -
+              length(replace(json_extract(survivor.payload_json, '$.conversationBinding.conversationId'), ':', '')) = 2
+            THEN json_extract(survivor.payload_json, '$.conversationBinding.conversationId') || ':' ||
+              substr(
+                json_extract(survivor.payload_json, '$.conversationBinding.conversationId'),
+                instr(substr(json_extract(survivor.payload_json, '$.conversationBinding.conversationId'), 9), ':') + 9
+              )
+            ELSE json_extract(survivor.payload_json, '$.conversationBinding.conversationId')
+          END = CASE
+            WHEN length(json_extract(duplicate.payload_json, '$.conversationBinding.conversationId')) -
+              length(replace(json_extract(duplicate.payload_json, '$.conversationBinding.conversationId'), ':', '')) = 2
+            THEN json_extract(duplicate.payload_json, '$.conversationBinding.conversationId') || ':' ||
+              substr(
+                json_extract(duplicate.payload_json, '$.conversationBinding.conversationId'),
+                instr(substr(json_extract(duplicate.payload_json, '$.conversationBinding.conversationId'), 9), ':') + 9
+              )
+            ELSE json_extract(duplicate.payload_json, '$.conversationBinding.conversationId')
+          END
+          AND (survivor.created_at < duplicate.created_at OR (
+            survivor.created_at = duplicate.created_at AND survivor.thread_id < duplicate.thread_id
+          ))
+      )
+  `
+
+  yield* sql`
+    UPDATE threads
+    SET payload_json = json_set(
+      payload_json,
+      '$.conversationBinding.conversationId',
+      json_extract(payload_json, '$.conversationBinding.conversationId') || ':' ||
+        substr(
+          json_extract(payload_json, '$.conversationBinding.conversationId'),
+          instr(substr(json_extract(payload_json, '$.conversationBinding.conversationId'), 9), ':') + 9
+        )
+    )
+    WHERE audience = 'user'
+      AND json_extract(payload_json, '$.conversationBinding.platform') = 'discord'
+      AND length(json_extract(payload_json, '$.conversationBinding.conversationId')) -
+        length(replace(json_extract(payload_json, '$.conversationBinding.conversationId'), ':', '')) = 2
+  `
 })
 
 export const runMigrations = Effect.fn('runMigrations')(function* () {
