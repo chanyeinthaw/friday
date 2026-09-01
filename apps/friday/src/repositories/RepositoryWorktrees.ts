@@ -298,6 +298,16 @@ export const readWorktreeRegistry = (
     ),
   )
 
+/** Returns whether the exact path is owned by Friday's managed-worktree registry. */
+export const isManagedWorktree = Effect.fn('RepositoryWorktrees.isManaged')(function* (
+  path: string,
+  home: string = FRIDAY_HOME,
+) {
+  const registry = yield* readWorktreeRegistry(home)
+  const resolvedPath = resolve(path)
+  return registry?.worktrees.some((entry) => resolve(entry.path) === resolvedPath) ?? false
+})
+
 // Stryker disable all: The lock protocol is exercised by separate-process integration tests, which Stryker cannot run in its vitest sandbox.
 const registrySemaphore = Semaphore.makeUnsafe(1)
 

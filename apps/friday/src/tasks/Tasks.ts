@@ -43,7 +43,11 @@ import {
   type ThreadPersistenceError,
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
-import { createIsolatedWorktree } from '../repositories/RepositoryWorktrees.ts'
+import {
+  createIsolatedWorktree,
+  isManagedWorktree,
+  type RepositoryWorktreeError,
+} from '../repositories/RepositoryWorktrees.ts'
 import { TaskModels, type TaskModelsContract } from './TaskModels.ts'
 import {
   isActiveTaskStatus,
@@ -69,7 +73,11 @@ export class TaskError extends Schema.Error<TaskError>('TaskError')({
     'start-failed',
   ]),
   detail: Schema.String,
-}) {}
+}) {
+  override get message(): string {
+    return this.detail
+  }
+}
 
 export interface TasksContract {
   readonly start: (
@@ -98,6 +106,8 @@ export interface MakeTasksOptions {
   readonly channelTurns: ChannelTurnsContract
   readonly conversationTitles?: ConversationTitlesContract
   readonly fileSystem: FileSystem.FileSystem
+  readonly isManagedWorktree?: (path: string) => Effect.Effect<boolean, RepositoryWorktreeError>
+  readonly createIsolatedWorktree?: typeof createIsolatedWorktree
   readonly randomUUID: Effect.Effect<string, TaskError>
   readonly now: Effect.Effect<IsoDateTime>
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>
@@ -428,6 +438,8 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
   const launchTaskUnlocked = Effect.fn('Tasks.launchTask')(function* (input: LaunchTaskInput) {
     let effectiveWorkingDirectory = input.workingDirectory
     let primaryWorkingDirectory = input.primaryWorkingDirectory
+    const managedWorktree = options.isManagedWorktree ?? isManagedWorktree
+    const isolateWorktree = options.createIsolatedWorktree ?? createIsolatedWorktree
     const existingTasks = yield* options.persistence.listAgentThreads({
       parentThreadId: input.parent.id,
     })
@@ -438,14 +450,30 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       if (Option.isSome(latest) && isActiveTaskStatus(latest.value.status)) {
         const existingMayWrite = existing.mayWrite ?? true
         if (!input.mayWrite && !existingMayWrite) continue
-        const isolated = yield* createIsolatedWorktree({
+        const isManaged = yield* managedWorktree(input.workingDirectory).pipe(
+          Effect.mapError((cause) =>
+            taskError(
+              'start-failed',
+              `Could not inspect managed worktree ownership for '${input.workingDirectory}': ${cause.message}`,
+              input.operation,
+            ),
+          ),
+        )
+        if (!isManaged) {
+          return yield* taskError(
+            'working-directory-busy',
+            `Task '${existing.id}' has active ${existingMayWrite ? 'write' : 'read'} access to '${input.workingDirectory}'. This directory is not a Friday-managed repository worktree, so concurrent work cannot be isolated. Wait for or cancel the existing task, or choose a non-overlapping working directory.`,
+            input.operation,
+          )
+        }
+        const isolated = yield* isolateWorktree({
           primaryWorktree: input.workingDirectory,
           taskId: `task-${yield* options.randomUUID}`,
         }).pipe(
           Effect.mapError((cause) =>
             taskError(
               'working-directory-busy',
-              `Could not isolate concurrent work from '${input.workingDirectory}': ${cause.message}`,
+              `Could not isolate concurrent work from managed worktree '${input.workingDirectory}': ${cause.message}`,
               input.operation,
             ),
           ),

@@ -1,12 +1,12 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, effecttsgo/async-function -- The Pi tool contract accepts unknown input and is Promise-based. */
 
-import { assert, it } from '@effect/vitest'
+import { assert, expect, it } from '@effect/vitest'
 import { ChannelThread, TaskId, TurnId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import { makePiTaskTool } from './PiTaskTool.ts'
-import type { TasksContract } from './Tasks.ts'
+import { TaskError, type TasksContract } from './Tasks.ts'
 
 const decodeChannelThread = Schema.decodeSync(ChannelThread)
 const decodeTaskId = Schema.decodeSync(TaskId)
@@ -56,6 +56,41 @@ const execute = async (calls: Array<unknown>, input: unknown) => {
   // SAFETY: The task tool does not read ExtensionContext for these operations.
   return tool.execute('call-task', input, undefined, undefined, {} as never)
 }
+
+it('surfaces task failure details through the Pi tool boundary', async () => {
+  const tool = makePiTaskTool({
+    thread: channelThread,
+    tasks: {
+      ...taskOperations([]),
+      start: () =>
+        Effect.fail(
+          new TaskError({
+            operation: 'start',
+            reason: 'working-directory-busy',
+            detail: 'The requested directory is busy.',
+          }),
+        ),
+    },
+    activeTurnId: () => decodeTurnId('turn-active'),
+    runPromise: Effect.runPromise,
+  })
+
+  await expect(
+    tool.execute(
+      'call-task',
+      {
+        action: 'start',
+        task: 'Inspect the project.',
+        workingDirectory: '/tmp/project',
+        mayWrite: false,
+      },
+      undefined,
+      undefined,
+      // SAFETY: The task tool does not read ExtensionContext for this operation.
+      {} as never,
+    ),
+  ).rejects.toThrow('The requested directory is busy.')
+})
 
 it('scopes task start calls to the current channel Thread and active Turn', async () => {
   const calls: Array<unknown> = []

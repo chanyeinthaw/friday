@@ -13,6 +13,7 @@ import {
   createIsolatedWorktree,
   ensureRepositoryWorktree,
   inspectRepositoryWorktree,
+  isManagedWorktree,
   listManagedWorktrees,
   parseWorktreePorcelain,
   readWorktreeRegistry,
@@ -81,6 +82,9 @@ describe('RepositoryWorktrees', () => {
       assert.strictEqual(registry.version, 1)
       assert.strictEqual(created.path, join(workspace, 'source-repository'))
 
+      assert.strictEqual(yield* isManagedWorktree(created.path, home), true)
+      assert.strictEqual(yield* isManagedWorktree(workspace, home), false)
+
       const listed = yield* listManagedWorktrees(home)
       assert.strictEqual(listed.length, 1)
       assert.strictEqual(listed[0]!.path, created.path)
@@ -109,6 +113,7 @@ describe('RepositoryWorktrees', () => {
         )
         const home = join(root, 'friday-home')
         const { url } = yield* makeSourceRepository(root, 'legacy-source')
+        assert.strictEqual(yield* isManagedWorktree(join(root, 'unknown'), home), false)
         const cache = join(home, 'repositories', 'legacy.git')
         const legacyWorktree = join(root, 'legacy-worktree')
 

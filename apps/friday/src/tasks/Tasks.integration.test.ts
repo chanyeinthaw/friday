@@ -1077,6 +1077,144 @@ test('rejects cancellation for a terminal task', async () => {
   if (error._tag === 'TaskError') expect(error.reason).toBe('task-not-active')
 })
 
+test('rejects unmanaged directory conflicts without attempting worktree isolation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-concurrency-'))
+  const channelWorkspace = join(root, 'channel')
+  await Bun.write(join(channelWorkspace, '.keep'), '')
+  const parent = parentThread(channelWorkspace)
+  const existing = decodeAgentThread({
+    ...taskThread(parent),
+    id: 'task-existing',
+    workingDirectory: channelWorkspace,
+    mayWrite: true,
+  })
+  const running = taskTurn(existing, 'turn-running', 1, 'running', 'Existing task')
+  const persistence: ThreadPersistenceContract = {
+    ...makePersistence(parent, []),
+    listAgentThreads: () => Effect.succeed([existing]),
+    getLatestTurn: () => Effect.succeedSome(running),
+  }
+  let isolationAttempts = 0
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence,
+      friday: makeFriday([]),
+      models: makeTaskModels(() => profilesFor(parent)),
+      channelTurns: noChannelTurns,
+      fileSystem,
+      isManagedWorktree: () => Effect.succeed(false),
+      createIsolatedWorktree: () =>
+        Effect.sync(() => {
+          isolationAttempts += 1
+          throw new Error('Unmanaged directories must not reach worktree isolation.')
+        }),
+      randomUUID: Effect.sync(randomUUID),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: () => Effect.void,
+    })
+    return yield* Effect.flip(
+      tasks.start({
+        parentThreadId: parent.id,
+        parentTurnId: decodeTurnId('turn-parent'),
+        task: 'Independent read-only task.',
+        workingDirectory: decodeWorkingDirectory(channelWorkspace),
+        mayWrite: false,
+      }),
+    )
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  const error = await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  expect(error._tag).toBe('TaskError')
+  if (error._tag === 'TaskError') {
+    expect(error.reason).toBe('working-directory-busy')
+    expect(error.detail).toContain("Task 'task-existing' has active write access")
+    expect(error.detail).toContain('not a Friday-managed repository worktree')
+  }
+  expect(isolationAttempts).toBe(0)
+})
+
+test('isolates conflicts only after managed worktree ownership is confirmed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-task-concurrency-'))
+  const channelWorkspace = join(root, 'channel')
+  const projectDirectory = join(channelWorkspace, 'project')
+  const isolatedDirectory = join(channelWorkspace, 'project--isolated')
+  await Promise.all([
+    Bun.write(join(channelWorkspace, '.keep'), ''),
+    Bun.write(join(projectDirectory, '.keep'), ''),
+    Bun.write(join(isolatedDirectory, '.keep'), ''),
+  ])
+  const parent = parentThread(channelWorkspace)
+  const existing = decodeAgentThread({
+    ...taskThread(parent),
+    id: 'task-existing',
+    workingDirectory: projectDirectory,
+    mayWrite: true,
+  })
+  const running = taskTurn(existing, 'turn-running', 1, 'running', 'Existing task')
+  const createdThreads: Array<Thread> = []
+  const persistence: ThreadPersistenceContract = {
+    ...makePersistence(parent, createdThreads),
+    listAgentThreads: () => Effect.succeed([existing]),
+    getLatestTurn: () => Effect.succeedSome(running),
+  }
+  let ownershipChecks = 0
+  let isolationAttempts = 0
+  const identifiers = ['isolation-id', 'task-id', 'turn-id']
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence,
+      friday: makeFriday([]),
+      models: makeTaskModels(() => profilesFor(parent)),
+      channelTurns: noChannelTurns,
+      fileSystem,
+      isManagedWorktree: (path) =>
+        Effect.sync(() => {
+          ownershipChecks += 1
+          return path === projectDirectory
+        }),
+      createIsolatedWorktree: () =>
+        Effect.sync(() => {
+          isolationAttempts += 1
+          return {
+            // SAFETY: This test seam never consumes the branded repository URL.
+            url: 'https://example.com/project.git' as never,
+            path: isolatedDirectory,
+            branch: 'friday/task/isolation-id',
+            baseRef: 'main',
+            commonDirectory: join(root, 'repository.git'),
+            reused: false,
+          }
+        }),
+      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: () => Effect.void,
+    })
+    return yield* tasks.start({
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Independent write task.',
+      workingDirectory: decodeWorkingDirectory(projectDirectory),
+      mayWrite: true,
+    })
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  const started = await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  expect(started.status).toBe('pending')
+  expect(ownershipChecks).toBe(1)
+  expect(isolationAttempts).toBe(1)
+  expect(createdThreads).toHaveLength(1)
+  expect(String(createdThreads[0]?.workingDirectory)).toBe(isolatedDirectory)
+  if (createdThreads[0]?.audience === 'agent') {
+    expect(String(createdThreads[0].primaryWorkingDirectory)).toBe(projectDirectory)
+  }
+})
+
 test('allows concurrent read-only tasks sharing one canonical working directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-concurrency-'))
   const channelWorkspace = join(root, 'channel')
