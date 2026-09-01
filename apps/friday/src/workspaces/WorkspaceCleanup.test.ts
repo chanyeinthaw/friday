@@ -405,6 +405,50 @@ describe('WorkspaceCleanup', () => {
     ),
   )
 
+  it.effect('marks a removing resource stale when its surviving worktree changed branch', () =>
+    Effect.gen(function* () {
+      const { workspace, worktree } = yield* makeManagedWorkspace('stale-removing-branch')
+      const cleanup = yield* WorkspaceCleanup
+      const proposal = yield* proposeForWorkspace(workspace)
+      assert(proposal !== null)
+      const sql = yield* SqlClient.SqlClient
+
+      yield* sql`
+        UPDATE workspace_cleanup_resources
+        SET removal_status = 'removing'
+        WHERE proposal_id = ${proposal.id} AND worktree_path = ${worktree.path}
+      `
+      const changedBranch = 'successor/keep-this-worktree'
+      yield* Effect.promise(() => git(worktree.path, 'switch', '-c', changedBranch))
+      const registryBeforeRetry = yield* listManagedWorktrees()
+
+      const stale = yield* cleanup.apply(proposal.id, workspace).pipe(Effect.flip)
+      assert(isStaleError(stale))
+      assert.match(stale.message, /changed after cleanup approval was requested/)
+
+      const recorded = yield* cleanup.get(proposal.id)
+      assert.strictEqual(recorded.status, 'stale')
+      assert.strictEqual(recorded.resources[0]!.removalStatus, 'removing')
+      assert.strictEqual(
+        yield* Effect.promise(() =>
+          stat(worktree.path).then(
+            () => true,
+            () => false,
+          ),
+        ),
+        true,
+      )
+      const { stdout: branchAfterRetry } = yield* Effect.promise(() =>
+        exec('git', ['-C', worktree.path, 'branch', '--show-current']),
+      )
+      assert.strictEqual(branchAfterRetry.trim(), changedBranch)
+      assert.deepStrictEqual(yield* listManagedWorktrees(), registryBeforeRetry)
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(SqlClientLive, ThreadPersistenceLive, TestLive)),
+    ),
+  )
+
   it.effect('reconciles a hard crash after deletion and before completion persistence', () =>
     Effect.gen(function* () {
       const { workspace, worktree } = yield* makeManagedWorkspace('resume-crash-gap')
