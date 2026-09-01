@@ -224,10 +224,10 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         )
         const runHarnessCommand = (event: SlashCommandEvent) =>
           Effect.gen(function* () {
+            // No authorization guard: /harness reload is intentionally open to
+            // any caller, unlike /friday reload.
             const decision = decideHarnessCommand({
               subcommand: Option.flatMap(decodeHarnessInteraction(event.raw), harnessSubcommand),
-              userId: event.user.userId,
-              admin,
             })
             if (decision.kind !== 'reload') {
               yield* respondEphemeral(event, harnessCommandReply(decision))

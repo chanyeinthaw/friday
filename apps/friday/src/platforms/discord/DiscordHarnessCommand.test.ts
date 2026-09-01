@@ -20,8 +20,6 @@ import {
   harnessReloadSucceeded,
 } from '../../conversation/ThreadRuntime.ts'
 
-const admin = { discordUserIds: ['admin-1', 'admin-2'] }
-
 it('extracts the reload subcommand from a normalized gateway interaction', () => {
   // A normalized gateway interaction payload; decode strips adapter-specific fields.
   assert.deepStrictEqual(
@@ -49,28 +47,14 @@ it('returns none for malformed or non-command interaction payloads', () => {
   assert(Option.isNone(Option.flatMap(decodeHarnessInteraction(null), harnessSubcommand)))
 })
 
-it('authorizes reload for configured admin user IDs only', () => {
-  assert.deepStrictEqual(
-    decideHarnessCommand({ subcommand: Option.some('reload'), userId: 'admin-1', admin }),
-    { kind: 'reload' },
-  )
-  assert.deepStrictEqual(
-    decideHarnessCommand({ subcommand: Option.some('reload'), userId: 'random-user', admin }),
-    { kind: 'unauthorized' },
-  )
-  // Authorization is an exact stable-ID match, never a prefix or alias.
-  assert.deepStrictEqual(
-    decideHarnessCommand({ subcommand: Option.some('reload'), userId: 'admin-1 ', admin }),
-    { kind: 'unauthorized' },
-  )
+it('allows reload unconditionally — there is no authorization guard', () => {
+  assert.deepStrictEqual(decideHarnessCommand({ subcommand: Option.some('reload') }), {
+    kind: 'reload',
+  })
 })
 
 it('answers unknown subcommands with usage guidance', () => {
-  const decision = decideHarnessCommand({
-    subcommand: Option.some('dance'),
-    userId: 'admin-1',
-    admin,
-  })
+  const decision = decideHarnessCommand({ subcommand: Option.some('dance') })
   if (decision.kind !== 'usage') throw new Error('expected a usage decision')
   assert.match(harnessCommandReply(decision), /Usage: \/harness reload/)
 })

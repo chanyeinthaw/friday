@@ -1,7 +1,6 @@
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
-import type { AdminConfig } from '../../config/AppConfig.ts'
 import {
   formatHarnessReloadOutcome,
   type HarnessReloadOutcome,
@@ -27,13 +26,12 @@ export const HARNESS_COMMAND_PATHS = [`/${HARNESS_COMMAND_NAME}`, HARNESS_COMMAN
 
 /**
  * Decision for one `/harness` application command interaction. The Discord
- * transport applies the decision; authorization uses stable Discord user IDs
- * from the pinned startup admin allow-list.
+ * transport applies the decision. Unlike `/friday reload`, there is no
+ * authorization guard: any user in a resolvable thread may reload.
  */
 export type HarnessCommandDecision =
   | { readonly kind: 'reload' }
   | { readonly kind: 'usage'; readonly detail: string }
-  | { readonly kind: 'unauthorized' }
 
 /** Parses the raw adapter interaction payload; run this at the transport boundary. */
 export const decodeHarnessInteraction = Schema.decodeUnknownOption(
@@ -56,32 +54,21 @@ export const harnessSubcommand = (interaction: {
 
 /**
  * Pure decision for a `/harness` interaction. Only the `reload` subcommand is
- * recognized; any other subcommand (or a non-admin caller for `reload`)
- * receives guidance instead of performing the operation.
+ * recognized; any other subcommand receives guidance. The `reload` decision is
+ * unconditional — authorization is intentionally absent for this command.
  */
 export const decideHarnessCommand = (input: {
   readonly subcommand: Option.Option<string>
-  readonly userId: string
-  readonly admin: AdminConfig
-}): HarnessCommandDecision => {
-  if (input.subcommand._tag !== 'Some' || input.subcommand.value !== HARNESS_RELOAD_SUBCOMMAND) {
-    return {
-      kind: 'usage',
-      detail: `Usage: /${HARNESS_COMMAND_NAME} ${HARNESS_RELOAD_SUBCOMMAND}`,
-    }
-  }
-  if (!input.admin.discordUserIds.includes(input.userId)) {
-    return { kind: 'unauthorized' }
-  }
-  return { kind: 'reload' }
-}
+}): HarnessCommandDecision =>
+  input.subcommand._tag === 'Some' && input.subcommand.value === HARNESS_RELOAD_SUBCOMMAND
+    ? { kind: 'reload' }
+    : {
+        kind: 'usage',
+        detail: `Usage: /${HARNESS_COMMAND_NAME} ${HARNESS_RELOAD_SUBCOMMAND}`,
+      }
 
-export const harnessCommandReply = (
-  decision: Exclude<HarnessCommandDecision, { kind: 'reload' }>,
-): string =>
-  decision.kind === 'usage'
-    ? decision.detail
-    : 'Only configured Friday administrators may reload the harness.'
+export const harnessCommandReply = (decision: { readonly detail: string }): string =>
+  decision.detail
 
 export const harnessReloadReply = (outcome: HarnessReloadOutcome): string =>
   formatHarnessReloadOutcome(outcome)

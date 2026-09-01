@@ -106,8 +106,9 @@ runtime bound to the invoking Discord thread. The conversation and its session
 file are always preserved — only harness resources are refreshed.
 
 - Registered as a global application command alongside `/friday`, with the
-  same idempotent create-or-patch-by-ID registration
-- Authorized by the same startup-pinned admin allow-list; replies ephemerally
+  same idempotent create-or-patch-by-ID registration; replies ephemerally
+- Has no authorization guard of any kind, unlike `/friday reload` — any user
+  who can invoke the command in a resolvable Discord thread may reload
 - Targets only the Friday thread bound to the invoking conversation
 - Refuses safely when the thread has no open runtime (Friday never opens an
   absent runtime just to reload it) or when a turn is active in the thread
