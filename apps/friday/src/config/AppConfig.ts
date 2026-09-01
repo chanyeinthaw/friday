@@ -39,6 +39,45 @@ const ConfiguredModel = Schema.Struct({
 export const InvocationMode = Schema.Literals(['mention-only', 'all-messages'])
 export type InvocationMode = typeof InvocationMode.Type
 
+/**
+ * How Friday answers in a Discord channel: in a thread rooted at the invoking
+ * message (the default), or directly in the channel itself.
+ */
+export const ReplyMode = Schema.Literals(['reply-in-thread', 'reply-in-channel'])
+export type ReplyMode = typeof ReplyMode.Type
+
+/** The default reply behavior for every channel without an explicit override. */
+export const DefaultReplyMode: ReplyMode = 'reply-in-thread'
+
+/**
+ * One guild-scoped channel override. Every field is optional: a channel row
+ * exists because at least one override is configured, and absent fields inherit
+ * the guild-wide defaults.
+ */
+export const DiscordGuildChannelConfig = Schema.Struct({
+  channelId: Identifier,
+  invocationMode: Schema.optionalKey(InvocationMode),
+  users: Schema.optionalKey(AccessPolicy),
+  replyMode: Schema.optionalKey(ReplyMode),
+})
+export type DiscordGuildChannelConfig = typeof DiscordGuildChannelConfig.Type
+
+/**
+ * A first-class enabled operational boundary. A guild that is absent from this
+ * list, or present with `enabled: false`, never receives any Friday activity.
+ * Guild-wide defaults apply to all of the guild's channels; per-channel entries
+ * override them.
+ */
+export const DiscordGuildConfig = Schema.Struct({
+  guildId: Identifier,
+  enabled: Schema.Boolean,
+  invocation: Schema.Struct({ defaultMode: InvocationMode }),
+  /** Guild-wide user permission default; absent means inherit the connection policy. */
+  users: Schema.optionalKey(AccessPolicy),
+  channels: Schema.Array(DiscordGuildChannelConfig),
+})
+export type DiscordGuildConfig = typeof DiscordGuildConfig.Type
+
 export const DiscordPlatformConfig = Schema.Struct({
   connectionId: PlatformConnectionId,
   platform: Schema.Literal('discord'),
@@ -48,11 +87,6 @@ export const DiscordPlatformConfig = Schema.Struct({
     applicationId: SecretValue,
     publicKey: SecretValue,
   }),
-  access: Schema.Struct({
-    users: AccessPolicy,
-    channels: AccessPolicy,
-    guilds: AccessPolicy,
-  }),
   respondToGlobalMentions: Schema.Boolean,
   mentionRoleIds: IdentifierArray,
   /**
@@ -60,11 +94,9 @@ export const DiscordPlatformConfig = Schema.Struct({
    * sanitized channel names and task labels.
    */
   activityDescription: Schema.Boolean,
-  invocation: Schema.Struct({
-    defaultMode: InvocationMode,
-    channels: Schema.Array(Schema.Struct({ channelId: Identifier, mode: InvocationMode })),
-  }),
-  systemChannelIds: IdentifierArray,
+  /** Connection-wide user permission default; DMs resolve against it directly. */
+  users: AccessPolicy,
+  guilds: Schema.Array(DiscordGuildConfig),
 })
 export type DiscordPlatformConfig = typeof DiscordPlatformConfig.Type
 
@@ -228,22 +260,6 @@ const DiscordConnectionRow = Schema.Struct({
   activity_description_public: Schema.Number,
 })
 
-const InvocationDefaultRow = Schema.Struct({
-  connection_id: Schema.String,
-  mode: InvocationMode,
-})
-
-const ChannelInvocationRow = Schema.Struct({
-  connection_id: Schema.String,
-  channel_id: Schema.String,
-  mode: InvocationMode,
-})
-
-const SystemChannelRow = Schema.Struct({
-  connection_id: Schema.String,
-  channel_id: Schema.String,
-})
-
 const DiscordMentionRoleRow = Schema.Struct({
   connection_id: Schema.String,
   role_id: Schema.String,
@@ -261,17 +277,69 @@ const AccessSubjectRow = Schema.Struct({
   platform_subject_id: Schema.String,
 })
 
+const GuildRow = Schema.Struct({
+  connection_id: Schema.String,
+  guild_id: Schema.String,
+  enabled: Schema.Number,
+  invocation_mode: InvocationMode,
+  users_mode: Schema.NullOr(Schema.Literals(['all', 'allow', 'deny'])),
+})
+
+const GuildUserSubjectRow = Schema.Struct({
+  connection_id: Schema.String,
+  guild_id: Schema.String,
+  user_id: Schema.String,
+})
+
+const GuildChannelRow = Schema.Struct({
+  connection_id: Schema.String,
+  guild_id: Schema.String,
+  channel_id: Schema.String,
+  invocation_mode: Schema.NullOr(InvocationMode),
+  users_mode: Schema.NullOr(Schema.Literals(['all', 'allow', 'deny'])),
+  reply_mode: Schema.NullOr(ReplyMode),
+})
+
+const GuildChannelUserSubjectRow = Schema.Struct({
+  connection_id: Schema.String,
+  guild_id: Schema.String,
+  channel_id: Schema.String,
+  user_id: Schema.String,
+})
+
+/**
+ * Mutable assembly shapes for guild configuration read from SQLite: optional
+ * policy sections attach only when their columns are configured.
+ */
+interface AssembledDiscordGuild {
+  guildId: string
+  enabled: boolean
+  invocation: { defaultMode: InvocationMode }
+  users?: AccessPolicy
+  channels: ReadonlyArray<DiscordGuildChannelConfig>
+}
+
+interface AssembledDiscordGuildChannel {
+  channelId: string
+  invocationMode?: InvocationMode
+  users?: AccessPolicy
+  replyMode?: ReplyMode
+}
+
 const decodeInstallationRows = Schema.decodeUnknownEffect(Schema.Array(InstallationRow))
 const decodeAdminUserRows = Schema.decodeUnknownEffect(Schema.Array(AdminUserRow))
 const decodeAgentConfigRows = Schema.decodeUnknownEffect(Schema.Array(AgentConfigRow))
 const decodeSubagentProfileRows = Schema.decodeUnknownEffect(Schema.Array(SubagentProfileRow))
 const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
-const decodeInvocationDefaultRows = Schema.decodeUnknownEffect(Schema.Array(InvocationDefaultRow))
-const decodeChannelInvocationRows = Schema.decodeUnknownEffect(Schema.Array(ChannelInvocationRow))
-const decodeSystemChannelRows = Schema.decodeUnknownEffect(Schema.Array(SystemChannelRow))
 const decodeDiscordMentionRoleRows = Schema.decodeUnknownEffect(Schema.Array(DiscordMentionRoleRow))
 const decodeAccessPolicyRows = Schema.decodeUnknownEffect(Schema.Array(AccessPolicyRow))
 const decodeAccessSubjectRows = Schema.decodeUnknownEffect(Schema.Array(AccessSubjectRow))
+const decodeGuildRows = Schema.decodeUnknownEffect(Schema.Array(GuildRow))
+const decodeGuildUserSubjectRows = Schema.decodeUnknownEffect(Schema.Array(GuildUserSubjectRow))
+const decodeGuildChannelRows = Schema.decodeUnknownEffect(Schema.Array(GuildChannelRow))
+const decodeGuildChannelUserSubjectRows = Schema.decodeUnknownEffect(
+  Schema.Array(GuildChannelUserSubjectRow),
+)
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
 const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
@@ -325,15 +393,6 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
       AND platform_connections.enabled = 1
     ORDER BY platform_connections.connection_id
   `
-  const invocationDefaults = yield* sql<
-    Record<string, unknown>
-  >`SELECT * FROM platform_invocation_defaults ORDER BY connection_id`
-  const channelInvocations = yield* sql<
-    Record<string, unknown>
-  >`SELECT * FROM platform_channel_invocation_policies ORDER BY connection_id, channel_id`
-  const systemChannels = yield* sql<
-    Record<string, unknown>
-  >`SELECT * FROM platform_system_channels ORDER BY connection_id, channel_id`
   const mentionRoles = yield* sql<
     Record<string, unknown>
   >`SELECT * FROM discord_mention_roles ORDER BY connection_id, role_id`
@@ -343,6 +402,19 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
   const subjects = yield* sql<
     Record<string, unknown>
   >`SELECT * FROM platform_access_subjects ORDER BY connection_id, subject_type, platform_subject_id`
+  const guilds = yield* sql<Record<string, unknown>>`
+    SELECT * FROM discord_guilds ORDER BY connection_id, guild_id
+  `
+  const guildUsers = yield* sql<Record<string, unknown>>`
+    SELECT * FROM discord_guild_users ORDER BY connection_id, guild_id, user_id
+  `
+  const guildChannels = yield* sql<Record<string, unknown>>`
+    SELECT * FROM discord_guild_channels ORDER BY connection_id, guild_id, channel_id
+  `
+  const guildChannelUsers = yield* sql<Record<string, unknown>>`
+    SELECT * FROM discord_guild_channel_users
+    ORDER BY connection_id, guild_id, channel_id, user_id
+  `
   const adminUsers = yield* sql<
     Record<string, unknown>
   >`SELECT user_id FROM admin_discord_users ORDER BY user_id`
@@ -351,12 +423,13 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
     agent,
     profiles: yield* decodeSubagentProfileRows(profiles),
     discord: yield* decodeDiscordConnectionRows(discord),
-    invocationDefaults: yield* decodeInvocationDefaultRows(invocationDefaults),
-    channelInvocations: yield* decodeChannelInvocationRows(channelInvocations),
-    systemChannels: yield* decodeSystemChannelRows(systemChannels),
     mentionRoles: yield* decodeDiscordMentionRoleRows(mentionRoles),
     policies: yield* decodeAccessPolicyRows(policies),
     subjects: yield* decodeAccessSubjectRows(subjects),
+    guilds: yield* decodeGuildRows(guilds),
+    guildUsers: yield* decodeGuildUserSubjectRows(guildUsers),
+    guildChannels: yield* decodeGuildChannelRows(guildChannels),
+    guildChannelUsers: yield* decodeGuildChannelUserSubjectRows(guildChannelUsers),
     adminUsers: yield* decodeAdminUserRows(adminUsers),
   }
 })
@@ -398,7 +471,7 @@ const resolveSecret = (
 
 const policyFor = (
   connectionId: string,
-  subjectType: 'user' | 'channel' | 'guild' | 'workspace',
+  subjectType: 'user' | 'workspace',
   policies: ReadonlyArray<typeof AccessPolicyRow.Type>,
   subjects: ReadonlyArray<typeof AccessSubjectRow.Type>,
 ): AccessPolicy => {
@@ -469,33 +542,67 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
               applicationId: connection.application_id,
               publicKey: connection.public_key,
             },
-            access: {
-              users: policyFor(connection.connection_id, 'user', rows.policies, rows.subjects),
-              channels: policyFor(
-                connection.connection_id,
-                'channel',
-                rows.policies,
-                rows.subjects,
-              ),
-              guilds: policyFor(connection.connection_id, 'guild', rows.policies, rows.subjects),
-            },
+            users: policyFor(connection.connection_id, 'user', rows.policies, rows.subjects),
             respondToGlobalMentions: connection.respond_to_global_mentions === 1,
             activityDescription: connection.activity_description_public === 1,
             mentionRoleIds: rows.mentionRoles
               .filter((role) => role.connection_id === connection.connection_id)
               .map((role) => role.role_id),
-            invocation: {
-              defaultMode:
-                rows.invocationDefaults.find(
-                  (policy) => policy.connection_id === connection.connection_id,
-                )?.mode ?? 'mention-only',
-              channels: rows.channelInvocations
-                .filter((policy) => policy.connection_id === connection.connection_id)
-                .map((policy) => ({ channelId: policy.channel_id, mode: policy.mode })),
-            },
-            systemChannelIds: rows.systemChannels
-              .filter((channel) => channel.connection_id === connection.connection_id)
-              .map((channel) => channel.channel_id),
+            guilds: rows.guilds
+              .filter((guild) => guild.connection_id === connection.connection_id)
+              .map((guild) => {
+                // Optional policy sections attach only when configured, so absent
+                // fields keep inheriting from the enclosing scope.
+                const guildEntry: AssembledDiscordGuild = {
+                  guildId: guild.guild_id,
+                  enabled: guild.enabled === 1,
+                  invocation: { defaultMode: guild.invocation_mode },
+                  channels: rows.guildChannels
+                    .filter(
+                      (channel) =>
+                        channel.connection_id === guild.connection_id &&
+                        channel.guild_id === guild.guild_id,
+                    )
+                    .map((channel) => {
+                      const channelEntry: AssembledDiscordGuildChannel = {
+                        channelId: channel.channel_id,
+                      }
+                      if (channel.invocation_mode !== null) {
+                        channelEntry.invocationMode = channel.invocation_mode
+                      }
+                      if (channel.users_mode !== null) {
+                        channelEntry.users = {
+                          mode: channel.users_mode,
+                          ids: rows.guildChannelUsers
+                            .filter(
+                              (subject) =>
+                                subject.connection_id === channel.connection_id &&
+                                subject.guild_id === channel.guild_id &&
+                                subject.channel_id === channel.channel_id,
+                            )
+                            .map((subject) => subject.user_id),
+                        }
+                      }
+                      if (channel.reply_mode !== null) {
+                        channelEntry.replyMode = channel.reply_mode
+                      }
+                      return channelEntry
+                    }),
+                }
+                if (guild.users_mode !== null) {
+                  guildEntry.users = {
+                    mode: guild.users_mode,
+                    ids: rows.guildUsers
+                      .filter(
+                        (subject) =>
+                          subject.connection_id === guild.connection_id &&
+                          subject.guild_id === guild.guild_id,
+                      )
+                      .map((subject) => subject.user_id),
+                  }
+                }
+                return guildEntry
+              }),
           })),
         ),
       ),

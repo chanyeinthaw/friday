@@ -8,9 +8,11 @@ it into the running snapshot.
 
 ## What reload applies
 
-- Discord access policies (users, channels, guilds) — enforced per message
-- Channel invocation modes and defaults — enforced per message
-- Direct system-management channels — enforced per message
+- Discord user permission policies — enforced per message
+- Discord guild configuration — enabled guilds, guild-wide invocation and
+  permission defaults, guild-scoped channel overrides (invocation, user
+  permissions, reply mode) — enforced per message (see
+  [discord-configuration.md](./discord-configuration.md))
 - `agent.recentMessageCount` — read when loading new-conversation context
 - Primary model defaults — applied to newly bootstrapped threads
 - Subagent profiles — applied to newly opened runtimes and new tasks
@@ -27,6 +29,7 @@ the startup snapshot and ignored by reload:
 - Credentials (bot token environment variable, application ID, public key)
 - Mention role IDs and global-mention behavior
 - Activity-description publication
+- Adding, removing, enabling, or disabling connections themselves
 - The admin allow-list (see below)
 
 Changes to these require a Friday restart.
@@ -95,20 +98,20 @@ lock:
 - are requested under a client-side deadline (10 seconds) and response size
   cap, so an unresponsive or misbehaving server fails fast with a typed error
 
-CLI configuration commands that write SQLite (`platform invocation set`,
-`platform system-channel set/reset`) take effect on the next reload.
+CLI configuration commands that write SQLite (`config discord guild ...`,
+`platform activity-description set/reset`) take effect on the next reload.
 
 ## Harness reload
 
-`/harness reload` is a separate, per-thread operation: it reloads the Pi
+`/harness reload` is a separate, per-thread operation. It reloads the Pi
 harness session (extensions, settings, resource loader) of the existing
 runtime bound to the invoking Discord thread. The conversation and its session
-file are always preserved — only harness resources are refreshed.
+file are always preserved. Only harness resources are refreshed.
 
 - Registered as a global application command alongside `/friday`, with the
   same idempotent create-or-patch-by-ID registration; replies ephemerally
-- Has no authorization guard of any kind, unlike `/friday reload` — any user
-  who can invoke the command in a resolvable Discord thread may reload
+- Has no authorization guard, unlike `/friday reload`. Any user who can invoke
+  the command in a resolvable Discord thread may reload
 - Targets only the Friday thread bound to the invoking conversation
 - Refuses safely when the thread has no open runtime (Friday never opens an
   absent runtime just to reload it) or when a turn is active in the thread

@@ -13,6 +13,7 @@
     "mutation:system-prompt": "stryker run stryker.config.json --inPlace",
     "mutation:tasks": "stryker run stryker.tasks.config.json --inPlace",
     "mutation:access": "stryker run stryker.access.config.json --inPlace",
+    "mutation:discord-config": "stryker run stryker.discord-config.config.json --inPlace",
     "release:build": "bun scripts/build-release.ts",
     "release:version": "bun scripts/release-version.ts",
     "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts' --exclude '**/*.live.test.ts' && pnpm --filter @friday/friday test:integration",

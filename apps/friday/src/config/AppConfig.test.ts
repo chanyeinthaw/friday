@@ -13,15 +13,26 @@ import {
 const decodeAppConfig = Schema.decodeSync(AppConfig)
 const decodeDiscord = Schema.decodeSync(DiscordPlatformConfig)
 
+const guild = (
+  overrides: {
+    readonly guildId?: string
+    readonly enabled?: boolean
+    readonly invocationMode?: 'mention-only' | 'all-messages'
+    readonly channels?: DiscordPlatformConfig['guilds'][number]['channels']
+  } = {},
+) => ({
+  guildId: overrides.guildId ?? '111111111111111111',
+  enabled: overrides.enabled ?? true,
+  invocation: { defaultMode: overrides.invocationMode ?? 'mention-only' },
+  channels: overrides.channels ?? [],
+})
+
 const discordConnection = (overrides: {
   readonly connectionId?: string
   readonly botToken?: string
   readonly mentionRoleIds?: ReadonlyArray<string>
-  readonly userAccess?: {
-    readonly mode: 'all' | 'allow' | 'deny'
-    readonly ids: ReadonlyArray<string>
-  }
-  readonly systemChannelIds?: ReadonlyArray<string>
+  readonly users?: { readonly mode: 'all' | 'allow' | 'deny'; readonly ids: ReadonlyArray<string> }
+  readonly guilds?: ReadonlyArray<ReturnType<typeof guild>>
 }) =>
   decodeDiscord({
     connectionId: overrides.connectionId ?? 'discord-personal',
@@ -32,16 +43,11 @@ const discordConnection = (overrides: {
       applicationId: 'application-1',
       publicKey: 'public-key-1',
     },
-    access: {
-      users: overrides.userAccess ?? { mode: 'all', ids: [] },
-      channels: { mode: 'all', ids: [] },
-      guilds: { mode: 'all', ids: [] },
-    },
+    users: overrides.users ?? { mode: 'all', ids: [] },
     respondToGlobalMentions: true,
     mentionRoleIds: overrides.mentionRoleIds ?? ['role-1'],
     activityDescription: false,
-    invocation: { defaultMode: 'mention-only', channels: [] },
-    systemChannelIds: overrides.systemChannelIds ?? ['system-channel-1'],
+    guilds: overrides.guilds ?? [guild()],
   })
 
 const appConfig = (discord: ReadonlyArray<ReturnType<typeof discordConnection>>) =>
@@ -57,19 +63,20 @@ const appConfig = (discord: ReadonlyArray<ReturnType<typeof discordConnection>>)
     admin: { discordUserIds: ['admin-1'] },
   })
 
-it('applies reloaded access policies and system channels to running connections', () => {
+it('applies reloaded guild configuration and user policies to running connections', () => {
   const running = appConfig([discordConnection({})])
   const loaded = appConfig([
     discordConnection({
-      userAccess: { mode: 'allow', ids: ['user-1'] },
-      systemChannelIds: ['system-channel-2'],
+      users: { mode: 'allow', ids: ['user-1'] },
+      guilds: [guild({ invocationMode: 'all-messages' }), guild({ guildId: '222222222222222222' })],
     }),
   ])
   const merged = mergeReloadedAppConfig(running, loaded)
   const connection = merged.platforms.discord[0]
   assert(connection)
-  assert.deepStrictEqual(connection.access.users, { mode: 'allow', ids: ['user-1'] })
-  assert.deepStrictEqual(connection.systemChannelIds, ['system-channel-2'])
+  assert.deepStrictEqual(connection.users, { mode: 'allow', ids: ['user-1'] })
+  assert.strictEqual(connection.guilds.length, 2)
+  assert.strictEqual(connection.guilds[0]?.invocation.defaultMode, 'all-messages')
 })
 
 it('pins credentials, mention roles, and other restart-based Discord topology', () => {

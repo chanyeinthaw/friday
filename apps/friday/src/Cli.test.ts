@@ -8,19 +8,33 @@ import * as TestConsole from 'effect/testing/TestConsole'
 import {
   ConfigReloadRejectedError,
   FridayCliError,
+  FRIDAY_VERSION,
   formatDiscordAdminAdd,
   formatDiscordAdminRemove,
-  helpText,
+  formatDiscordConnectionAdd,
+  formatDiscordConnectionDisable,
+  formatDiscordConnectionEnable,
+  formatDiscordConnectionRemove,
+  formatDiscordGuildChannelReset,
+  formatDiscordGuildChannelSet,
+  formatDiscordGuildDisable,
+  formatDiscordGuildEnable,
+  formatDiscordGuildInvocation,
+  formatDiscordGuildRemove,
+  formatDiscordGuildUsers,
+  parseAccessPolicySpec,
   parseFridayCli,
   renderDiscordAdminList,
+  renderDiscordConnectionDetail,
+  renderDiscordConnectionList,
+  renderDiscordGuildList,
   runFridayCli,
 } from './Cli.ts'
+import { DiscordGuildChannelId, DiscordGuildId } from './config/DiscordGuilds.ts'
+import { BotTokenEnvName, DiscordPublicKey } from './config/DiscordConnections.ts'
+import { InvocationMode } from './config/AppConfig.ts'
 import { reloadFailed, reloadSucceeded } from './config/ConfigReload.ts'
-import {
-  DiscordUserId,
-  type DiscordAdminAddOutcome,
-  type DiscordAdminRemoveOutcome,
-} from './config/DiscordAdmins.ts'
+import { DiscordUserId } from './config/DiscordAdmins.ts'
 import { ControlSocketError } from './control/ControlSocket.ts'
 import { PlatformConnectionId } from '@friday/contracts/conversation'
 import { RepositoryUrl } from './repositories/RepositoryWorktrees.ts'
@@ -33,20 +47,64 @@ const decodeRepositoryUrl = Schema.decodeSync(RepositoryUrl)
 const decodeCleanupProposalId = Schema.decodeSync(WorkspaceCleanupProposalId)
 const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
 const decodeDiscordUserId = Schema.decodeSync(DiscordUserId)
+const decodeGuildId = Schema.decodeSync(DiscordGuildId)
+const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
+const decodeMode = Schema.decodeSync(InvocationMode)
+const decodePublicKey = Schema.decodeSync(DiscordPublicKey)
+const decodeBotTokenEnv = Schema.decodeSync(BotTokenEnvName)
 
-/** Runs the CLI with every unrelated command failing loudly. */
-const adminRunner = (add?: DiscordAdminAddOutcome, remove?: DiscordAdminRemoveOutcome) => ({
+/**
+ * Base runner whose every operation dies loudly: dispatch tests override
+ * exactly the one operation a command is expected to reach, so any extra
+ * dispatch fails the test.
+ */
+const strictRunnerStubs = {
   start: Effect.die('start must not run'),
   reloadConfig: Effect.die('unreachable'),
   ensureWorktree: () => Effect.die('unreachable'),
-  setPlatformInvocation: () => Effect.die('unreachable'),
-  setPlatformSystemChannel: () => Effect.die('unreachable'),
   setDiscordActivityDescription: () => Effect.die('unreachable'),
   applyWorkspaceCleanup: () => Effect.die('unreachable'),
-  addDiscordAdmin: () => Effect.succeed(add ?? 'exists'),
-  removeDiscordAdmin: () => Effect.succeed(remove ?? 'missing'),
-  listDiscordAdmins: () => Effect.succeed(['123456789012345678']),
-})
+  addDiscordAdmin: () => Effect.die('unreachable'),
+  removeDiscordAdmin: () => Effect.die('unreachable'),
+  listDiscordAdmins: () => Effect.die('unreachable'),
+  addDiscordConnection: () => Effect.die('unreachable'),
+  removeDiscordConnection: () => Effect.die('unreachable'),
+  enableDiscordConnection: () => Effect.die('unreachable'),
+  disableDiscordConnection: () => Effect.die('unreachable'),
+  getDiscordConnection: () => Effect.die('unreachable'),
+  listDiscordConnections: () => Effect.die('unreachable'),
+  listDiscordGuilds: () => Effect.die('unreachable'),
+  enableDiscordGuild: () => Effect.die('unreachable'),
+  disableDiscordGuild: () => Effect.die('unreachable'),
+  removeDiscordGuild: () => Effect.die('unreachable'),
+  setDiscordGuildInvocation: () => Effect.die('unreachable'),
+  setDiscordGuildUsers: () => Effect.die('unreachable'),
+  setDiscordGuildChannel: () => Effect.die('unreachable'),
+  resetDiscordGuildChannel: () => Effect.die('unreachable'),
+}
+
+/**
+ * Wraps one runner operation in a recorder so a dispatch test can assert the
+ * exact calls (decoded arguments) that reached it. `outcome` is what the
+ * operation replies; the arguments are captured verbatim.
+ */
+const recorder = <O>(outcome: O) => {
+  const calls: Array<ReadonlyArray<unknown>> = []
+  return {
+    calls,
+    operation: (...arguments_: ReadonlyArray<unknown>): Effect.Effect<O, never> =>
+      Effect.sync(() => {
+        calls.push(arguments_)
+        return outcome
+      }),
+  }
+}
+
+/** The most recent printed line, for output assertions after one command. */
+const decodeLine = Schema.decodeUnknownSync(Schema.String)
+const lastLine = Effect.map(TestConsole.logLines, (lines) =>
+  decodeLine(lines[lines.length - 1] ?? ''),
+)
 
 it.effect('uses start as the default command', () =>
   Effect.gen(function* () {
@@ -94,24 +152,472 @@ it.effect('parses managed worktree options', () =>
   }),
 )
 
-it.effect('parses a channel invocation policy update', () =>
+it.effect('parses typed Discord connection lifecycle commands', () =>
   Effect.gen(function* () {
+    const connectionId = decodeConnectionId('discord-main')
     assert.deepStrictEqual(
       yield* parseFridayCli([
-        'platform',
+        'config',
+        'discord',
+        'connection',
+        'add',
+        'discord-main',
+        '--name',
+        'Main bot',
+        '--application-id',
+        '111111111111111111',
+        '--public-key',
+        '0123456789abcdef'.repeat(4),
+        '--bot-token-env',
+        'FRIDAY_DISCORD_TOKEN',
+        '--respond-to-global-mentions',
+      ]),
+      {
+        type: 'config-discord-connection-add',
+        connectionId,
+        name: 'Main bot',
+        applicationId: decodeGuildId('111111111111111111'),
+        publicKey: decodePublicKey('0123456789abcdef'.repeat(4)),
+        botTokenEnv: decodeBotTokenEnv('FRIDAY_DISCORD_TOKEN'),
+        respondToGlobalMentions: true,
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'remove', 'discord-main', '--yes']),
+      { type: 'config-discord-connection-remove', connectionId, yes: true },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'enable', 'discord-main']),
+      { type: 'config-discord-connection-enable', connectionId },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'disable', 'discord-main']),
+      { type: 'config-discord-connection-disable', connectionId },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'get', 'discord-main', '--json']),
+      { type: 'config-discord-connection-get', connectionId, json: true },
+    )
+  }),
+)
+
+it.effect('rejects Discord connection secrets and unsafe removal', () =>
+  Effect.gen(function* () {
+    const commands = [
+      ['config', 'discord', 'connection', 'remove', 'discord-main'],
+      [
+        'config',
+        'discord',
+        'connection',
+        'add',
+        'discord-main',
+        '--name',
+        'Main bot',
+        '--application-id',
+        '111111111111111111',
+        '--public-key',
+        '0123456789abcdef'.repeat(4),
+        '--bot-token-env',
+        'actual bot token with spaces',
+      ],
+    ]
+    for (const command of commands) {
+      const exit = yield* Effect.exit(parseFridayCli(command))
+      assert(Exit.isFailure(exit))
+    }
+  }),
+)
+
+it.effect('parses Discord guild management commands', () =>
+  Effect.gen(function* () {
+    const connectionId = decodeConnectionId('discord')
+    const guildId = decodeGuildId('111111111111111111')
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'enable',
+        'discord',
+        '111111111111111111',
+      ]),
+      { type: 'config-discord-guild-enable', connectionId, guildId },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'disable',
+        'discord',
+        '111111111111111111',
+      ]),
+      { type: 'config-discord-guild-disable', connectionId, guildId },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'remove',
+        'discord',
+        '111111111111111111',
+      ]),
+      { type: 'config-discord-guild-remove', connectionId, guildId },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'guild', 'list', 'discord', '--json']),
+      { type: 'config-discord-guild-list', connectionId, json: true },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
         'invocation',
         'set',
         'discord',
-        'channel-1',
-        'mention-only',
+        '111111111111111111',
+        'all-messages',
       ]),
       {
-        type: 'platform-invocation-set',
-        connectionId: decodeConnectionId('discord'),
-        channelId: 'channel-1',
-        mode: 'mention-only',
+        type: 'config-discord-guild-invocation-set',
+        connectionId,
+        guildId,
+        mode: 'all-messages',
       },
     )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'users',
+        'set',
+        'discord',
+        '111111111111111111',
+        'allow=123456789012345678,234567890123456789',
+      ]),
+      {
+        type: 'config-discord-guild-users-set',
+        connectionId,
+        guildId,
+        policy: { mode: 'allow', ids: ['123456789012345678', '234567890123456789'] },
+      },
+    )
+  }),
+)
+
+it.effect('parses guild-scoped channel configuration updates', () =>
+  Effect.gen(function* () {
+    const connectionId = decodeConnectionId('discord')
+    const guildId = decodeGuildId('111111111111111111')
+    const channelId = decodeChannelId('222222222222222222')
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--invocation',
+        'mention-only',
+        '--users',
+        'deny=123456789012345678',
+        '--reply-in-channel',
+      ]),
+      {
+        type: 'config-discord-guild-channel-set',
+        connectionId,
+        guildId,
+        channelId,
+        patch: {
+          invocationMode: 'mention-only',
+          users: { mode: 'deny', ids: ['123456789012345678'] },
+          replyMode: 'reply-in-channel',
+        },
+      },
+    )
+    // A partial patch carries only the given overrides.
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--reply-in-thread',
+      ]),
+      {
+        type: 'config-discord-guild-channel-set',
+        connectionId,
+        guildId,
+        channelId,
+        patch: { replyMode: 'reply-in-thread' },
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--invocation',
+        'all-messages',
+      ]),
+      {
+        type: 'config-discord-guild-channel-set',
+        connectionId,
+        guildId,
+        channelId,
+        patch: { invocationMode: 'all-messages' },
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--users',
+        'all',
+      ]),
+      {
+        type: 'config-discord-guild-channel-set',
+        connectionId,
+        guildId,
+        channelId,
+        patch: { users: { mode: 'all', ids: [] } },
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'reset',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+      ]),
+      {
+        type: 'config-discord-guild-channel-reset',
+        connectionId,
+        guildId,
+        channelId,
+      },
+    )
+  }),
+)
+
+it.effect('rejects malformed guild configuration commands', () =>
+  Effect.gen(function* () {
+    const invalid: ReadonlyArray<ReadonlyArray<string>> = [
+      ['config', 'discord'],
+      ['config', 'discord', 'wat'],
+      ['config', 'discord', 'connection'],
+      ['config', 'discord', 'connection', 'list', '--json', '--json'],
+      ['config', 'discord', 'connection', 'list', 'extra'],
+      ['config', 'discord', 'guild', 'enable', 'discord'], // missing guild id
+      ['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111', 'extra'],
+      ['config', 'discord', 'guild', 'enable', 'discord', 'not-a-snowflake'],
+      ['config', 'discord', 'guild', 'enable', '--flag', '111111111111111111'], // flag-like connection
+      ['config', 'discord', 'guild', 'dance', 'discord', '111111111111111111'],
+      ['config', 'discord', 'guild', 'list'], // missing connection
+      ['config', 'discord', 'guild', 'list', 'discord', '--json', 'extra'],
+      ['config', 'discord', 'guild', 'list', '--json'], // flag-like connection
+      ['config', 'discord', 'guild', 'invocation', 'set', 'discord', '111111111111111111'],
+      ['config', 'discord', 'guild', 'invocation', 'set', 'discord', '111111111111111111', 'loud'],
+      // A wrong subcommand at full length must be rejected, not parsed as set.
+      [
+        'config',
+        'discord',
+        'guild',
+        'invocation',
+        'get',
+        'discord',
+        '111111111111111111',
+        'all-messages',
+      ],
+      ['config', 'discord', 'guild', 'users', 'get', 'discord', '111111111111111111', 'all'],
+      ['config', 'discord', 'guild', 'users', 'set', 'discord', '111111111111111111', 'allow='],
+      ['config', 'discord', 'guild', 'users', 'set', 'discord', '111111111111111111', 'sometimes'],
+      ['config', 'discord', 'guild', 'users', 'set', 'discord', '111111111111111111', 'allow=abc'],
+      ['config', 'discord', 'guild', 'users', 'set', 'discord', '111111111111111111'],
+      // A channel set without any override would be a no-op row.
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+      ],
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--users',
+      ], // missing users value
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--invocation',
+        '--reply-in-channel',
+      ], // flag consumed as value
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--reply-in-channel',
+        '--reply-in-thread',
+      ], // duplicate reply mode
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--users',
+        'all',
+        '--users',
+        'deny=123456789012345678',
+      ], // duplicate users
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'reset',
+        'discord',
+        '111111111111111111',
+        'not-a-snowflake',
+      ],
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        'not-a-snowflake',
+        '--reply-in-channel',
+      ],
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--invocation',
+        'all-messages',
+        '--invocation',
+        'mention-only',
+      ], // duplicate invocation
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--shout',
+      ], // unknown flag
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '--invocation',
+        'all-messages',
+      ], // flag-like channel id
+      ['config', 'discord', 'guild', 'channel', 'reset', 'discord', '111111111111111111'],
+      ['config', 'discord', 'guild', 'channel', 'dance', 'discord', '111111111111111111'],
+    ]
+    for (const arguments_ of invalid) {
+      const error = yield* parseFridayCli(arguments_).pipe(Effect.flip)
+      assert(isFridayCliError(error), `expected typed failure: ${arguments_.join(' ')}`)
+    }
+  }),
+)
+
+it.effect('parses permission policy specifications', () =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(yield* parseAccessPolicySpec('all'), { mode: 'all', ids: [] })
+    assert.deepStrictEqual(yield* parseAccessPolicySpec('allow=123456789012345678'), {
+      mode: 'allow',
+      ids: ['123456789012345678'],
+    })
+    // Snowflake ids tolerate surrounding whitespace but must be valid snowflakes.
+    assert.deepStrictEqual(
+      yield* parseAccessPolicySpec('deny= 123456789012345678 , 234567890123456789 '),
+      {
+        mode: 'deny',
+        ids: ['123456789012345678', '234567890123456789'],
+      },
+    )
+    const emptyIds = yield* parseAccessPolicySpec('allow=').pipe(Effect.flip)
+    assert(isFridayCliError(emptyIds))
+    const trailingComma = yield* parseAccessPolicySpec('allow=123456789012345678,').pipe(
+      Effect.flip,
+    )
+    assert(isFridayCliError(trailingComma))
+    const badPrefix = yield* parseAccessPolicySpec('ALLOW=123456789012345678').pipe(Effect.flip)
+    assert(isFridayCliError(badPrefix))
+    const noEquals = yield* parseAccessPolicySpec('deny').pipe(Effect.flip)
+    assert(isFridayCliError(noEquals))
+    // The mode must sit at the start of the spec and the ids at the end.
+    const prefixed = yield* parseAccessPolicySpec('xallow=123456789012345678').pipe(Effect.flip)
+    assert(isFridayCliError(prefixed))
+    const suffixed = yield* parseAccessPolicySpec('allow=123456789012345678\nextra').pipe(
+      Effect.flip,
+    )
+    assert(isFridayCliError(suffixed))
   }),
 )
 
@@ -129,27 +635,6 @@ it.effect('parses Discord activity-description configuration updates', () =>
       {
         type: 'platform-activity-description-reset',
         connectionId: decodeConnectionId('discord'),
-      },
-    )
-  }),
-)
-
-it.effect('parses system-channel configuration updates', () =>
-  Effect.gen(function* () {
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['platform', 'system-channel', 'set', 'discord', 'channel-1']),
-      {
-        type: 'platform-system-channel-set',
-        connectionId: decodeConnectionId('discord'),
-        channelId: 'channel-1',
-      },
-    )
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['platform', 'system-channel', 'reset', 'discord', 'channel-1']),
-      {
-        type: 'platform-system-channel-reset',
-        connectionId: decodeConnectionId('discord'),
-        channelId: 'channel-1',
       },
     )
   }),
@@ -256,14 +741,6 @@ it.effect('rejects invalid Discord user IDs and malformed admin commands', () =>
   }),
 )
 
-it.effect('documents the Discord administrator commands in help output', () =>
-  Effect.sync(() => {
-    assert(helpText.includes('friday config admin discord add <user-id>'))
-    assert(helpText.includes('friday config admin discord remove <user-id>'))
-    assert(helpText.includes('friday config admin discord list [--json]'))
-  }),
-)
-
 it.effect('formats admin outcomes and states the restart requirement', () =>
   Effect.sync(() => {
     const userId = decodeDiscordUserId('123456789012345678')
@@ -281,68 +758,49 @@ it.effect('formats admin outcomes and states the restart requirement', () =>
   }),
 )
 
-it.effect('runs Discord admin commands through the admin operations', () =>
+it.effect('dispatches admin allow-list commands to exactly one operation each', () =>
   Effect.gen(function* () {
-    yield* runFridayCli(
-      ['config', 'admin', 'discord', 'add', '123456789012345678'],
-      adminRunner('added'),
-    )
-    yield* runFridayCli(
-      ['config', 'admin', 'discord', 'remove', '123456789012345678'],
-      adminRunner(undefined, 'removed'),
-    )
-    yield* runFridayCli(['config', 'admin', 'discord', 'list'], adminRunner())
-    yield* runFridayCli(['config', 'admin', 'discord', 'list', '--json'], adminRunner())
+    const add = recorder('added' as const)
+    yield* runFridayCli(['config', 'admin', 'discord', 'add', '123456789012345678'], {
+      ...strictRunnerStubs,
+      addDiscordAdmin: add.operation,
+    })
+    assert.deepStrictEqual(add.calls, [[decodeDiscordUserId('123456789012345678')]])
 
-    // Pinned literals: expectations do not reuse the production formatters.
+    const remove = recorder('removed' as const)
+    yield* runFridayCli(['config', 'admin', 'discord', 'remove', '123456789012345678'], {
+      ...strictRunnerStubs,
+      removeDiscordAdmin: remove.operation,
+    })
+    assert.deepStrictEqual(remove.calls, [[decodeDiscordUserId('123456789012345678')]])
+
+    const list = recorder(['123456789012345678'])
+    yield* runFridayCli(['config', 'admin', 'discord', 'list', '--json'], {
+      ...strictRunnerStubs,
+      listDiscordAdmins: list.operation,
+    })
+    assert.deepStrictEqual(list.calls, [[]])
     const lines = yield* TestConsole.logLines
-    assert(
-      lines.includes(
-        'Discord admin 123456789012345678 added. Restart Friday to apply it: the admin allow-list is pinned at startup.',
-      ),
-    )
-    assert(
-      lines.includes(
-        'Discord admin 123456789012345678 removed. Restart Friday to apply it: the admin allow-list is pinned at startup.',
-      ),
-    )
-    assert(lines.includes('Discord administrators:\n  123456789012345678'))
-    assert(lines.includes('["123456789012345678"]'))
+    assert.strictEqual(lines[lines.length - 1], '["123456789012345678"]')
   }).pipe(Effect.provide(TestConsole.layer)),
 )
 
 it.effect('runs the reload operation and reports rejections as typed errors', () =>
   Effect.gen(function* () {
     yield* runFridayCli(['config', 'reload'], {
-      start: Effect.die('start must not run'),
+      ...strictRunnerStubs,
       reloadConfig: Effect.succeed(reloadSucceeded(6)),
-      addDiscordAdmin: () => Effect.die('unreachable'),
-      removeDiscordAdmin: () => Effect.die('unreachable'),
-      listDiscordAdmins: () => Effect.die('unreachable'),
-      ensureWorktree: () => Effect.die('unreachable'),
-      setPlatformInvocation: () => Effect.die('unreachable'),
-      setPlatformSystemChannel: () => Effect.die('unreachable'),
-      setDiscordActivityDescription: () => Effect.die('unreachable'),
-      applyWorkspaceCleanup: () => Effect.die('unreachable'),
     })
 
     const rejected = yield* runFridayCli(['config', 'reload'], {
-      start: Effect.die('start must not run'),
+      ...strictRunnerStubs,
       reloadConfig: Effect.succeed(reloadFailed('Stored Friday configuration is invalid.')),
-      addDiscordAdmin: () => Effect.die('unreachable'),
-      removeDiscordAdmin: () => Effect.die('unreachable'),
-      listDiscordAdmins: () => Effect.die('unreachable'),
-      ensureWorktree: () => Effect.die('unreachable'),
-      setPlatformInvocation: () => Effect.die('unreachable'),
-      setPlatformSystemChannel: () => Effect.die('unreachable'),
-      setDiscordActivityDescription: () => Effect.die('unreachable'),
-      applyWorkspaceCleanup: () => Effect.die('unreachable'),
     }).pipe(Effect.flip)
     assert(isConfigReloadRejectedError(rejected))
     assert.match(rejected.message, /Stored Friday configuration is invalid\./)
 
     const transportError = yield* runFridayCli(['config', 'reload'], {
-      start: Effect.die('start must not run'),
+      ...strictRunnerStubs,
       reloadConfig: Effect.fail(
         new ControlSocketError({
           operation: 'connect',
@@ -350,18 +808,473 @@ it.effect('runs the reload operation and reports rejections as typed errors', ()
           detail: 'Could not connect to the running Friday control socket.',
         }),
       ),
-      addDiscordAdmin: () => Effect.die('unreachable'),
-      removeDiscordAdmin: () => Effect.die('unreachable'),
-      listDiscordAdmins: () => Effect.die('unreachable'),
-      ensureWorktree: () => Effect.die('unreachable'),
-      setPlatformInvocation: () => Effect.die('unreachable'),
-      setPlatformSystemChannel: () => Effect.die('unreachable'),
-      setDiscordActivityDescription: () => Effect.die('unreachable'),
-      applyWorkspaceCleanup: () => Effect.die('unreachable'),
     }).pipe(Effect.flip)
     assert(isControlSocketError(transportError))
     assert.strictEqual(transportError.operation, 'connect')
   }),
+)
+
+it.effect('formats guild outcomes and states the reload requirement', () =>
+  Effect.sync(() => {
+    const guildId = decodeGuildId('111111111111111111')
+    const channelId = decodeChannelId('222222222222222222')
+    const note = 'The running Friday picks this up on its next configuration reload.'
+    assert.strictEqual(
+      formatDiscordGuildEnable(guildId, 'enabled'),
+      `Guild 111111111111111111 enabled. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildEnable(guildId, 'already-enabled'),
+      'Guild 111111111111111111 is already enabled.',
+    )
+    assert.strictEqual(
+      formatDiscordGuildDisable(guildId, 'disabled'),
+      `Guild 111111111111111111 disabled. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildDisable(guildId, 'already-disabled'),
+      'Guild 111111111111111111 is already disabled.',
+    )
+    assert.strictEqual(
+      formatDiscordGuildDisable(guildId, 'missing'),
+      'Guild 111111111111111111 is not configured.',
+    )
+    assert.strictEqual(
+      formatDiscordGuildRemove(guildId, 'removed'),
+      `Guild 111111111111111111 removed together with its channel overrides. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildRemove(guildId, 'missing'),
+      'Guild 111111111111111111 is not configured.',
+    )
+    assert.strictEqual(
+      formatDiscordGuildInvocation(guildId, decodeMode('all-messages'), 'updated'),
+      `Guild-wide invocation default for 111111111111111111 set to all-messages. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildInvocation(guildId, decodeMode('mention-only'), 'missing'),
+      'Guild 111111111111111111 is not configured. Enable it first.',
+    )
+    assert.strictEqual(
+      formatDiscordGuildUsers(guildId, { mode: 'allow', ids: ['333333333333333333'] }, 'updated'),
+      `Guild-wide user permission default for 111111111111111111 set to allow=333333333333333333. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildUsers(guildId, { mode: 'all', ids: [] }, 'missing'),
+      'Guild 111111111111111111 is not configured. Enable it first.',
+    )
+    assert.strictEqual(
+      formatDiscordGuildChannelSet(channelId, 'updated'),
+      `Channel 222222222222222222 overrides updated. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildChannelSet(channelId, 'missing-guild'),
+      'The guild owning channel 222222222222222222 is not configured. Enable it first.',
+    )
+    assert.strictEqual(
+      formatDiscordGuildChannelReset(channelId, 'removed'),
+      `Channel 222222222222222222 overrides removed; guild defaults apply. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildChannelReset(channelId, 'missing'),
+      'No overrides are configured for channel 222222222222222222.',
+    )
+  }),
+)
+
+it.effect('formats Discord connection lifecycle outcomes with exact restart guidance', () =>
+  Effect.sync(() => {
+    const connectionId = decodeConnectionId('discord-main')
+    const restart = 'Restart Friday to apply it: connection topology is pinned at startup.'
+    assert.strictEqual(
+      formatDiscordConnectionAdd(connectionId, 'added'),
+      `Discord connection discord-main added. ${restart}`,
+    )
+    assert.strictEqual(
+      formatDiscordConnectionAdd(connectionId, 'connection-exists'),
+      'A connection named discord-main already exists.',
+    )
+    assert.strictEqual(
+      formatDiscordConnectionAdd(connectionId, 'application-exists'),
+      'The application ID is already used by another Discord connection.',
+    )
+    assert.strictEqual(
+      formatDiscordConnectionRemove(connectionId, 'removed'),
+      `Discord connection discord-main removed together with its Discord configuration. ${restart}`,
+    )
+    assert.strictEqual(
+      formatDiscordConnectionEnable(connectionId, 'already-enabled'),
+      'Discord connection discord-main is already enabled.',
+    )
+    assert.strictEqual(
+      formatDiscordConnectionDisable(connectionId, 'disabled'),
+      `Discord connection discord-main disabled. ${restart}`,
+    )
+    assert.strictEqual(
+      renderDiscordConnectionDetail({
+        connectionId: 'discord-main',
+        name: 'Main bot',
+        enabled: true,
+        applicationId: '111111111111111111',
+        publicKey: '0123456789abcdef'.repeat(4),
+        botTokenEnv: 'FRIDAY_DISCORD_TOKEN',
+        respondToGlobalMentions: true,
+        activityDescription: false,
+      }),
+      [
+        'Discord connection discord-main:',
+        '  Name: Main bot',
+        '  Enabled: yes',
+        '  Application ID: 111111111111111111',
+        `  Public key: ${'0123456789abcdef'.repeat(4)}`,
+        '  Bot token env: FRIDAY_DISCORD_TOKEN',
+        '  Responds to global mentions: yes',
+        '  Public activity description: no',
+      ].join('\n'),
+    )
+  }),
+)
+
+it.effect('renders connection and guild listings', () =>
+  Effect.sync(() => {
+    assert.strictEqual(renderDiscordConnectionList([]), 'No Discord connections are configured.')
+    assert.strictEqual(
+      renderDiscordConnectionList([
+        { connectionId: 'discord', name: 'Discord', enabled: true },
+        { connectionId: 'discord-2', name: 'Second', enabled: false },
+      ]),
+      'Discord connections:\n  discord  enabled  Discord\n  discord-2  disabled  Second',
+    )
+    assert.strictEqual(renderDiscordGuildList([]), 'No guilds are configured for this connection.')
+    assert.strictEqual(
+      renderDiscordGuildList([
+        {
+          guildId: '111111111111111111',
+          enabled: false,
+          invocation: { defaultMode: 'all-messages' },
+          channels: [
+            {
+              channelId: '222222222222222222',
+              invocationMode: 'mention-only',
+              users: { mode: 'deny', ids: ['333333333333333333'] },
+              replyMode: 'reply-in-channel',
+            },
+            { channelId: '444444444444444444' },
+          ],
+        },
+        {
+          guildId: '555555555555555555',
+          enabled: true,
+          invocation: { defaultMode: 'mention-only' },
+          users: { mode: 'allow', ids: ['333333333333333333', '666666666666666666'] },
+          channels: [],
+        },
+      ]),
+      [
+        'guild 111111111111111111: disabled, invocation: all-messages',
+        '  channel 222222222222222222: invocation: mention-only, users: deny=333333333333333333, reply: reply-in-channel',
+        '  channel 444444444444444444: (no overrides)',
+        'guild 555555555555555555: enabled, invocation: mention-only, users: allow=333333333333333333,666666666666666666',
+      ].join('\n'),
+    )
+  }),
+)
+
+it.effect('dispatches connection lifecycle commands to exactly one operation each', () =>
+  Effect.gen(function* () {
+    // Destructive removal reaches the operation only with an explicit --yes,
+    // and carries the decoded connection id.
+    const remove = recorder('removed' as const)
+    yield* runFridayCli(['config', 'discord', 'connection', 'remove', 'discord-main', '--yes'], {
+      ...strictRunnerStubs,
+      removeDiscordConnection: remove.operation,
+    })
+    assert.deepStrictEqual(remove.calls, [[decodeConnectionId('discord-main')]])
+    assert.match(
+      yield* lastLine,
+      /discord-main removed together with its Discord configuration\. Restart Friday/,
+    )
+
+    // Without --yes the command is refused before any operation runs.
+    const refused = yield* runFridayCli(
+      ['config', 'discord', 'connection', 'remove', 'discord-main'],
+      { ...strictRunnerStubs, removeDiscordConnection: remove.operation },
+    ).pipe(Effect.flip)
+    assert(isFridayCliError(refused))
+    assert.strictEqual(remove.calls.length, 1)
+
+    // Add dispatches the full decoded action exactly once.
+    const add = recorder('added' as const)
+    yield* runFridayCli(
+      [
+        'config',
+        'discord',
+        'connection',
+        'add',
+        'discord-main',
+        '--name',
+        'Main bot',
+        '--application-id',
+        '111111111111111111',
+        '--public-key',
+        '0123456789abcdef'.repeat(4),
+        '--bot-token-env',
+        'FRIDAY_DISCORD_TOKEN',
+        '--respond-to-global-mentions',
+      ],
+      { ...strictRunnerStubs, addDiscordConnection: add.operation },
+    )
+    assert.deepStrictEqual(add.calls, [
+      [
+        {
+          type: 'config-discord-connection-add',
+          connectionId: decodeConnectionId('discord-main'),
+          name: 'Main bot',
+          applicationId: decodeGuildId('111111111111111111'),
+          publicKey: decodePublicKey('0123456789abcdef'.repeat(4)),
+          botTokenEnv: decodeBotTokenEnv('FRIDAY_DISCORD_TOKEN'),
+          respondToGlobalMentions: true,
+        },
+      ],
+    ])
+
+    // Enable and disable each dispatch exactly once with the decoded id.
+    const enable = recorder('enabled' as const)
+    yield* runFridayCli(['config', 'discord', 'connection', 'enable', 'discord-main'], {
+      ...strictRunnerStubs,
+      enableDiscordConnection: enable.operation,
+    })
+    assert.deepStrictEqual(enable.calls, [[decodeConnectionId('discord-main')]])
+
+    const disable = recorder('disabled' as const)
+    yield* runFridayCli(['config', 'discord', 'connection', 'disable', 'discord-main'], {
+      ...strictRunnerStubs,
+      disableDiscordConnection: disable.operation,
+    })
+    assert.deepStrictEqual(disable.calls, [[decodeConnectionId('discord-main')]])
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('restart and reload guidance tracks whether anything changed', () =>
+  Effect.gen(function* () {
+    // Connection topology changes require a restart; idempotent outcomes do not.
+    const added = recorder('enabled' as const)
+    yield* runFridayCli(['config', 'discord', 'connection', 'enable', 'discord-main'], {
+      ...strictRunnerStubs,
+      enableDiscordConnection: added.operation,
+    })
+    assert.match(yield* lastLine, /Restart Friday/)
+
+    const unchanged = recorder('already-enabled' as const)
+    yield* runFridayCli(['config', 'discord', 'connection', 'enable', 'discord-main'], {
+      ...strictRunnerStubs,
+      enableDiscordConnection: unchanged.operation,
+    })
+    const lastUnchanged = yield* lastLine
+    assert.match(lastUnchanged, /already enabled/)
+    assert(!lastUnchanged.includes('Restart Friday'))
+
+    // Guild configuration changes apply on the next reload instead.
+    const enabled = recorder('enabled' as const)
+    yield* runFridayCli(['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'], {
+      ...strictRunnerStubs,
+      enableDiscordGuild: enabled.operation,
+    })
+    const enabledLines = yield* lastLine
+    assert.match(enabledLines, /next configuration reload/)
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('dispatches guild commands to exactly one operation with decoded arguments', () =>
+  Effect.gen(function* () {
+    const connectionId = decodeConnectionId('discord')
+    const guildId = decodeGuildId('111111111111111111')
+    const channelId = decodeChannelId('222222222222222222')
+
+    const enable = recorder('enabled' as const)
+    yield* runFridayCli(['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'], {
+      ...strictRunnerStubs,
+      enableDiscordGuild: enable.operation,
+    })
+    assert.deepStrictEqual(enable.calls, [[connectionId, guildId]])
+
+    const disable = recorder('missing' as const)
+    yield* runFridayCli(
+      ['config', 'discord', 'guild', 'disable', 'discord', '111111111111111111'],
+      { ...strictRunnerStubs, disableDiscordGuild: disable.operation },
+    )
+    assert.deepStrictEqual(disable.calls, [[connectionId, guildId]])
+
+    // Guild removal is destructive for its channel overrides; the dispatch
+    // still carries both decoded ids exactly once.
+    const remove = recorder('removed' as const)
+    yield* runFridayCli(['config', 'discord', 'guild', 'remove', 'discord', '111111111111111111'], {
+      ...strictRunnerStubs,
+      removeDiscordGuild: remove.operation,
+    })
+    assert.deepStrictEqual(remove.calls, [[connectionId, guildId]])
+
+    const invocation = recorder('updated' as const)
+    yield* runFridayCli(
+      [
+        'config',
+        'discord',
+        'guild',
+        'invocation',
+        'set',
+        'discord',
+        '111111111111111111',
+        'all-messages',
+      ],
+      { ...strictRunnerStubs, setDiscordGuildInvocation: invocation.operation },
+    )
+    assert.deepStrictEqual(invocation.calls, [[connectionId, guildId, decodeMode('all-messages')]])
+
+    const users = recorder('updated' as const)
+    yield* runFridayCli(
+      [
+        'config',
+        'discord',
+        'guild',
+        'users',
+        'set',
+        'discord',
+        '111111111111111111',
+        'allow=333333333333333333,234567890123456789',
+      ],
+      { ...strictRunnerStubs, setDiscordGuildUsers: users.operation },
+    )
+    assert.deepStrictEqual(users.calls, [
+      [connectionId, guildId, { mode: 'allow', ids: ['333333333333333333', '234567890123456789'] }],
+    ])
+
+    // A partial channel patch carries only the override given on the command
+    // line; the other fields must stay absent so they keep their current value.
+    const setChannel = recorder('updated' as const)
+    yield* runFridayCli(
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'set',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+        '--reply-in-thread',
+      ],
+      { ...strictRunnerStubs, setDiscordGuildChannel: setChannel.operation },
+    )
+    assert.deepStrictEqual(setChannel.calls, [
+      [connectionId, guildId, channelId, { replyMode: 'reply-in-thread' }],
+    ])
+
+    const resetChannel = recorder('removed' as const)
+    yield* runFridayCli(
+      [
+        'config',
+        'discord',
+        'guild',
+        'channel',
+        'reset',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+      ],
+      { ...strictRunnerStubs, resetDiscordGuildChannel: resetChannel.operation },
+    )
+    assert.deepStrictEqual(resetChannel.calls, [[connectionId, guildId, channelId]])
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('dispatches help and version to the console', () =>
+  Effect.gen(function* () {
+    yield* runFridayCli(['--version'], strictRunnerStubs)
+    assert.strictEqual(yield* lastLine, FRIDAY_VERSION)
+
+    yield* runFridayCli(['--help'], strictRunnerStubs)
+    const help = yield* lastLine
+    assert.match(help, /Usage:/)
+    assert.match(help, /Options:/)
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('dispatches listings to exactly one read with the json flag honored', () =>
+  Effect.gen(function* () {
+    const guilds = [
+      {
+        guildId: '111111111111111111',
+        enabled: true,
+        invocation: { defaultMode: 'mention-only' as const },
+        channels: [],
+      },
+    ]
+
+    const listJson = recorder(guilds)
+    yield* runFridayCli(['config', 'discord', 'guild', 'list', 'discord', '--json'], {
+      ...strictRunnerStubs,
+      listDiscordGuilds: listJson.operation,
+    })
+    assert.deepStrictEqual(listJson.calls, [[decodeConnectionId('discord')]])
+    assert.strictEqual(yield* lastLine, JSON.stringify(guilds))
+
+    const listHuman = recorder(guilds)
+    yield* runFridayCli(['config', 'discord', 'guild', 'list', 'discord'], {
+      ...strictRunnerStubs,
+      listDiscordGuilds: listHuman.operation,
+    })
+    assert.deepStrictEqual(listHuman.calls, [[decodeConnectionId('discord')]])
+    // The human listing names the guild rather than emitting JSON.
+    const lastHuman = yield* lastLine
+    assert.match(lastHuman, /guild 111111111111111111/)
+    assert(!lastHuman.startsWith('['))
+
+    // Connection listings dispatch the same way.
+    const connections = [{ connectionId: 'discord', name: 'Discord', enabled: true }]
+    const listConnectionsJson = recorder(connections)
+    yield* runFridayCli(['config', 'discord', 'connection', 'list', '--json'], {
+      ...strictRunnerStubs,
+      listDiscordConnections: listConnectionsJson.operation,
+    })
+    assert.deepStrictEqual(listConnectionsJson.calls, [[]])
+    assert.strictEqual(yield* lastLine, JSON.stringify(connections))
+
+    const listConnectionsHuman = recorder(connections)
+    yield* runFridayCli(['config', 'discord', 'connection', 'list'], {
+      ...strictRunnerStubs,
+      listDiscordConnections: listConnectionsHuman.operation,
+    })
+    assert.deepStrictEqual(listConnectionsHuman.calls, [[]])
+    assert.match(yield* lastLine, /Discord connections:/)
+
+    // A found connection get prints its stored configuration as JSON.
+    const detail = {
+      connectionId: 'discord-main',
+      name: 'Main bot',
+      enabled: true,
+      applicationId: '111111111111111111',
+      publicKey: '0123456789abcdef'.repeat(4),
+      botTokenEnv: 'FRIDAY_DISCORD_TOKEN',
+      respondToGlobalMentions: false,
+      activityDescription: false,
+    }
+    const get = recorder(Option.some(detail))
+    yield* runFridayCli(['config', 'discord', 'connection', 'get', 'discord-main', '--json'], {
+      ...strictRunnerStubs,
+      getDiscordConnection: get.operation,
+    })
+    assert.deepStrictEqual(get.calls, [[decodeConnectionId('discord-main')]])
+    assert.strictEqual(yield* lastLine, JSON.stringify(detail))
+
+    // A missing connection reports its absence without failing.
+    const getMissing = recorder(Option.none())
+    yield* runFridayCli(['config', 'discord', 'connection', 'get', 'discord-main'], {
+      ...strictRunnerStubs,
+      getDiscordConnection: getMissing.operation,
+    })
+    assert.deepStrictEqual(getMissing.calls, [[decodeConnectionId('discord-main')]])
+    assert.match(yield* lastLine, /is not configured\./)
+  }).pipe(Effect.provide(TestConsole.layer)),
 )
 
 it.effect('rejects unknown commands', () =>
