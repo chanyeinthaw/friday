@@ -1,5 +1,6 @@
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { PlatformConnectionId } from '@friday/contracts/conversation'
 
@@ -14,7 +15,6 @@ import {
   DiscordGuildChannelId,
   DiscordGuildId,
   DiscordSnowflake,
-  type DiscordConnectionRecord,
   type DiscordGuildChannelPatch,
   type DiscordGuildChannelResetOutcome,
   type DiscordGuildChannelUpdateOutcome,
@@ -23,6 +23,16 @@ import {
   type DiscordGuildRemoveOutcome,
   type DiscordGuildUpdateOutcome,
 } from './config/DiscordGuilds.ts'
+import {
+  BotTokenEnvName,
+  DiscordPublicKey,
+  type DiscordConnectionAddOutcome,
+  type DiscordConnectionDetail,
+  type DiscordConnectionDisableOutcome,
+  type DiscordConnectionEnableOutcome,
+  type DiscordConnectionRecord,
+  type DiscordConnectionRemoveOutcome,
+} from './config/DiscordConnections.ts'
 import {
   formatConfigReloadOutcome,
   type ConfigReloadOutcome as ConfigReloadOutcomeType,
@@ -48,6 +58,13 @@ Usage:
   friday config admin discord add <user-id>
   friday config admin discord remove <user-id>
   friday config admin discord list [--json]
+  friday config discord connection add <connection-id> --name <name>
+      --application-id <snowflake> --public-key <hex> --bot-token-env <env>
+      [--respond-to-global-mentions]
+  friday config discord connection remove <connection-id> --yes
+  friday config discord connection enable <connection-id>
+  friday config discord connection disable <connection-id>
+  friday config discord connection get <connection-id> [--json]
   friday config discord connection list [--json]
   friday config discord guild enable <connection-id> <guild-id>
   friday config discord guild disable <connection-id> <guild-id>
@@ -70,7 +87,12 @@ Commands:
   config admin discord add      Add a Discord administrator (needs a restart)
   config admin discord remove   Remove a Discord administrator (needs a restart)
   config admin discord list     List configured Discord administrators
-  config discord connection list   List configured Discord connections
+  config discord connection add     Add a Discord bot connection (needs a restart)
+  config discord connection remove  Remove a connection and its Discord configuration (needs a restart)
+  config discord connection enable  Enable a configured connection (needs a restart)
+  config discord connection disable Disable a configured connection (needs a restart)
+  config discord connection get     Show one connection's stored configuration
+  config discord connection list    List configured Discord connections
   config discord guild enable      Enable Friday in a guild (applies on next reload)
   config discord guild disable     Disable Friday in a guild (applies on next reload)
   config discord guild remove      Remove a guild's configuration (applies on next reload)
@@ -104,6 +126,29 @@ export type FridayCliAction =
     }
   | { readonly type: 'config-admin-discord-list'; readonly json: boolean }
   | { readonly type: 'config-discord-connection-list'; readonly json: boolean }
+  | {
+      readonly type: 'config-discord-connection-add'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly name: string
+      readonly applicationId: typeof DiscordSnowflake.Type
+      readonly publicKey: typeof DiscordPublicKey.Type
+      readonly botTokenEnv: typeof BotTokenEnvName.Type
+      readonly respondToGlobalMentions: boolean
+    }
+  | {
+      readonly type: 'config-discord-connection-remove'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly yes: boolean
+    }
+  | {
+      readonly type: 'config-discord-connection-enable' | 'config-discord-connection-disable'
+      readonly connectionId: typeof PlatformConnectionId.Type
+    }
+  | {
+      readonly type: 'config-discord-connection-get'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly json: boolean
+    }
   | {
       readonly type:
         | 'config-discord-guild-enable'
@@ -325,8 +370,146 @@ const parseConfigDiscordConnection = Effect.fn('Cli.parseConfigDiscordConnection
     }
     return { type: 'config-discord-connection-list' as const, json: trailing[0] === '--json' }
   }
+  if (operation === 'add') return yield* parseConfigDiscordConnectionAdd(arguments_)
+  if (operation === 'remove') return yield* parseConfigDiscordConnectionRemove(arguments_)
+  if (operation === 'enable' || operation === 'disable') {
+    if (arguments_.length !== 5) return yield* discordArgumentsError(arguments_)
+    const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(arguments_)),
+    )
+    return {
+      type: `config-discord-connection-${operation}` as const,
+      connectionId,
+    }
+  }
+  if (operation === 'get') {
+    if (arguments_.length < 5 || arguments_.length > 6) {
+      return yield* discordArgumentsError(arguments_)
+    }
+    const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(arguments_)),
+    )
+    const trailing = arguments_.slice(5)
+    if (trailing.length > 1 || (trailing.length === 1 && trailing[0] !== '--json')) {
+      return yield* discordArgumentsError(arguments_)
+    }
+    return {
+      type: 'config-discord-connection-get' as const,
+      connectionId,
+      json: trailing[0] === '--json',
+    }
+  }
   return yield* discordArgumentsError(arguments_)
 })
+
+/** Rejects missing and flag-like values before a command-specific decoder runs. */
+const connectionAddValue = (
+  value: string | undefined,
+  arguments_: ReadonlyArray<string>,
+): Effect.Effect<string, FridayCliError> =>
+  value === undefined || value.startsWith('-')
+    ? Effect.fail(discordArgumentsError(arguments_))
+    : Effect.succeed(value)
+
+const decodeConnectionName = Schema.decodeUnknownEffect(
+  Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+)
+const decodeDiscordPublicKey = Schema.decodeUnknownEffect(DiscordPublicKey)
+const decodeBotTokenEnvName = Schema.decodeUnknownEffect(BotTokenEnvName)
+
+const parseConfigDiscordConnectionAdd = Effect.fn('Cli.parseConfigDiscordConnectionAdd')(function* (
+  arguments_: ReadonlyArray<string>,
+) {
+  if (arguments_.length < 10) return yield* discordArgumentsError(arguments_)
+  const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(arguments_)),
+  )
+  let name: string | undefined
+  let applicationId: typeof DiscordSnowflake.Type | undefined
+  let publicKey: typeof DiscordPublicKey.Type | undefined
+  let botTokenEnv: typeof BotTokenEnvName.Type | undefined
+  let respondToGlobalMentions = false
+  let index = 5
+  while (index < arguments_.length) {
+    const flag = arguments_[index]
+    if (flag === '--respond-to-global-mentions') {
+      respondToGlobalMentions = true
+      index += 1
+      continue
+    }
+    const value = arguments_[index + 1]
+    if (flag === '--name') {
+      if (name !== undefined) return yield* discordArgumentsError(arguments_)
+      name = yield* connectionAddValue(value, arguments_).pipe(
+        Effect.flatMap(decodeConnectionName),
+        Effect.mapError(() => discordArgumentsError(arguments_)),
+      )
+      index += 2
+      continue
+    }
+    if (flag === '--application-id') {
+      if (applicationId !== undefined) return yield* discordArgumentsError(arguments_)
+      applicationId = yield* connectionAddValue(value, arguments_).pipe(
+        Effect.flatMap(decodeDiscordSnowflake),
+        Effect.mapError(() => discordArgumentsError(arguments_)),
+      )
+      index += 2
+      continue
+    }
+    if (flag === '--public-key') {
+      if (publicKey !== undefined) return yield* discordArgumentsError(arguments_)
+      publicKey = yield* connectionAddValue(value, arguments_).pipe(
+        Effect.flatMap(decodeDiscordPublicKey),
+        Effect.mapError(() => discordArgumentsError(arguments_)),
+      )
+      index += 2
+      continue
+    }
+    if (flag === '--bot-token-env') {
+      if (botTokenEnv !== undefined) return yield* discordArgumentsError(arguments_)
+      botTokenEnv = yield* connectionAddValue(value, arguments_).pipe(
+        Effect.flatMap(decodeBotTokenEnvName),
+        Effect.mapError(() => discordArgumentsError(arguments_)),
+      )
+      index += 2
+      continue
+    }
+    return yield* discordArgumentsError(arguments_)
+  }
+  if (
+    name === undefined ||
+    applicationId === undefined ||
+    publicKey === undefined ||
+    botTokenEnv === undefined
+  ) {
+    return yield* discordArgumentsError(arguments_)
+  }
+  return {
+    type: 'config-discord-connection-add' as const,
+    connectionId,
+    name,
+    applicationId,
+    publicKey,
+    botTokenEnv,
+    respondToGlobalMentions,
+  }
+})
+
+const parseConfigDiscordConnectionRemove = Effect.fn('Cli.parseConfigDiscordConnectionRemove')(
+  function* (arguments_: ReadonlyArray<string>) {
+    if (arguments_.length !== 6 || arguments_[5] !== '--yes') {
+      return yield* discordArgumentsError(arguments_)
+    }
+    const connectionId = yield* decodePlatformConnectionId(arguments_[4] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(arguments_)),
+    )
+    return {
+      type: 'config-discord-connection-remove' as const,
+      connectionId,
+      yes: true,
+    }
+  },
+)
 
 /** Parses one required positional argument, rejecting flags and missing values. */
 const positionalArgument = (
@@ -587,6 +770,58 @@ export const renderDiscordConnectionList = (
         ),
       ].join('\n')
 
+export const renderDiscordConnectionDetail = (detail: DiscordConnectionDetail): string =>
+  [
+    `Discord connection ${detail.connectionId}:`,
+    `  Name: ${detail.name}`,
+    `  Enabled: ${detail.enabled ? 'yes' : 'no'}`,
+    `  Application ID: ${detail.applicationId}`,
+    `  Public key: ${detail.publicKey}`,
+    `  Bot token env: ${detail.botTokenEnv}`,
+    `  Responds to global mentions: ${detail.respondToGlobalMentions ? 'yes' : 'no'}`,
+    `  Public activity description: ${detail.activityDescription ? 'yes' : 'no'}`,
+  ].join('\n')
+
+const restartNote = 'Restart Friday to apply it: connection topology is pinned at startup.'
+
+export const formatDiscordConnectionAdd = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: DiscordConnectionAddOutcome,
+): string =>
+  outcome === 'added'
+    ? `Discord connection ${connectionId} added. ${restartNote}`
+    : outcome === 'connection-exists'
+      ? `A connection named ${connectionId} already exists.`
+      : 'The application ID is already used by another Discord connection.'
+
+export const formatDiscordConnectionRemove = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: DiscordConnectionRemoveOutcome,
+): string =>
+  outcome === 'removed'
+    ? `Discord connection ${connectionId} removed together with its Discord configuration. ${restartNote}`
+    : `Discord connection ${connectionId} is not configured.`
+
+export const formatDiscordConnectionEnable = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: DiscordConnectionEnableOutcome,
+): string =>
+  outcome === 'enabled'
+    ? `Discord connection ${connectionId} enabled. ${restartNote}`
+    : outcome === 'already-enabled'
+      ? `Discord connection ${connectionId} is already enabled.`
+      : `Discord connection ${connectionId} is not configured.`
+
+export const formatDiscordConnectionDisable = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: DiscordConnectionDisableOutcome,
+): string =>
+  outcome === 'disabled'
+    ? `Discord connection ${connectionId} disabled. ${restartNote}`
+    : outcome === 'already-disabled'
+      ? `Discord connection ${connectionId} is already disabled.`
+      : `Discord connection ${connectionId} is not configured.`
+
 const renderGuildPolicy = (policy: AccessPolicy): string =>
   policy.mode === 'all' ? 'all' : `${policy.mode}=${policy.ids.join(',')}`
 
@@ -688,6 +923,7 @@ export const runFridayCli = <
   GuildError,
   ReloadError,
   AdminError,
+  ConnectionError,
 >(
   arguments_: ReadonlyArray<string>,
   options: {
@@ -700,9 +936,24 @@ export const runFridayCli = <
       userId: typeof DiscordUserId.Type,
     ) => Effect.Effect<DiscordAdminRemoveOutcome, AdminError>
     readonly listDiscordAdmins: () => Effect.Effect<ReadonlyArray<string>, AdminError>
+    readonly addDiscordConnection: (
+      input: Extract<FridayCliAction, { readonly type: 'config-discord-connection-add' }>,
+    ) => Effect.Effect<DiscordConnectionAddOutcome, ConnectionError>
+    readonly removeDiscordConnection: (
+      connectionId: typeof PlatformConnectionId.Type,
+    ) => Effect.Effect<DiscordConnectionRemoveOutcome, ConnectionError>
+    readonly enableDiscordConnection: (
+      connectionId: typeof PlatformConnectionId.Type,
+    ) => Effect.Effect<DiscordConnectionEnableOutcome, ConnectionError>
+    readonly disableDiscordConnection: (
+      connectionId: typeof PlatformConnectionId.Type,
+    ) => Effect.Effect<DiscordConnectionDisableOutcome, ConnectionError>
+    readonly getDiscordConnection: (
+      connectionId: typeof PlatformConnectionId.Type,
+    ) => Effect.Effect<Option.Option<DiscordConnectionDetail>, ConnectionError>
     readonly listDiscordConnections: () => Effect.Effect<
       ReadonlyArray<DiscordConnectionRecord>,
-      GuildError
+      ConnectionError
     >
     readonly listDiscordGuilds: (
       connectionId: typeof PlatformConnectionId.Type,
@@ -768,6 +1019,7 @@ export const runFridayCli = <
   | GuildError
   | ReloadError
   | AdminError
+  | ConnectionError
 > =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
@@ -799,6 +1051,37 @@ export const runFridayCli = <
       case 'config-admin-discord-list': {
         const userIds = yield* options.listDiscordAdmins()
         yield* Console.log(action.json ? JSON.stringify(userIds) : renderDiscordAdminList(userIds))
+        return
+      }
+      case 'config-discord-connection-add': {
+        const outcome = yield* options.addDiscordConnection(action)
+        yield* Console.log(formatDiscordConnectionAdd(action.connectionId, outcome))
+        return
+      }
+      case 'config-discord-connection-remove': {
+        const outcome = yield* options.removeDiscordConnection(action.connectionId)
+        yield* Console.log(formatDiscordConnectionRemove(action.connectionId, outcome))
+        return
+      }
+      case 'config-discord-connection-enable': {
+        const outcome = yield* options.enableDiscordConnection(action.connectionId)
+        yield* Console.log(formatDiscordConnectionEnable(action.connectionId, outcome))
+        return
+      }
+      case 'config-discord-connection-disable': {
+        const outcome = yield* options.disableDiscordConnection(action.connectionId)
+        yield* Console.log(formatDiscordConnectionDisable(action.connectionId, outcome))
+        return
+      }
+      case 'config-discord-connection-get': {
+        const detail = yield* options.getDiscordConnection(action.connectionId)
+        yield* Console.log(
+          Option.match(detail, {
+            onNone: () => `Discord connection ${action.connectionId} is not configured.`,
+            onSome: (connection) =>
+              action.json ? JSON.stringify(connection) : renderDiscordConnectionDetail(connection),
+          }),
+        )
         return
       }
       case 'config-discord-connection-list': {

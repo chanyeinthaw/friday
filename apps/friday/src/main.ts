@@ -23,6 +23,7 @@ import { withFridayLogging } from './logging/Live.ts'
 import { reloadApplicationConfig } from './config/ConfigReload.ts'
 import { sendControlRequest, serveControlSocket } from './control/ControlSocket.ts'
 import { DiscordGuilds, DiscordGuildsLive } from './config/DiscordGuilds.ts'
+import { DiscordConnections, DiscordConnectionsLive } from './config/DiscordConnections.ts'
 import {
   DiscordActivityDescriptions,
   DiscordActivityDescriptionsLive,
@@ -55,6 +56,9 @@ const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLiv
   Layer.provide(FridaySqliteLive),
 )
 const DiscordGuildsConfiguredLive = DiscordGuildsLive.pipe(Layer.provide(FridaySqliteLive))
+const DiscordConnectionsConfiguredLive = DiscordConnectionsLive.pipe(
+  Layer.provide(FridaySqliteLive),
+)
 const DiscordAdminsConfiguredLive = DiscordAdminsLive.pipe(Layer.provide(FridaySqliteLive))
 
 const start = Effect.scoped(
@@ -100,10 +104,35 @@ const application = Effect.scoped(
           ),
           Effect.provide(DiscordActivityDescriptionsConfiguredLive),
         ),
+      addDiscordConnection: (input) =>
+        DiscordConnections.pipe(
+          Effect.flatMap((connections) => connections.addConnection(input)),
+          Effect.provide(DiscordConnectionsConfiguredLive),
+        ),
+      removeDiscordConnection: (connectionId) =>
+        DiscordConnections.pipe(
+          Effect.flatMap((connections) => connections.removeConnection(connectionId)),
+          Effect.provide(DiscordConnectionsConfiguredLive),
+        ),
+      enableDiscordConnection: (connectionId) =>
+        DiscordConnections.pipe(
+          Effect.flatMap((connections) => connections.enableConnection(connectionId)),
+          Effect.provide(DiscordConnectionsConfiguredLive),
+        ),
+      disableDiscordConnection: (connectionId) =>
+        DiscordConnections.pipe(
+          Effect.flatMap((connections) => connections.disableConnection(connectionId)),
+          Effect.provide(DiscordConnectionsConfiguredLive),
+        ),
+      getDiscordConnection: (connectionId) =>
+        DiscordConnections.pipe(
+          Effect.flatMap((connections) => connections.getConnection(connectionId)),
+          Effect.provide(DiscordConnectionsConfiguredLive),
+        ),
       listDiscordConnections: () =>
-        DiscordGuilds.pipe(
-          Effect.flatMap((guilds) => guilds.listConnections()),
-          Effect.provide(DiscordGuildsConfiguredLive),
+        DiscordConnections.pipe(
+          Effect.flatMap((connections) => connections.listConnections()),
+          Effect.provide(DiscordConnectionsConfiguredLive),
         ),
       listDiscordGuilds: (connectionId) =>
         DiscordGuilds.pipe(

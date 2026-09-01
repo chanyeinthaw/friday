@@ -60,18 +60,7 @@ export interface DiscordGuildChannelPatch {
   readonly replyMode?: ReplyMode
 }
 
-export interface DiscordConnectionRecord {
-  readonly connectionId: string
-  readonly name: string
-  readonly enabled: boolean
-}
-
 export interface DiscordGuildsContract {
-  /** Lists Discord connections in stable connection-id order. */
-  readonly listConnections: () => Effect.Effect<
-    ReadonlyArray<DiscordConnectionRecord>,
-    DiscordGuildError
-  >
   /** Lists a connection's guild configuration in stable guild-id order. */
   readonly listGuilds: (
     connectionId: PlatformConnectionId,
@@ -321,23 +310,6 @@ export const DiscordGuildsLive = Layer.effect(
       })
 
     return DiscordGuilds.of({
-      listConnections: () =>
-        sql<Record<string, unknown>>`
-          SELECT connection_id, name, enabled
-          FROM platform_connections
-          WHERE platform = 'discord'
-          ORDER BY connection_id
-        `.pipe(
-          Effect.mapError(readError()),
-          Effect.map((rows) =>
-            rows.map((row) => ({
-              connectionId: String(row.connection_id),
-              name: String(row.name),
-              enabled: row.enabled === 1,
-            })),
-          ),
-        ),
-
       listGuilds: (connectionId) =>
         Effect.gen(function* () {
           const guildRows = yield* sql<Record<string, unknown>>`

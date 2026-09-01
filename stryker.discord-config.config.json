@@ -3,13 +3,12 @@
   "testRunner": "vitest",
   "plugins": ["@stryker-mutator/vitest-runner"],
   "mutate": ["apps/friday/src/platforms/discord/DiscordChannelAccess.ts"],
-  "testFiles": ["apps/friday/src/platforms/discord/DiscordChannelAccess.test.ts"],
   "coverageAnalysis": "off",
   "reporters": ["clear-text", "progress"],
   "thresholds": {
     "high": 100,
     "low": 100,
-    "break": null
+    "break": 100
   },
   "concurrency": 2
 }

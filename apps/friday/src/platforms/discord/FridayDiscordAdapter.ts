@@ -1,9 +1,17 @@
 import { DiscordAdapter, type DiscordAdapterConfig } from '@chat-adapter/discord'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 
 import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 
 /** Location and author fields of a discord.js gateway message needed for policy gating. */
+const DiscordLocationSegments = Schema.Union([
+  Schema.Tuple([Schema.Literal('discord'), Schema.String, Schema.String]),
+  Schema.Tuple([Schema.Literal('discord'), Schema.String, Schema.String, Schema.String]),
+])
+const decodeDiscordLocationSegments = Schema.decodeUnknownResult(DiscordLocationSegments)
+
 interface DiscordGatewayMessage {
   readonly guildId: string | null
   readonly channelId: string
@@ -82,23 +90,18 @@ export class FridayDiscordAdapter extends DiscordAdapter {
     options?: Parameters<DiscordAdapter['handleApplicationCommandInteraction']>[2],
   ): void {
     if (context !== null) {
-      try {
-        const location = this.decodeThreadId(context.channelId)
-        if (
-          location.guildId !== '@me' &&
-          this.resolveChannelPolicy(location.guildId, location.channelId) === undefined
-        ) {
-          this.logger.debug('Ignored application command from unknown or disabled guild', {
-            guildId: location.guildId,
-            channelId: context.channelId,
-            command: context.command,
-          })
-          return
-        }
-      } catch {
-        // A malformed channel id has no resolvable guild; treat it as outside
-        // every configured guild and drop it.
+      const decoded = decodeDiscordLocationSegments(context.channelId.split(':'))
+      if (Result.isFailure(decoded)) {
         this.logger.debug('Ignored application command with unresolvable location', {
+          channelId: context.channelId,
+          command: context.command,
+        })
+        return
+      }
+      const [, guildId, channelId] = decoded.success
+      if (guildId !== '@me' && this.resolveChannelPolicy(guildId, channelId) === undefined) {
+        this.logger.debug('Ignored application command from unknown or disabled guild', {
+          guildId,
           channelId: context.channelId,
           command: context.command,
         })

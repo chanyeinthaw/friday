@@ -1,9 +1,6 @@
 /* oxlint-disable anti-slop/no-unknown-parameters -- The overrides mirror the adapter's declared protected HTTP-boundary signatures; recording the raw calls is the point of the test double. */
 
-import type {
-  DiscordAdapter,
-  DiscordInteractionFlagsContext,
-} from '@chat-adapter/discord'
+import type { DiscordInteractionFlagsContext } from '@chat-adapter/discord'
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 
@@ -47,6 +44,8 @@ class RecordingFridayDiscordAdapter extends FridayDiscordAdapter {
     config: Pick<FridayDiscordAdapterConfig, 'resolveChannelPolicy' | 'replyInChannelChannelIds'> &
       Partial<Pick<FridayDiscordAdapterConfig, 'interactionFlags'>>,
   ) {
+    // SAFETY: required Discord credentials and Friday policy callbacks are all
+    // present; the test only omits unrelated optional adapter configuration.
     super({
       botToken: 'bot-token',
       applicationId: 'application-1',
@@ -89,10 +88,7 @@ class RecordingFridayDiscordAdapter extends FridayDiscordAdapter {
   }
 
   /** Exposes the protected application-command entry point for the test. */
-  runApplicationCommandInteraction(
-    context: DiscordInteractionFlagsContext,
-    flags?: number,
-  ): void {
+  runApplicationCommandInteraction(context: DiscordInteractionFlagsContext, flags?: number): void {
     super.handleApplicationCommandInteraction(context, flags)
   }
 }
@@ -329,15 +325,16 @@ it.effect('drops application commands from unregistered and disabled guilds', ()
     })
     discord.attachRecordingChat()
 
-    // Unregistered guild…
+    // SAFETY: applicationCommand builds every context field read by the adapter.
     discord.runApplicationCommandInteraction(
       applicationCommand(`discord:${OTHER_GUILD}:${CHANNEL}`) as never,
     )
-    // …disabled guild…
+    // SAFETY: same complete context shape, with a different command string.
     discord.runApplicationCommandInteraction(
       applicationCommand(`discord:${OTHER_GUILD}:${CHANNEL}`, '/friday reload') as never,
     )
-    // …and an unresolvable location all reach neither Discord nor the handlers.
+    // SAFETY: the malformed channel id is intentional; all other context fields
+    // match the adapter contract.
     discord.runApplicationCommandInteraction(applicationCommand('not-a-discord-id') as never)
 
     assert.deepStrictEqual(discord.discordRequests, [])
@@ -356,6 +353,7 @@ it.effect('keeps direct-message application commands operational', () =>
     })
     discord.attachRecordingChat()
 
+    // SAFETY: applicationCommand builds every context field read by the adapter.
     discord.runApplicationCommandInteraction(
       applicationCommand(`discord:@me:${CHANNEL}`, '/friday reload') as never,
     )
@@ -379,10 +377,12 @@ it.effect('dispatches application commands inside enabled guilds', () =>
     })
     discord.attachRecordingChat()
 
+    // SAFETY: applicationCommand builds every context field read by the adapter.
     discord.runApplicationCommandInteraction(
       applicationCommand(`discord:${GUILD}:${CHANNEL}`, '/friday reload') as never,
     )
     // A thread-scoped interaction resolves its gate from the parent channel.
+    // SAFETY: applicationCommand builds every context field read by the adapter.
     discord.runApplicationCommandInteraction(
       applicationCommand(`discord:${GUILD}:${CHANNEL}:${THREAD}`) as never,
     )

@@ -64,6 +64,13 @@ Friday applies the changes on its next configuration reload
 (`friday config reload` or `/friday reload`).
 
 ```
+friday config discord connection add <connection-id> --name <name>
+    --application-id <snowflake> --public-key <64-hex-digits>
+    --bot-token-env <environment-variable-name> [--respond-to-global-mentions]
+friday config discord connection remove <connection-id> --yes
+friday config discord connection enable <connection-id>
+friday config discord connection disable <connection-id>
+friday config discord connection get <connection-id> [--json]
 friday config discord connection list [--json]
 friday config discord guild enable <connection-id> <guild-id>
 friday config discord guild disable <connection-id> <guild-id>
@@ -77,12 +84,17 @@ friday config discord guild channel set <connection-id> <guild-id> <channel-id>
 friday config discord guild channel reset <connection-id> <guild-id> <channel-id>
 ```
 
+Connection add stores the bot token environment variable name, never the token.
+Application IDs are unique across Discord connections. Add and remove update the
+platform and Discord connection tables in one transaction. Remove requires
+`--yes` because it also deletes the connection's guild and channel configuration.
+Add, remove, enable, and disable report idempotent outcomes and require a Friday
+restart. Get and list only read stored configuration.
+
 Guild, channel, and user IDs are validated as Discord snowflakes. Permission
 policies are `all`, `allow=<id>[,<id>...]`, or `deny=<id>[,<id>...]`.
 `channel set` upserts the row and only touches the flags given, so a channel
-can carry a single override; `channel reset` removes the row entirely. Adding,
-removing, and enabling Discord connections themselves are restart-based
-operations (edit the database and restart Friday).
+can carry a single override; `channel reset` removes the row entirely.
 
 ## Migration from connection-scoped configuration
 
@@ -108,6 +120,10 @@ and system channels at the connection level. The migration
   offending row and the legacy tables are left untouched, so no policy is
   silently dropped or widened; resolve the reported rows (or record the
   equivalent guild configuration with the CLI) and restart.
+
+Friday checks all three legacy tables before migration. If only part of the
+legacy schema exists, startup fails closed and names the present and missing
+tables instead of skipping the remaining data.
 
 Legacy tables are dropped only after the migration commits successfully. Existing conversations
 keep working: their bindings already identify the conversation, and migrated

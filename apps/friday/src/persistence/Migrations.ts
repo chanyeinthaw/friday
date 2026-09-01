@@ -133,6 +133,11 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
     )
   `
 
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS discord_connections_application_id
+    ON discord_connections (application_id)
+  `
+
   const columns = yield* sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info('discord_connections')
   `
@@ -370,11 +375,30 @@ const capList = (items: ReadonlyArray<string>): string =>
 const migrateConnectionScopedDiscordConfig = Effect.fn('migrateConnectionScopedDiscordConfig')(
   function* () {
     const sql = yield* SqlClient.SqlClient
+    const expectedLegacyTables = [
+      'platform_invocation_defaults',
+      'platform_channel_invocation_policies',
+      'platform_system_channels',
+    ] as const
     const legacyTables = yield* sql<{ readonly name: string }>`
-    SELECT name FROM sqlite_master
-    WHERE type = 'table' AND name = 'platform_invocation_defaults'
-  `
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN (
+        'platform_invocation_defaults',
+        'platform_channel_invocation_policies',
+        'platform_system_channels'
+      )
+      ORDER BY name
+    `
     if (legacyTables.length === 0) return
+    const presentLegacyTables = new Set(legacyTables.map((row) => row.name))
+    const missingLegacyTables = expectedLegacyTables.filter(
+      (table) => !presentLegacyTables.has(table),
+    )
+    if (missingLegacyTables.length > 0) {
+      return yield* new LegacyDiscordConfigMigrationError({
+        detail: `partial legacy schema: found ${[...presentLegacyTables].join(', ')} but missing ${missingLegacyTables.join(', ')}`,
+      })
+    }
 
     const conversationIdExpression =
       "json_extract(t.payload_json, '$.conversationBinding.conversationId')"

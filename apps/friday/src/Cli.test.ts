@@ -10,6 +10,10 @@ import {
   FridayCliError,
   formatDiscordAdminAdd,
   formatDiscordAdminRemove,
+  formatDiscordConnectionAdd,
+  formatDiscordConnectionDisable,
+  formatDiscordConnectionEnable,
+  formatDiscordConnectionRemove,
   formatDiscordGuildChannelReset,
   formatDiscordGuildChannelSet,
   formatDiscordGuildDisable,
@@ -22,11 +26,13 @@ import {
   parseAccessPolicySpec,
   parseFridayCli,
   renderDiscordAdminList,
+  renderDiscordConnectionDetail,
   renderDiscordConnectionList,
   renderDiscordGuildList,
   runFridayCli,
 } from './Cli.ts'
 import { DiscordGuildChannelId, DiscordGuildId } from './config/DiscordGuilds.ts'
+import { BotTokenEnvName, DiscordPublicKey } from './config/DiscordConnections.ts'
 import { InvocationMode } from './config/AppConfig.ts'
 import { reloadFailed, reloadSucceeded } from './config/ConfigReload.ts'
 import {
@@ -49,6 +55,8 @@ const decodeDiscordUserId = Schema.decodeSync(DiscordUserId)
 const decodeGuildId = Schema.decodeSync(DiscordGuildId)
 const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
 const decodeMode = Schema.decodeSync(InvocationMode)
+const decodePublicKey = Schema.decodeSync(DiscordPublicKey)
+const decodeBotTokenEnv = Schema.decodeSync(BotTokenEnvName)
 
 /** Runs the CLI with every unrelated command failing loudly. */
 /** Guild runner stubs shared by the command-dispatch tests. */
@@ -61,6 +69,11 @@ const guildRunnerStubs = {
   addDiscordAdmin: () => Effect.die('unreachable'),
   removeDiscordAdmin: () => Effect.die('unreachable'),
   listDiscordAdmins: () => Effect.die('unreachable'),
+  addDiscordConnection: () => Effect.succeed('added' as const),
+  removeDiscordConnection: () => Effect.succeed('removed' as const),
+  enableDiscordConnection: () => Effect.succeed('enabled' as const),
+  disableDiscordConnection: () => Effect.succeed('disabled' as const),
+  getDiscordConnection: () => Effect.succeed(Option.none()),
   listDiscordConnections: () =>
     Effect.succeed([{ connectionId: 'discord', name: 'Discord', enabled: true }]),
   listDiscordGuilds: () =>
@@ -131,6 +144,82 @@ it.effect('parses managed worktree options', () =>
         json: true,
       },
     )
+  }),
+)
+
+it.effect('parses typed Discord connection lifecycle commands', () =>
+  Effect.gen(function* () {
+    const connectionId = decodeConnectionId('discord-main')
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'connection',
+        'add',
+        'discord-main',
+        '--name',
+        'Main bot',
+        '--application-id',
+        '111111111111111111',
+        '--public-key',
+        '0123456789abcdef'.repeat(4),
+        '--bot-token-env',
+        'FRIDAY_DISCORD_TOKEN',
+        '--respond-to-global-mentions',
+      ]),
+      {
+        type: 'config-discord-connection-add',
+        connectionId,
+        name: 'Main bot',
+        applicationId: decodeGuildId('111111111111111111'),
+        publicKey: decodePublicKey('0123456789abcdef'.repeat(4)),
+        botTokenEnv: decodeBotTokenEnv('FRIDAY_DISCORD_TOKEN'),
+        respondToGlobalMentions: true,
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'remove', 'discord-main', '--yes']),
+      { type: 'config-discord-connection-remove', connectionId, yes: true },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'enable', 'discord-main']),
+      { type: 'config-discord-connection-enable', connectionId },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'disable', 'discord-main']),
+      { type: 'config-discord-connection-disable', connectionId },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'discord', 'connection', 'get', 'discord-main', '--json']),
+      { type: 'config-discord-connection-get', connectionId, json: true },
+    )
+  }),
+)
+
+it.effect('rejects Discord connection secrets and unsafe removal', () =>
+  Effect.gen(function* () {
+    const commands = [
+      ['config', 'discord', 'connection', 'remove', 'discord-main'],
+      [
+        'config',
+        'discord',
+        'connection',
+        'add',
+        'discord-main',
+        '--name',
+        'Main bot',
+        '--application-id',
+        '111111111111111111',
+        '--public-key',
+        '0123456789abcdef'.repeat(4),
+        '--bot-token-env',
+        'actual bot token with spaces',
+      ],
+    ]
+    for (const command of commands) {
+      const exit = yield* Effect.exit(parseFridayCli(command))
+      assert(Exit.isFailure(exit))
+    }
   }),
 )
 
@@ -819,6 +908,59 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
   }),
 )
 
+it.effect('formats Discord connection lifecycle outcomes with exact restart guidance', () =>
+  Effect.sync(() => {
+    const connectionId = decodeConnectionId('discord-main')
+    const restart = 'Restart Friday to apply it: connection topology is pinned at startup.'
+    assert.strictEqual(
+      formatDiscordConnectionAdd(connectionId, 'added'),
+      `Discord connection discord-main added. ${restart}`,
+    )
+    assert.strictEqual(
+      formatDiscordConnectionAdd(connectionId, 'connection-exists'),
+      'A connection named discord-main already exists.',
+    )
+    assert.strictEqual(
+      formatDiscordConnectionAdd(connectionId, 'application-exists'),
+      'The application ID is already used by another Discord connection.',
+    )
+    assert.strictEqual(
+      formatDiscordConnectionRemove(connectionId, 'removed'),
+      `Discord connection discord-main removed together with its Discord configuration. ${restart}`,
+    )
+    assert.strictEqual(
+      formatDiscordConnectionEnable(connectionId, 'already-enabled'),
+      'Discord connection discord-main is already enabled.',
+    )
+    assert.strictEqual(
+      formatDiscordConnectionDisable(connectionId, 'disabled'),
+      `Discord connection discord-main disabled. ${restart}`,
+    )
+    assert.strictEqual(
+      renderDiscordConnectionDetail({
+        connectionId: 'discord-main',
+        name: 'Main bot',
+        enabled: true,
+        applicationId: '111111111111111111',
+        publicKey: '0123456789abcdef'.repeat(4),
+        botTokenEnv: 'FRIDAY_DISCORD_TOKEN',
+        respondToGlobalMentions: true,
+        activityDescription: false,
+      }),
+      [
+        'Discord connection discord-main:',
+        '  Name: Main bot',
+        '  Enabled: yes',
+        '  Application ID: 111111111111111111',
+        `  Public key: ${'0123456789abcdef'.repeat(4)}`,
+        '  Bot token env: FRIDAY_DISCORD_TOKEN',
+        '  Responds to global mentions: yes',
+        '  Public activity description: no',
+      ].join('\n'),
+    )
+  }),
+)
+
 it.effect('renders connection and guild listings', () =>
   Effect.sync(() => {
     assert.strictEqual(renderDiscordConnectionList([]), 'No Discord connections are configured.')
@@ -890,6 +1032,76 @@ it.effect('renders json and human listings for the exact command given', () =>
 
     yield* runFridayCli(['config', 'discord', 'guild', 'list', 'discord'], guildRunnerStubs)
     yield* assertLastLine('guild 111111111111111111: enabled, invocation: mention-only')
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('runs Discord connection lifecycle commands through typed operations', () =>
+  Effect.gen(function* () {
+    const detail = {
+      connectionId: 'discord-main',
+      name: 'Main bot',
+      enabled: true,
+      applicationId: '111111111111111111',
+      publicKey: '0123456789abcdef'.repeat(4),
+      botTokenEnv: 'FRIDAY_DISCORD_TOKEN',
+      respondToGlobalMentions: false,
+      activityDescription: false,
+    }
+    const runner = {
+      ...guildRunnerStubs,
+      getDiscordConnection: () => Effect.succeed(Option.some(detail)),
+    }
+    yield* runFridayCli(
+      [
+        'config',
+        'discord',
+        'connection',
+        'add',
+        'discord-main',
+        '--name',
+        'Main bot',
+        '--application-id',
+        '111111111111111111',
+        '--public-key',
+        '0123456789abcdef'.repeat(4),
+        '--bot-token-env',
+        'FRIDAY_DISCORD_TOKEN',
+      ],
+      runner,
+    )
+    yield* runFridayCli(
+      ['config', 'discord', 'connection', 'remove', 'discord-main', '--yes'],
+      runner,
+    )
+    yield* runFridayCli(['config', 'discord', 'connection', 'enable', 'discord-main'], runner)
+    yield* runFridayCli(['config', 'discord', 'connection', 'disable', 'discord-main'], runner)
+    yield* runFridayCli(
+      ['config', 'discord', 'connection', 'get', 'discord-main', '--json'],
+      runner,
+    )
+
+    const lines = yield* TestConsole.logLines
+    assert(
+      lines.includes(
+        'Discord connection discord-main added. Restart Friday to apply it: connection topology is pinned at startup.',
+      ),
+    )
+    assert(
+      lines.includes(
+        'Discord connection discord-main removed together with its Discord configuration. Restart Friday to apply it: connection topology is pinned at startup.',
+      ),
+    )
+    assert(
+      lines.includes(
+        'Discord connection discord-main enabled. Restart Friday to apply it: connection topology is pinned at startup.',
+      ),
+    )
+    assert(
+      lines.includes(
+        'Discord connection discord-main disabled. Restart Friday to apply it: connection topology is pinned at startup.',
+      ),
+    )
+    assert(lines.includes(JSON.stringify(detail)))
   }).pipe(Effect.provide(TestConsole.layer)),
 )
 

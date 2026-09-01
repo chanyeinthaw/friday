@@ -342,6 +342,32 @@ test('merges a channel that is both an invocation override and a system channel'
     }).pipe(Effect.provide(database)),
   ))
 
+test('refuses a partial legacy schema instead of skipping or guessing', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        CREATE TABLE platform_channel_invocation_policies (
+          connection_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          PRIMARY KEY (connection_id, channel_id)
+        )
+      `
+
+      const outcome = yield* Effect.exit(runMigrations())
+      assert(Exit.isFailure(outcome))
+      const error = Exit.findErrorOption(outcome)
+      assert(Option.isSome(error))
+      assert(isLegacyMigrationError(error.value))
+      assert.match(error.value.message, /partial legacy schema/)
+      assert.match(error.value.message, /platform_channel_invocation_policies/)
+      assert.match(error.value.message, /platform_invocation_defaults/)
+      assert.match(error.value.message, /platform_system_channels/)
+      assert.deepStrictEqual(yield* legacyTableNames, ['platform_channel_invocation_policies'])
+    }).pipe(Effect.provide(database)),
+  ))
+
 test('skips the migration when the legacy tables are absent', async () =>
   Effect.runPromise(
     Effect.gen(function* () {
