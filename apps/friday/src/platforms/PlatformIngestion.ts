@@ -47,7 +47,13 @@ export interface PlatformIngestionContract {
   readonly ingest: <CreationError, ContextError = never>(
     input: PlatformInput,
     createThread: (input: PlatformInput) => Effect.Effect<Thread, CreationError>,
-    loadInitialContext?: (input: PlatformInput) => Effect.Effect<PlatformInput, ContextError>,
+    loadContext?: (
+      input: PlatformInput,
+      cursor: {
+        readonly created: boolean
+        readonly afterMessageId?: string | undefined
+      },
+    ) => Effect.Effect<PlatformInput, ContextError>,
   ) => Effect.Effect<void, PlatformIngestionError<CreationError> | ContextError, Scope.Scope>
 }
 
@@ -75,7 +81,7 @@ export const PlatformIngestionLive = Layer.effect(
             conversationId: input.binding.conversationId,
           })
           .pipe(Effect.map(Option.isSome)),
-      ingest: (input, createThread, loadInitialContext) => {
+      ingest: (input, createThread, loadContext) => {
         const key = `${input.binding.connectionId}:${input.binding.channelId}`
         const annotations = {
           component: 'ingestion',
@@ -96,9 +102,16 @@ export const PlatformIngestionLive = Layer.effect(
                 conversationId: input.binding.conversationId,
               })
               const created = Option.isNone(foundThread)
+              const latestUserTurn =
+                !created && loadContext !== undefined
+                  ? yield* persistence.getLatestUserTurn(foundThread.value.id)
+                  : Option.none()
+              const afterMessageId = Option.flatMap(latestUserTurn, (turn) =>
+                Option.fromNullishOr(turn.input.platformMessageId),
+              ).pipe(Option.getOrUndefined)
               const enrichedInput =
-                created && loadInitialContext !== undefined
-                  ? yield* loadInitialContext(input)
+                loadContext !== undefined
+                  ? yield* loadContext(input, { created, afterMessageId })
                   : input
               const found = Option.isSome(foundThread)
                 ? foundThread.value
@@ -139,7 +152,8 @@ export const PlatformIngestionLive = Layer.effect(
                   )
               }
               const message =
-                created && enrichedInput.initialContext !== undefined
+                enrichedInput.initialContext !== undefined &&
+                enrichedInput.initialContext.length > 0
                   ? { ...enrichedInput.message, context: enrichedInput.initialContext }
                   : enrichedInput.message
               yield* channelTurns.accept({ thread: found, message })

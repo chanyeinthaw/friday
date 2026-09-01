@@ -35,7 +35,7 @@ import {
 import { registerGlobalDiscordCommands } from './DiscordCommandRegistration.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
-import { loadDiscordInitialContext } from './DiscordInitialContext.ts'
+import { loadDiscordInitialContext, shouldLoadDiscordContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
 import {
   FRIDAY_COMMAND_PATHS,
@@ -339,13 +339,23 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               Effect.map(({ allowed }) => allowed),
             ),
           onInboundMessage: (input) =>
-            ingestion.ingest(input, bootstrap, (initialInput) =>
-              loadDiscordInitialContext(
-                discord,
-                config.current().agent.recentMessageCount,
-                initialInput,
-              ),
-            ),
+            ingestion.ingest(input, bootstrap, (contextInput, cursor) => {
+              const location = discord.decodeThreadId(String(contextInput.binding.conversationId))
+              const policy = resolveChannelPolicy(location.guildId, location.channelId)
+              return policy !== undefined &&
+                shouldLoadDiscordContext({
+                  created: cursor.created,
+                  invocationMode: policy.invocationMode,
+                  replyMode: policy.replyMode,
+                })
+                ? loadDiscordInitialContext(
+                    discord,
+                    config.current().agent.recentMessageCount,
+                    contextInput,
+                    cursor,
+                  )
+                : Effect.succeed(contextInput)
+            }),
         })
         // Register the application commands before the gateway starts so a
         // registration failure cannot leave partially started Discord resources.

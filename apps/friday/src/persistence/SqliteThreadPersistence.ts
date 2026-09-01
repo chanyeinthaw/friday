@@ -44,6 +44,7 @@ const ListAgentThreadsRequest = Schema.Struct({ parentThreadId: ThreadId })
 const GetTurnRequest = Schema.Struct({ turnId: TurnId })
 const GetFirstTurnRequest = Schema.Struct({ threadId: ThreadId })
 const GetLatestTurnRequest = Schema.Struct({ threadId: ThreadId })
+const GetLatestUserTurnRequest = Schema.Struct({ threadId: ThreadId })
 const GetActivityRequest = Schema.Struct({ activityId: ActivityId })
 const PersistedThreadRow = Schema.Struct({ payload: ThreadJson })
 const PersistedAgentThreadRow = Schema.Struct({ payload: AgentThreadJson })
@@ -223,6 +224,20 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     `,
   })
 
+  const selectLatestUserTurn = SqlSchema.findOneOption({
+    Request: GetLatestUserTurnRequest,
+    Result: PersistedTurnRow,
+    execute: ({ threadId }) => sql`
+      SELECT payload_json AS payload
+      FROM turns
+      WHERE thread_id = ${threadId}
+        AND json_extract(payload_json, '$.input.source') = 'user'
+        AND json_extract(payload_json, '$.input.platformMessageId') IS NOT NULL
+      ORDER BY sequence DESC
+      LIMIT 1
+    `,
+  })
+
   const selectActivity = SqlSchema.findOneOption({
     Request: GetActivityRequest,
     Result: PersistedActivityRow,
@@ -272,6 +287,12 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     selectLatestTurn({ threadId }).pipe(
       Effect.map(Option.map((row) => row.payload)),
       Effect.mapError(toPersistenceError('ThreadPersistence.getLatestTurn')),
+    )
+
+  const getLatestUserTurn = (threadId: ThreadType['id']) =>
+    selectLatestUserTurn({ threadId }).pipe(
+      Effect.map(Option.map((row) => row.payload)),
+      Effect.mapError(toPersistenceError('ThreadPersistence.getLatestUserTurn')),
     )
 
   const getActivity = (activityId: ActivityType['id']) =>
@@ -407,6 +428,7 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     getTurn,
     getFirstTurn,
     getLatestTurn,
+    getLatestUserTurn,
     startTurn: (update) =>
       updateExistingTurn('ThreadPersistence.startTurn', update.turnId, (turn) => ({
         ...turn,

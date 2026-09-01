@@ -100,7 +100,7 @@ it('applies guild-wide defaults inside an enabled guild', () => {
   assert.deepStrictEqual(resolved.value.users, users)
 })
 
-it('invokes on mentions, direct messages, subscribed channels, and bound threads', () => {
+it('invokes on mentions, direct messages, and all-messages channels', () => {
   // Mentions and direct messages always invoke.
   assert.strictEqual(
     shouldInvoke({ kind: 'mention', mode: 'mention-only', hasBinding: false }),
@@ -119,10 +119,10 @@ it('invokes on mentions, direct messages, subscribed channels, and bound threads
     shouldInvoke({ kind: 'subscribed-message', mode: 'mention-only', hasBinding: false }),
     false,
   )
-  // Threads Friday already participates in continue the conversation.
+  // A persisted binding does not turn mention-only into all-messages.
   assert.strictEqual(
     shouldInvoke({ kind: 'subscribed-message', mode: 'mention-only', hasBinding: true }),
-    true,
+    false,
   )
 })
 

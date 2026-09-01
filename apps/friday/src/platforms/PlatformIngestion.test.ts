@@ -1,6 +1,7 @@
 import { assert, it } from '@effect/vitest'
 import {
   ChannelThread,
+  ContextMessage,
   ConversationBinding,
   InputMessage,
   ModelSelection,
@@ -63,6 +64,8 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
   closedAt: null,
 })
 const decodeTurnId = Schema.decodeSync(TurnId)
+const decodeInputMessage = Schema.decodeSync(InputMessage)
+const decodeContextMessage = Schema.decodeSync(ContextMessage)
 
 const testModel = Schema.decodeSync(ModelSelection)({
   provider: 'opencode-go',
@@ -197,6 +200,83 @@ it.effect('loads initial platform context only when creating a new channel Threa
   ),
 )
 
+it.effect('adds bounded catch-up context to an existing channel Turn', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const persistence = makePersistence(events, { latestUserMessageId: 'message-before' })
+      const friday = makeFriday(events, persistence)
+      const platform = makePlatform(events)
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(ThreadPersistence, persistence),
+        Layer.succeed(Friday, friday),
+        Layer.succeed(Crypto.Crypto, testCrypto),
+        Layer.succeed(AppConfig, testAppConfig),
+        Layer.succeed(
+          TextGeneration,
+          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+        ),
+        Layer.succeed(
+          ConversationTitles,
+          ConversationTitles.of({
+            generated: () => Effect.void,
+            taskStarted: () => Effect.void,
+            taskFinished: () => Effect.void,
+          }),
+        ),
+        PlatformRegistryLive,
+      )
+      const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
+      const TurnsLive = ChannelTurnsLive.pipe(
+        Layer.provide(Layer.merge(dependencies, ProgressLive)),
+      )
+      const TestLive = Layer.merge(
+        Layer.mergeAll(dependencies, ProgressLive, TurnsLive),
+        PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
+      )
+
+      yield* Effect.gen(function* () {
+        const ingestion = yield* PlatformIngestion
+        const platforms = yield* PlatformRegistry
+        yield* platforms.register(platform)
+        yield* ingestion.ingest(
+          input,
+          () => Effect.succeed(thread),
+          (current, cursor) =>
+            Effect.sync(() => {
+              events.push(`catch-up:${cursor.created}:${cursor.afterMessageId ?? 'none'}`)
+              return {
+                ...current,
+                initialContext: [
+                  decodeContextMessage({
+                    author: {
+                      platformUserId: 'user-2',
+                      mention: '<@user-2>',
+                      username: 'other',
+                      displayName: 'Other',
+                    },
+                    content: { text: 'Missed discussion.', images: [] },
+                    platformMessageId: 'message-missed',
+                  }),
+                ],
+              }
+            }),
+        )
+      }).pipe(Effect.provide(TestLive))
+
+      assert.deepStrictEqual(events, [
+        'catch-up:false:message-before',
+        'acknowledge',
+        'working:-# Thinking...',
+        'open-thread',
+        'context:Missed discussion.',
+        'prompt',
+        'finalize:Friday is done.',
+      ])
+    }),
+  ),
+)
+
 it.effect('routes follow-up input to steering without another typing lifecycle', () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -280,6 +360,8 @@ const makeFriday = (
           persistence.createTurn(turn).pipe(
             Effect.andThen(
               Effect.sync(() => {
+                const context = turn.input.context?.map((message) => message.content.text).join('|')
+                if (context !== undefined) events.push(`context:${context}`)
                 events.push('prompt')
               }),
             ),
@@ -305,7 +387,11 @@ const makeFriday = (
 
 const makePersistence = (
   _events: Array<string>,
-  options: { readonly latestIsActive?: boolean; readonly newThread?: boolean } = {},
+  options: {
+    readonly latestIsActive?: boolean
+    readonly newThread?: boolean
+    readonly latestUserMessageId?: string
+  } = {},
 ): ThreadPersistenceContract => {
   let storedTurn: TurnType | null = null
   const activeTurn: TurnType = {
@@ -351,6 +437,20 @@ const makePersistence = (
           : storedTurn === null
             ? Option.none()
             : Option.some(storedTurn),
+      ),
+    getLatestUserTurn: () =>
+      Effect.succeed(
+        options.latestUserMessageId === undefined
+          ? storedTurn === null
+            ? Option.none()
+            : Option.some(storedTurn)
+          : Option.some({
+              ...activeTurn,
+              input: decodeInputMessage({
+                ...activeTurn.input,
+                platformMessageId: options.latestUserMessageId,
+              }),
+            }),
       ),
     startTurn: () => Effect.void,
     putActivitySnapshot: () => Effect.void,

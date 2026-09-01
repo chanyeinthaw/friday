@@ -6,18 +6,15 @@ import type { ChatSdkInboundKind } from '../chat-sdk/ChatSdkLifecycle.ts'
 
 /**
  * Whether a message invokes Friday: mentions and direct messages always do;
- * subscribed channel messages follow the resolved invocation mode, and messages
- * in threads Friday already participates in continue the conversation.
+ * other messages invoke only when the resolved channel mode is all-messages.
+ * Mention-only conversations recover bounded missed history on their next mention.
  */
 export const shouldInvoke = (input: {
   readonly kind: ChatSdkInboundKind
   readonly mode: 'mention-only' | 'all-messages'
   readonly hasBinding: boolean
 }): boolean =>
-  input.kind === 'mention' ||
-  input.kind === 'direct-message' ||
-  input.mode === 'all-messages' ||
-  input.hasBinding
+  input.kind === 'mention' || input.kind === 'direct-message' || input.mode === 'all-messages'
 
 /** Live view of a Discord connection's reloadable policy section. */
 export type DiscordConnectionPolicies = Pick<DiscordPlatformConfig, 'users' | 'guilds'>

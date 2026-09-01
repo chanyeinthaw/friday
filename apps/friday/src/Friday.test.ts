@@ -123,6 +123,7 @@ const makePersistence = (operations: Array<string>): ThreadPersistenceContract =
   getTurn: () => Effect.succeedNone,
   getFirstTurn: () => Effect.succeedNone,
   getLatestTurn: () => Effect.succeedNone,
+  getLatestUserTurn: () => Effect.succeedNone,
   startTurn: () => Effect.void,
   putActivitySnapshot: () => Effect.void,
   getActivity: () => Effect.succeedNone,

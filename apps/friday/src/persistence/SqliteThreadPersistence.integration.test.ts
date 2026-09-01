@@ -20,6 +20,7 @@ import { makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
 
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
 const decodeToolResultActivity = Schema.decodeSync(ToolResultActivity)
+const decodeTurn = Schema.decodeSync(Turn)
 
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-1',
@@ -93,7 +94,7 @@ const otherAgentThread = Schema.decodeSync(AgentThread)({
   workingDirectory: '/tmp/friday/agent-thread-other',
 })
 
-const turn = Schema.decodeSync(Turn)({
+const turn = decodeTurn({
   id: 'turn-1',
   threadId: 'thread-1',
   sequence: 1,
@@ -127,7 +128,7 @@ const activeActivity = Schema.decodeSync(ToolResultActivity)({
   completedAt: null,
 })
 
-const secondTurn = Schema.decodeSync(Turn)({
+const secondTurn = decodeTurn({
   ...turn,
   id: 'turn-2',
   sequence: 2,
@@ -157,6 +158,31 @@ test('finds a Friday Thread by its Platform conversation', async () => {
       conversationId: thread.conversationBinding.conversationId,
     })
     expect(Option.getOrNull(stored)?.id).toBe(thread.id)
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+})
+
+test('retrieves the latest user Turn with a platform message cursor', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(thread)
+    yield* persistence.createTurn(
+      decodeTurn({
+        ...turn,
+        input: { ...turn.input, platformMessageId: 'message-user-1' },
+      }),
+    )
+    yield* persistence.createTurn(
+      decodeTurn({
+        ...secondTurn,
+        input: { source: 'agent', content: { text: 'Task result.', images: [] } },
+      }),
+    )
+    const latest = yield* persistence.getLatestUserTurn(thread.id)
+    expect(String(Option.getOrNull(latest)?.input.platformMessageId)).toBe('message-user-1')
   }).pipe(Effect.provide(SqliteClient.layer({ filename })))
   await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })

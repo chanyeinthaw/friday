@@ -279,6 +279,7 @@ const makePersistence = (operations: Array<RecordedOperation>): ThreadPersistenc
   getTurn: () => Effect.succeedNone,
   getFirstTurn: () => Effect.succeedNone,
   getLatestTurn: () => Effect.succeedNone,
+  getLatestUserTurn: () => Effect.succeedNone,
   startTurn: ({ turnId }) =>
     Effect.sync(() => operations.push({ type: 'start-turn', value: turnId })),
   putActivitySnapshot: (_turnId, value) =>
