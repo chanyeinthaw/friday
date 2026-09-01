@@ -126,11 +126,12 @@ and system channels at the connection level. The migration
     commands keep working while Friday refuses to start, so the operator can
     `friday config discord guild enable <connection-id> <guild-id>` and
     `friday config discord guild channel set <connection-id> <guild-id>
-<channel-id> ...` for each listed channel. A recorded channel override
-    supersedes the legacy rows for that channel: it resolves unobservable-guild
-    and ambiguous-guild refusals (recording the override explicitly names the
-    owning guild), the migration never overwrites or duplicates it, and it
-    stands exactly as recorded after the migration succeeds.
+<channel-id> ...` for each listed channel. The recorded row names the owning
+    guild. Each explicit field supersedes only its matching legacy behavior:
+    `invocation-mode` supersedes the old invocation policy and `reply-mode`
+    supersedes old system-channel behavior. A users-only row supersedes neither.
+    The migration merges unrelated legacy fields into the same row and never
+    overwrites explicit values.
   - **Resolve the legacy rows directly**: rows with no guild-model equivalent —
     the channel access policies — have no recording path; edit or remove those
     legacy rows by hand (the tables are intact for exactly this purpose).

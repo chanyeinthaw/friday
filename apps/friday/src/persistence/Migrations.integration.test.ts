@@ -404,6 +404,94 @@ test('a recorded guild channel override resolves an ambiguous-guild refusal and 
     }).pipe(Effect.provide(database)),
   ))
 
+test('recovery rows supersede only matching fields and preserve unrelated legacy behavior', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      const sql = yield* SqlClient.SqlClient
+      const channels = ['999999999999999904', '999999999999999905', '999999999999999906'] as const
+      yield* sql`
+        INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)
+        VALUES
+          ('discord', ${channels[0]}, 'mention-only'),
+          ('discord', ${channels[1]}, 'mention-only'),
+          ('discord', ${channels[2]}, 'mention-only')
+      `
+      yield* sql`
+        INSERT INTO platform_system_channels (connection_id, channel_id, created_at, updated_at)
+        VALUES
+          ('discord', ${channels[0]}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+          ('discord', ${channels[1]}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+          ('discord', ${channels[2]}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `
+
+      // None of the three channels has an observable guild yet, so migration
+      // creates the current schema and then rolls back its data changes.
+      const refused = yield* Effect.exit(runMigrations())
+      assert(Exit.isFailure(refused))
+
+      yield* Effect.gen(function* () {
+        const store = yield* DiscordGuilds
+        const connectionId = decodeConnectionId('discord')
+        const guildId = decodeGuildId('111111111111111111')
+        assert.strictEqual(yield* store.enableGuild(connectionId, guildId), 'enabled')
+
+        // Invocation-only: explicit invocation wins; legacy system behavior
+        // must still become reply-in-channel.
+        assert.strictEqual(
+          yield* store.setChannel(connectionId, guildId, decodeChannelId(channels[0]), {
+            invocationMode: 'all-messages',
+          }),
+          'updated',
+        )
+        // Reply-only: explicit reply wins; legacy invocation must survive.
+        assert.strictEqual(
+          yield* store.setChannel(connectionId, guildId, decodeChannelId(channels[1]), {
+            replyMode: 'reply-in-thread',
+          }),
+          'updated',
+        )
+        // Users-only: the row names ownership but supersedes neither legacy
+        // behavior.
+        assert.strictEqual(
+          yield* store.setChannel(connectionId, guildId, decodeChannelId(channels[2]), {
+            users: { mode: 'allow', ids: ['444444444444444444'] },
+          }),
+          'updated',
+        )
+
+        yield* runMigrations()
+
+        const recovered = (yield* store.listGuilds(connectionId))[0]
+        assert(recovered)
+        assert.deepStrictEqual(
+          recovered.channels.filter((channel) =>
+            channels.some((channelId) => channelId === channel.channelId),
+          ),
+          [
+            {
+              channelId: channels[0],
+              invocationMode: 'all-messages',
+              replyMode: 'reply-in-channel',
+            },
+            {
+              channelId: channels[1],
+              invocationMode: 'mention-only',
+              replyMode: 'reply-in-thread',
+            },
+            {
+              channelId: channels[2],
+              invocationMode: 'mention-only',
+              users: { mode: 'allow', ids: ['444444444444444444'] },
+              replyMode: 'reply-in-channel',
+            },
+          ],
+        )
+        assert.deepStrictEqual(yield* legacyTableNames, [])
+      }).pipe(Effect.provide(DiscordGuildsLive))
+    }).pipe(Effect.provide(database)),
+  ))
+
 test('refuses when legacy channel access policies exist', async () =>
   Effect.runPromise(
     Effect.gen(function* () {

@@ -17,7 +17,7 @@ export class LegacyDiscordConfigMigrationError extends Schema.Error<LegacyDiscor
   detail: Schema.String,
 }) {
   override get message(): string {
-    return `Legacy Discord configuration migration refused: ${this.detail}. The migration rolled back and the legacy tables are unchanged. The guild configuration CLI commands still work while this refusal is in place: record the equivalent guild configuration for the listed channels (a recorded channel override supersedes the legacy rows for that channel), resolve any listed rows that have no guild-model equivalent directly in the legacy tables, then restart Friday.`
+    return `Legacy Discord configuration migration refused: ${this.detail}. The migration rolled back and the legacy tables are unchanged. The guild configuration CLI commands still work while this refusal is in place: record the equivalent guild configuration for the listed channels (each explicitly recorded field supersedes only its matching legacy behavior; unrelated legacy fields still migrate), resolve any listed rows that have no guild-model equivalent directly in the legacy tables, then restart Friday.`
   }
 }
 
@@ -385,11 +385,12 @@ const capList = (items: ReadonlyArray<string>): string =>
  *
  * Recovery: the guild configuration CLI commands run even while a refusal is
  * in place (the config layer tolerates this error), so the operator can record
- * the equivalent guild configuration. A recorded channel override supersedes
- * the legacy rows for the same channel — it resolves unobservable-guild and
- * ambiguous-guild refusals and is never overwritten by the migration. Legacy
- * rows with no guild-model equivalent (channel access policies) have no
- * recording path and must be resolved directly in the legacy tables.
+ * the equivalent guild configuration. A recorded channel row names the owning
+ * guild. Each non-null field supersedes only its matching legacy behavior;
+ * unrelated legacy fields merge into the row and recorded fields are never
+ * overwritten. Legacy rows with no guild-model equivalent (channel access
+ * policies) have no recording path and must be resolved directly in the legacy
+ * tables.
  */
 export const migrateConnectionScopedDiscordConfig = Effect.fn(
   'migrateConnectionScopedDiscordConfig',
@@ -447,89 +448,110 @@ export const migrateConnectionScopedDiscordConfig = Effect.fn(
       // new tables is written.
       const problems: Array<string> = []
 
-      // Channel overrides an operator explicitly recorded through the config
-      // CLI supersede the legacy rows for the same channel: the migration
-      // treats them as the recorded resolution of otherwise unmappable rows,
-      // leaves the legacy data unmoved, and never overwrites the recording.
-      // The snapshot is taken before any migration insert, and the insert
-      // guards below check it — the migration's own rows must still merge.
+      // Snapshot rows recorded before this migration pass. Guild ownership and
+      // field supersession are separate facts: a users-only row can locate a
+      // legacy behavior but cannot suppress it. The snapshot also prevents the
+      // first legacy insert from looking explicitly recorded to the second.
       yield* unsafe(`
         CREATE TEMP TABLE IF NOT EXISTS migration_recorded_channels (
           connection_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
           channel_id TEXT NOT NULL,
-          PRIMARY KEY (connection_id, channel_id)
+          invocation_recorded INTEGER NOT NULL,
+          reply_recorded INTEGER NOT NULL,
+          PRIMARY KEY (connection_id, guild_id, channel_id)
         )
       `)
       yield* unsafe(`DELETE FROM migration_recorded_channels`)
       yield* unsafe(`
-        INSERT INTO migration_recorded_channels (connection_id, channel_id)
-        SELECT DISTINCT connection_id, channel_id FROM discord_guild_channels
+        INSERT INTO migration_recorded_channels
+          (connection_id, guild_id, channel_id, invocation_recorded, reply_recorded)
+        SELECT
+          connection_id,
+          guild_id,
+          channel_id,
+          invocation_mode IS NOT NULL,
+          reply_mode IS NOT NULL
+        FROM discord_guild_channels
       `)
-      const recordedChannels = new Set(
-        (yield* unsafe<{ readonly connection_id: string; readonly channel_id: string }>(`
-        SELECT connection_id, channel_id FROM migration_recorded_channels
-      `)).map((row) => `${row.connection_id}:${row.channel_id}`),
-      )
-      const isRecorded = (row: { readonly connection_id: string; readonly channel_id: string }) =>
-        recordedChannels.has(`${row.connection_id}:${row.channel_id}`)
 
-      // A channel observed under more than one guild has ambiguous ownership;
-      // the migration never guesses which guild a policy belongs to. A
-      // recorded override for the channel resolves the ambiguity by naming
-      // the guild the operator chose.
-      const ambiguous = yield* unsafe<{
-        readonly connection_id: string
-        readonly channel_id: string
-        readonly guild_count: number
-      }>(`
-        SELECT connection_id, channel_id, COUNT(DISTINCT guild_id) AS guild_count
-        FROM (${bindingLocations}) b
-        GROUP BY b.connection_id, b.channel_id
-        HAVING COUNT(DISTINCT guild_id) > 1
-      `)
-      for (const row of ambiguous) {
-        if (isRecorded(row)) continue
-        problems.push(
-          `channel ${row.channel_id} on connection ${row.connection_id} is bound under ${row.guild_count} guilds`,
-        )
-      }
-
-      // Legacy channel rows whose guild is not observable from persisted
-      // bindings cannot be placed; dropping them would silently discard a
-      // restrictive policy, so the operator decides instead. A recorded
-      // override for the channel is that decision.
-      const unmappedRows = (source: string, table: string, modeExpression: string) =>
+      // Check ownership for each unsuperseded legacy behavior. A matching
+      // recorded field removes only that behavior from consideration. Otherwise
+      // one recorded guild is authoritative; without one, exactly one observed
+      // binding is required. Multiple recorded guilds or observed guilds remain
+      // fail-closed.
+      const ownershipProblems = (
+        source: string,
+        table: string,
+        modeExpression: string,
+        recordedColumn: 'invocation_recorded' | 'reply_recorded',
+      ) =>
         unsafe<{
           readonly connection_id: string
           readonly channel_id: string
           readonly mode: string
+          readonly recorded_guild_count: number
+          readonly observed_guild_count: number
         }>(`
-        SELECT ${table}.connection_id AS connection_id, ${table}.channel_id AS channel_id, ${modeExpression} AS mode
-        FROM ${table}
-        WHERE NOT EXISTS (
-          SELECT 1 FROM (${bindingLocations}) b
-          WHERE b.connection_id = ${table}.connection_id AND b.channel_id = ${table}.channel_id
-        )
-      `).pipe(
+          SELECT
+            legacy.connection_id,
+            legacy.channel_id,
+            ${modeExpression} AS mode,
+            (
+              SELECT COUNT(DISTINCT rec.guild_id)
+              FROM migration_recorded_channels rec
+              WHERE rec.connection_id = legacy.connection_id
+                AND rec.channel_id = legacy.channel_id
+            ) AS recorded_guild_count,
+            (
+              SELECT COUNT(DISTINCT b.guild_id)
+              FROM (${bindingLocations}) b
+              WHERE b.connection_id = legacy.connection_id
+                AND b.channel_id = legacy.channel_id
+            ) AS observed_guild_count
+          FROM ${table} legacy
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM migration_recorded_channels rec
+            WHERE rec.connection_id = legacy.connection_id
+              AND rec.channel_id = legacy.channel_id
+              AND rec.${recordedColumn} = 1
+          )
+        `).pipe(
           Effect.map((rows) =>
-            rows
-              .filter((row) => !isRecorded(row))
-              .map(
-                (row) =>
+            rows.flatMap((row) => {
+              if (row.recorded_guild_count > 1) {
+                return [
+                  `channel ${row.channel_id} on connection ${row.connection_id} (${source}, ${row.mode}) is recorded under ${row.recorded_guild_count} guilds`,
+                ]
+              }
+              if (row.recorded_guild_count === 1) return []
+              if (row.observed_guild_count === 0) {
+                return [
                   `channel ${row.channel_id} on connection ${row.connection_id} (${source}, ${row.mode}) has no observable guild`,
-              ),
+                ]
+              }
+              if (row.observed_guild_count > 1) {
+                return [
+                  `channel ${row.channel_id} on connection ${row.connection_id} (${source}, ${row.mode}) is bound under ${row.observed_guild_count} guilds`,
+                ]
+              }
+              return []
+            }),
           ),
         )
       problems.push(
-        ...(yield* unmappedRows(
+        ...(yield* ownershipProblems(
           'channel invocation policy',
           'platform_channel_invocation_policies',
-          'mode',
+          'legacy.mode',
+          'invocation_recorded',
         )),
-        ...(yield* unmappedRows(
+        ...(yield* ownershipProblems(
           'system channel',
           'platform_system_channels',
           "'reply-in-channel'",
+          'reply_recorded',
         )),
       )
 
@@ -592,15 +614,32 @@ export const migrateConnectionScopedDiscordConfig = Effect.fn(
         LEFT JOIN platform_invocation_defaults idf ON idf.connection_id = g.connection_id
       `)
 
-      // Channel invocation overrides migrate under the channel's observed
-      // guild, except where the operator already recorded an override for the
-      // channel: the recording supersedes the legacy row. The upsert only
-      // touches the invocation column so rows created by a later statement
-      // keep their other overrides.
+      // Each statement first targets the one explicitly recorded guild, if
+      // present, and otherwise the one observed guild established above. A
+      // non-null recorded field supersedes only its matching legacy behavior.
+      // COALESCE makes the upserts NULL-safe and protects every explicit value
+      // even if this SQL is changed independently of the pre-checks later.
       yield* unsafe(`
         INSERT INTO discord_guild_channels
           (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
-        SELECT b.connection_id, b.guild_id, cip.channel_id, cip.mode, NULL, NULL
+        SELECT cip.connection_id, rec.guild_id, cip.channel_id, cip.mode, NULL, NULL
+        FROM platform_channel_invocation_policies cip
+        JOIN migration_recorded_channels rec
+          ON rec.connection_id = cip.connection_id AND rec.channel_id = cip.channel_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM migration_recorded_channels explicit
+          WHERE explicit.connection_id = cip.connection_id
+            AND explicit.channel_id = cip.channel_id
+            AND explicit.invocation_recorded = 1
+        )
+          AND (
+            SELECT COUNT(DISTINCT owner.guild_id)
+            FROM migration_recorded_channels owner
+            WHERE owner.connection_id = cip.connection_id
+              AND owner.channel_id = cip.channel_id
+          ) = 1
+        UNION ALL
+        SELECT cip.connection_id, b.guild_id, cip.channel_id, cip.mode, NULL, NULL
         FROM platform_channel_invocation_policies cip
         JOIN (${bindingLocations}) b
           ON b.connection_id = cip.connection_id AND b.channel_id = cip.channel_id
@@ -610,18 +649,33 @@ export const migrateConnectionScopedDiscordConfig = Effect.fn(
         )
         GROUP BY b.connection_id, b.guild_id, cip.channel_id
         ON CONFLICT (connection_id, guild_id, channel_id) DO UPDATE SET
-          invocation_mode = excluded.invocation_mode
+          invocation_mode = COALESCE(discord_guild_channels.invocation_mode, excluded.invocation_mode)
       `)
 
-      // Former system-management channels become reply-in-channel overrides,
-      // merged into any override row the same channel already carries (a
-      // channel that is both an invocation override and a system channel
-      // keeps both semantics). A recorded override for the channel supersedes
-      // the legacy row, as above.
+      // Former system-management channels become reply-in-channel overrides.
+      // This independently merges with legacy or recorded invocation and user
+      // policy on the same channel row.
       yield* unsafe(`
         INSERT INTO discord_guild_channels
           (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
-        SELECT b.connection_id, b.guild_id, sc.channel_id, NULL, NULL, 'reply-in-channel'
+        SELECT sc.connection_id, rec.guild_id, sc.channel_id, NULL, NULL, 'reply-in-channel'
+        FROM platform_system_channels sc
+        JOIN migration_recorded_channels rec
+          ON rec.connection_id = sc.connection_id AND rec.channel_id = sc.channel_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM migration_recorded_channels explicit
+          WHERE explicit.connection_id = sc.connection_id
+            AND explicit.channel_id = sc.channel_id
+            AND explicit.reply_recorded = 1
+        )
+          AND (
+            SELECT COUNT(DISTINCT owner.guild_id)
+            FROM migration_recorded_channels owner
+            WHERE owner.connection_id = sc.connection_id
+              AND owner.channel_id = sc.channel_id
+          ) = 1
+        UNION ALL
+        SELECT sc.connection_id, b.guild_id, sc.channel_id, NULL, NULL, 'reply-in-channel'
         FROM platform_system_channels sc
         JOIN (${bindingLocations}) b
           ON b.connection_id = sc.connection_id AND b.channel_id = sc.channel_id
@@ -631,7 +685,7 @@ export const migrateConnectionScopedDiscordConfig = Effect.fn(
         )
         GROUP BY b.connection_id, b.guild_id, sc.channel_id
         ON CONFLICT (connection_id, guild_id, channel_id) DO UPDATE SET
-          reply_mode = excluded.reply_mode
+          reply_mode = COALESCE(discord_guild_channels.reply_mode, excluded.reply_mode)
       `)
 
       yield* unsafe(`DROP TABLE platform_system_channels`)
