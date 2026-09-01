@@ -352,6 +352,73 @@ it.effect('evicts failed idle state so a later cycle retries the Discord lookup'
   }),
 )
 
+it.live('retries a transient cleanup failure and restores the idle title within 3 attempts', () =>
+  Effect.gen(function* () {
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    let cleanupFailures = 2
+    const cleanupAttempts: Array<string> = []
+    const adapter: DiscordThreadTitleAdapter = {
+      ...stub,
+      setThreadTitle: (id, name) => {
+        if (name.startsWith('⚡ ')) return stub.setThreadTitle(id, name)
+        cleanupAttempts.push(name)
+        if (cleanupFailures > 0) {
+          cleanupFailures -= 1
+          return Promise.reject(new Error('rename failed'))
+        }
+        return stub.setThreadTitle(id, name)
+      },
+    }
+    const platform = makePlatform(adapter, [])
+
+    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done' })
+
+    assert.deepStrictEqual(cleanupAttempts, ['Design Review', 'Design Review', 'Design Review'])
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review', 'Design Review'],
+    )
+    assert.strictEqual(stub.names.get('discord:guild-1:thread-1'), 'Design Review')
+  }),
+)
+
+it.live('stops after 3 failed cleanup attempts and preserves the failed idle state', () =>
+  Effect.gen(function* () {
+    const stub = stubDiscord(initialThreadNames('Design Review'))
+    const cleanupAttempts: Array<string> = []
+    const adapter: DiscordThreadTitleAdapter = {
+      ...stub,
+      setThreadTitle: (id, name) => {
+        if (name.startsWith('⚡ ')) return stub.setThreadTitle(id, name)
+        cleanupAttempts.push(name)
+        return Promise.reject(new Error('rename failed'))
+      },
+    }
+    const platform = makePlatform(adapter, [])
+
+    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking...' })
+    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done' })
+    assert.strictEqual(cleanupAttempts.length, 3)
+
+    // The idle entry is preserved: the next begin does not re-apply the prefix because the
+    // failed restore is still the applied name, proving no eviction/reset happened.
+    yield* platform.beginWorking({ binding: threadBinding, text: '-# Thinking again...' })
+    assert.strictEqual(cleanupAttempts.length, 3)
+    assert.deepStrictEqual(
+      stub.renames.map(({ name }) => name),
+      ['⚡ Design Review'],
+    )
+
+    // A later finalize retries the cleanup, again bounded to 3 attempts.
+    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Done again' })
+    assert.strictEqual(cleanupAttempts.length, 6)
+
+    // The failure was never treated as success: Discord still shows the activity prefix.
+    assert.strictEqual(stub.names.get('discord:guild-1:thread-1'), '⚡ Design Review')
+  }),
+)
+
 it.effect('keeps wrapped operations working when Discord title calls fail', () =>
   Effect.gen(function* () {
     const calls: Array<string> = []

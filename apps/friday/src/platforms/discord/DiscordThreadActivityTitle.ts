@@ -1,5 +1,6 @@
 import type { ConversationBinding } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
+import * as Schedule from 'effect/Schedule'
 import * as Semaphore from 'effect/Semaphore'
 
 import type { PlatformAdapter, PlatformAgentActivity } from '../PlatformAdapter.ts'
@@ -43,6 +44,10 @@ export interface DiscordThreadTitleAdapter {
 
 const truncateTitle = (title: string): string => Array.from(title).slice(0, titleLimit).join('')
 
+// Fresh schedule per use: schedules are stateful. Caps cleanup restores at 3 attempts
+// (1 initial + 2 retries) with bounded exponential backoff; no background reaper.
+const cleanupSchedule = () => Schedule.exponential('50 millis', 2).pipe(Schedule.upTo({ times: 2 }))
+
 const bestEffort = <A>(
   conversationId: string,
   effect: Effect.Effect<A, ChatSdkPublicationError>,
@@ -59,7 +64,9 @@ const bestEffort = <A>(
 
 /**
  * Prefixes a Discord thread title with `⚡ ` while its channel turn or background tasks are active.
- * Discord reads and writes are best-effort and serialized per conversation.
+ * Discord reads and writes are best-effort and serialized per conversation; the idle restore is
+ * retried with bounded backoff (max 3 attempts) and kept in state when it fails so the next
+ * activity cycle retries it.
  */
 export const withDiscordThreadActivityTitle = (
   discord: DiscordThreadTitleAdapter,
@@ -199,6 +206,7 @@ export const withDiscordThreadActivityTitle = (
     const conversationId = String(binding.conversationId)
     const location = locationFor(conversationId)
     if (location === null) return Effect.void
+    let cleanupFailed = false
     return serialized(conversationId, (entry) =>
       bestEffort(
         conversationId,
@@ -210,10 +218,26 @@ export const withDiscordThreadActivityTitle = (
           if (active !== wasActive || state.baseName === null) {
             yield* refreshBaseName(conversationId, location, state)
           }
-          yield* applyActivityTitle(conversationId, state)
+          if (active) {
+            yield* applyActivityTitle(conversationId, state)
+          } else {
+            // The idle restore is the cleanup rename: retry it with bounded backoff,
+            // and if every attempt fails keep the idle entry so a later activity
+            // cycle on the thread retries the restore.
+            yield* applyActivityTitle(conversationId, state).pipe(
+              Effect.retry(cleanupSchedule()),
+              Effect.tapError(() =>
+                Effect.sync(() => {
+                  cleanupFailed = true
+                }),
+              ),
+            )
+          }
           return !active
         }),
-        () => entry.state.turns === 0 && entry.state.tasks.size === 0,
+        // Lookup failures evict so a later cycle re-fetches, but a failed cleanup
+        // restore must not evict the idle state as if the restore had succeeded.
+        () => !cleanupFailed && entry.state.turns === 0 && entry.state.tasks.size === 0,
       ),
     )
   }
