@@ -3,7 +3,9 @@
   "testRunner": "vitest",
   "plugins": ["@stryker-mutator/vitest-runner"],
   "mutate": ["apps/friday/src/platforms/discord/DiscordChannelAccess.ts"],
-  "coverageAnalysis": "off",
+  "testFiles": ["apps/friday/src/platforms/discord/DiscordChannelAccess.test.ts"],
+  "coverageAnalysis": "perTest",
+  "ignoreStatic": true,
   "reporters": ["clear-text", "progress"],
   "thresholds": {
     "high": 100,

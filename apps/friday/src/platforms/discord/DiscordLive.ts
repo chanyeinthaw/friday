@@ -54,14 +54,6 @@ import {
   harnessSubcommand,
 } from './DiscordHarnessCommand.ts'
 import { FridayDiscordAdapter, type FridayDiscordAdapterConfig } from './FridayDiscordAdapter.ts'
-import {
-  HARNESS_COMMAND_PATHS,
-  decideHarnessCommand,
-  decodeHarnessInteraction,
-  harnessCommandReply,
-  harnessReloadReply,
-  harnessSubcommand,
-} from './DiscordHarnessCommand.ts'
 import { searchDiscordMessages } from './DiscordMessageSearch.ts'
 import { withDiscordThreadActivityTitle } from './DiscordThreadActivityTitle.ts'
 import {
