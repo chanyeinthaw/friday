@@ -107,6 +107,8 @@ test('creates and reuses one managed worktree in the channel workspace', async (
   expect(await Bun.file(join(first.path, 'README.md')).text()).toBe('Friday worktree test\n')
 })
 
+// Spawns several Friday CLI subprocesses; the combined startup cost exceeds
+// Bun's default 5s timeout on CI runners, so allow more headroom explicitly.
 test('lists managed worktrees from the persisted Friday registry', async () => {
   const root = await makeTemporaryDirectory('friday-worktree-list-test-')
   const source = join(root, 'source-repository')
@@ -161,7 +163,7 @@ test('lists managed worktrees from the persisted Friday registry', async () => {
   const pruned = decodeWorktreeList(await runFriday(['worktree', 'list', '--json']))
   expect(pruned.length).toBe(1)
   expect(pruned[0]!.prunable).toBe(true)
-})
+}, 20_000)
 
 test('keeps concurrent registry updates from separate Friday processes', async () => {
   const root = await makeTemporaryDirectory('friday-worktree-concurrency-test-')
