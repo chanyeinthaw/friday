@@ -277,6 +277,47 @@ test('recovers a lock whose recorded owner is dead', async () => {
   expect(await Bun.file(lockPath).exists()).toBe(false)
 })
 
+test('reclaims a reused Linux pid when the recorded process start id differs', async () => {
+  if (process.platform !== 'linux') return
+  const root = await makeTemporaryDirectory('friday-worktree-lock-pid-reuse-')
+  const fridayHome = join(root, 'friday-home')
+  const lockPath = registryLockPath(fridayHome)
+  await mkdir(lockPath, { recursive: true })
+  const token = crypto.randomUUID()
+  await writeFile(
+    join(lockPath, `owner-${token}.json`),
+    JSON.stringify({
+      token,
+      pid: process.pid,
+      startedAt: '2000-01-01T00:00:00.000Z',
+      processStartId: 'definitely-not-this-process',
+    }),
+  )
+
+  const holder = await Effect.runPromise(
+    acquireRegistryLock(fridayHome, { timeoutMs: 500, retryMs: 5 }),
+  )
+  await Effect.runPromise(releaseRegistryLock(holder))
+  expect(await Bun.file(lockPath).exists()).toBe(false)
+})
+
+test('malformed lock metadata fails closed until the configured timeout', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-lock-malformed-')
+  const fridayHome = join(root, 'friday-home')
+  const lockPath = registryLockPath(fridayHome)
+  await mkdir(lockPath, { recursive: true })
+  const ownerPath = join(lockPath, 'owner-malformed.json')
+  await writeFile(ownerPath, '{not valid metadata')
+
+  const startedAt = performance.now()
+  const exit = await Effect.runPromiseExit(
+    acquireRegistryLock(fridayHome, { timeoutMs: 80, retryMs: 5 }),
+  )
+  expect(exit._tag).toBe('Failure')
+  expect(performance.now() - startedAt).toBeGreaterThanOrEqual(60)
+  expect(await Bun.file(ownerPath).exists()).toBe(true)
+})
+
 test('does not reclaim a live owner solely because its metadata is old', async () => {
   const root = await makeTemporaryDirectory('friday-worktree-lock-live-old-')
   const fridayHome = join(root, 'friday-home')
@@ -323,6 +364,29 @@ test('release leaves a lock untouched when the on-disk owner token changed', asy
 
   await Effect.runPromise(releaseRegistryLock(holder))
   expect(await Bun.file(ownerPath).exists()).toBe(true)
+})
+
+test('release cannot remove a successor token installed after the old owner moved', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-lock-successor-race-')
+  const fridayHome = join(root, 'friday-home')
+  const holder = await Effect.runPromise(acquireRegistryLock(fridayHome))
+  const lockPath = registryLockPath(fridayHome)
+  const successorToken = crypto.randomUUID()
+  const successorPath = join(lockPath, `owner-${successorToken}.json`)
+
+  await rm(holder.ownerPath)
+  await writeFile(
+    successorPath,
+    JSON.stringify({
+      token: successorToken,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      processStartId: null,
+    }),
+  )
+  await Effect.runPromise(releaseRegistryLock(holder))
+
+  expect(await Bun.file(successorPath).exists()).toBe(true)
 })
 
 test('removes an approved dirty worktree after revalidating its snapshot', async () => {

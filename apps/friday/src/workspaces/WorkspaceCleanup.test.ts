@@ -344,6 +344,67 @@ describe('WorkspaceCleanup', () => {
     ),
   )
 
+  it.effect('does not reprocess resources already recorded as removed', () =>
+    Effect.gen(function* () {
+      const { workspace, worktree } = yield* makeManagedWorkspace('skip-removed')
+      const cleanup = yield* WorkspaceCleanup
+      const proposal = yield* proposeForWorkspace(workspace)
+      assert(proposal !== null)
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        UPDATE workspace_cleanup_resources
+        SET removal_status = 'removed'
+        WHERE proposal_id = ${proposal.id} AND worktree_path = ${worktree.path}
+      `
+
+      const applied = yield* cleanup.apply(proposal.id, workspace)
+      assert.strictEqual(applied.status, 'applied')
+      assert.strictEqual(applied.resources[0]!.removalStatus, 'removed')
+      assert.strictEqual(
+        yield* Effect.promise(() =>
+          stat(worktree.path).then(
+            () => true,
+            () => false,
+          ),
+        ),
+        true,
+      )
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(SqlClientLive, ThreadPersistenceLive, TestLive)),
+    ),
+  )
+
+  it.effect('does not repeat the durable-intent transition for removing resources', () =>
+    Effect.gen(function* () {
+      const { workspace, worktree } = yield* makeManagedWorkspace('keep-removing-intent')
+      const cleanup = yield* WorkspaceCleanup
+      const proposal = yield* proposeForWorkspace(workspace)
+      assert(proposal !== null)
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        UPDATE workspace_cleanup_resources
+        SET removal_status = 'removing'
+        WHERE proposal_id = ${proposal.id} AND worktree_path = ${worktree.path}
+      `
+      yield* sql`
+        CREATE TRIGGER reject_repeated_removing
+        BEFORE UPDATE OF removal_status ON workspace_cleanup_resources
+        WHEN OLD.removal_status = 'removing' AND NEW.removal_status = 'removing'
+        BEGIN
+          SELECT RAISE(ABORT, 'repeated durable intent');
+        END
+      `
+
+      const applied = yield* cleanup.apply(proposal.id, workspace)
+      assert.strictEqual(applied.status, 'applied')
+      assert.strictEqual(applied.resources[0]!.removalStatus, 'removed')
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(SqlClientLive, ThreadPersistenceLive, TestLive)),
+    ),
+  )
+
   it.effect('reconciles a hard crash after deletion and before completion persistence', () =>
     Effect.gen(function* () {
       const { workspace, worktree } = yield* makeManagedWorkspace('resume-crash-gap')

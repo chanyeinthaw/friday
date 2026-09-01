@@ -9,8 +9,8 @@
   "reporters": ["clear-text", "progress"],
   "thresholds": {
     "high": 90,
-    "low": 85,
-    "break": 85
+    "low": 87,
+    "break": 87
   },
   "concurrency": 2
 }

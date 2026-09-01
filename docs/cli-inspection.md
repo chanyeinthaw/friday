@@ -93,10 +93,12 @@ Cleanup is not an atomic filesystem transaction. Each resource starts as
 `pending`. Apply persists `removing` before it changes Git, the filesystem, or
 the registry, then persists `removed` after reconciliation completes. If the
 process crashes after external deletion, the next apply treats `removing` as
-durable intent. It checks the worktree and branch, prunes Git state, and removes
-the registry entry before marking the resource `removed`. A failed proposal
-keeps `pending`, `removing`, and `removed` progress honestly and can be applied
-again.
+durable intent. It deletes a recorded task branch only when the branch still
+points at the recorded head and no successor worktree owns it. A moved branch
+makes the proposal stale and remains untouched. Cleanup then prunes Git state
+and removes the registry entry before marking the resource `removed`. A failed
+proposal keeps `pending`, `removing`, and `removed` progress honestly and can be
+applied again.
 
 SQLite enforces one `pending` or `failed` cleanup proposal per thread with a
 partial unique index. Concurrent propose calls return that one active proposal.

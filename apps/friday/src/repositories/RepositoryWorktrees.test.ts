@@ -19,7 +19,9 @@ import {
   removeRepositoryWorktree,
   RepositoryUrl,
   RepositoryWorktreeError,
+  RepositoryWorktreeSnapshot,
   splitRepositoryLocation,
+  validateRepositoryWorktreeSnapshot,
   worktreeRegistryPath,
 } from './RepositoryWorktrees.ts'
 
@@ -447,6 +449,227 @@ describe('RepositoryWorktrees', () => {
           ),
         ),
       )
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('validates missing, head, branch, and common-directory ownership changes', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-worktree-owner-')))
+      const home = join(root, 'friday-home')
+      const { url } = yield* makeSourceRepository(root, 'ownership-repository')
+
+      const missing = yield* ensureRepositoryWorktree(
+        { url, workspaceRoot: join(root, 'missing-workspace') },
+        home,
+      )
+      const missingSnapshot = yield* inspectRepositoryWorktree(missing.path)
+      assert(missingSnapshot !== null)
+      yield* Effect.promise(() => rm(missing.path, { recursive: true, force: true }))
+      assert.strictEqual(
+        (yield* validateRepositoryWorktreeSnapshot(missingSnapshot).pipe(Effect.flip)).operation,
+        'validate',
+      )
+
+      const movedHead = yield* ensureRepositoryWorktree(
+        { url, workspaceRoot: join(root, 'head-workspace') },
+        home,
+      )
+      const headSnapshot = yield* inspectRepositoryWorktree(movedHead.path)
+      assert(headSnapshot !== null)
+      yield* Effect.promise(() => writeFile(join(movedHead.path, 'next.txt'), 'next\n', 'utf8'))
+      yield* Effect.promise(() => commitAll(movedHead.path, 'move head'))
+      assert.strictEqual(
+        (yield* validateRepositoryWorktreeSnapshot(headSnapshot).pipe(Effect.flip)).operation,
+        'validate',
+      )
+
+      const movedBranch = yield* ensureRepositoryWorktree(
+        { url, workspaceRoot: join(root, 'branch-workspace') },
+        home,
+      )
+      const branchSnapshot = yield* inspectRepositoryWorktree(movedBranch.path)
+      assert(branchSnapshot !== null)
+      yield* Effect.promise(() => git(movedBranch.path, 'switch', '-c', 'successor/branch'))
+      assert.strictEqual(
+        (yield* validateRepositoryWorktreeSnapshot(branchSnapshot).pipe(Effect.flip)).operation,
+        'validate',
+      )
+
+      const commonSnapshot = RepositoryWorktreeSnapshot.make({
+        ...branchSnapshot,
+        branch: 'successor/branch',
+        commonDirectory: join(root, 'other.git'),
+      })
+      assert.strictEqual(
+        (yield* validateRepositoryWorktreeSnapshot(commonSnapshot).pipe(Effect.flip)).operation,
+        'validate',
+      )
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('leaves a moved task branch untouched when retrying a missing worktree', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'friday-worktree-successor-')),
+      )
+      const home = join(root, 'friday-home')
+      const primary = join(root, 'primary')
+      const origin = join(root, 'origin.git')
+      yield* Effect.promise(() => exec('git', ['init', '--initial-branch=main', primary]))
+      yield* Effect.promise(() => exec('git', ['init', '--bare', origin]))
+      yield* Effect.promise(() => exec('git', ['-C', primary, 'remote', 'add', 'origin', origin]))
+      yield* Effect.promise(() => writeFile(join(primary, 'README.md'), 'initial\n', 'utf8'))
+      yield* Effect.promise(() => commitAll(primary, 'initial'))
+      const isolated = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-successor' },
+        home,
+      )
+      const oldSnapshot = yield* inspectRepositoryWorktree(isolated.path)
+      assert(oldSnapshot !== null)
+
+      yield* Effect.promise(() => git(primary, 'worktree', 'remove', '--force', isolated.path))
+      yield* Effect.promise(() => writeFile(join(primary, 'successor.txt'), 'successor\n', 'utf8'))
+      yield* Effect.promise(() => commitAll(primary, 'successor'))
+      const successorHead = yield* Effect.promise(() =>
+        exec('git', ['-C', primary, 'rev-parse', 'HEAD']).then((result) => result.stdout.trim()),
+      )
+      yield* Effect.promise(() => git(primary, 'branch', '-f', isolated.branch, successorHead))
+
+      const stale = yield* removeRepositoryWorktree(oldSnapshot, home).pipe(Effect.flip)
+      assert.strictEqual(stale.operation, 'validate')
+      const retainedHead = yield* Effect.promise(() =>
+        exec('git', ['-C', primary, 'rev-parse', isolated.branch]).then((result) =>
+          result.stdout.trim(),
+        ),
+      )
+      assert.strictEqual(retainedHead, successorHead)
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('refuses to delete a task branch now owned by a successor worktree', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'friday-worktree-owner-next-')),
+      )
+      const home = join(root, 'friday-home')
+      const primary = join(root, 'primary')
+      const origin = join(root, 'origin.git')
+      yield* Effect.promise(() => exec('git', ['init', '--initial-branch=main', primary]))
+      yield* Effect.promise(() => exec('git', ['init', '--bare', origin]))
+      yield* Effect.promise(() => exec('git', ['-C', primary, 'remote', 'add', 'origin', origin]))
+      yield* Effect.promise(() => writeFile(join(primary, 'README.md'), 'initial\n', 'utf8'))
+      yield* Effect.promise(() => commitAll(primary, 'initial'))
+      const isolated = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-next-owner' },
+        home,
+      )
+      const snapshot = yield* inspectRepositoryWorktree(isolated.path)
+      assert(snapshot !== null)
+      yield* Effect.promise(() => rm(isolated.path, { recursive: true, force: true }))
+      yield* Effect.promise(() => git(primary, 'worktree', 'prune'))
+      const successorPath = join(root, 'successor-worktree')
+      yield* Effect.promise(() => git(primary, 'worktree', 'add', successorPath, isolated.branch))
+
+      const stale = yield* removeRepositoryWorktree(snapshot, home).pipe(Effect.flip)
+      assert.strictEqual(stale.operation, 'validate')
+      assert.strictEqual(
+        yield* Effect.promise(() =>
+          stat(successorPath).then(
+            () => true,
+            () => false,
+          ),
+        ),
+        true,
+      )
+      const successorBranch = yield* Effect.promise(() =>
+        exec('git', ['-C', successorPath, 'branch', '--show-current']).then((result) =>
+          result.stdout.trim(),
+        ),
+      )
+      assert.strictEqual(successorBranch, isolated.branch)
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('deletes an unchanged task branch after its worktree disappears', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'friday-worktree-missing-ok-')),
+      )
+      const home = join(root, 'friday-home')
+      const primary = join(root, 'primary')
+      const origin = join(root, 'origin.git')
+      yield* Effect.promise(() => exec('git', ['init', '--initial-branch=main', primary]))
+      yield* Effect.promise(() => exec('git', ['init', '--bare', origin]))
+      yield* Effect.promise(() => exec('git', ['-C', primary, 'remote', 'add', 'origin', origin]))
+      yield* Effect.promise(() => writeFile(join(primary, 'README.md'), 'initial\n', 'utf8'))
+      yield* Effect.promise(() => commitAll(primary, 'initial'))
+      const isolated = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-unchanged' },
+        home,
+      )
+      const snapshot = yield* inspectRepositoryWorktree(isolated.path)
+      assert(snapshot !== null)
+      yield* Effect.promise(() => rm(isolated.path, { recursive: true, force: true }))
+      yield* Effect.promise(() => git(primary, 'worktree', 'prune'))
+      const unrelated = join(root, 'unrelated-worktree')
+      yield* Effect.promise(() =>
+        git(primary, 'worktree', 'add', '-b', 'unrelated/branch', unrelated, 'main'),
+      )
+
+      yield* removeRepositoryWorktree(snapshot, home)
+      const branchExists = yield* Effect.promise(() =>
+        exec('git', ['-C', primary, 'show-ref', '--verify', `refs/heads/${isolated.branch}`]).then(
+          () => true,
+          () => false,
+        ),
+      )
+      assert.strictEqual(branchExists, false)
+      assert.strictEqual(
+        yield* Effect.promise(() =>
+          stat(unrelated).then(
+            () => true,
+            () => false,
+          ),
+        ),
+        true,
+      )
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('reconciles a missing task worktree whose recorded branch is already absent', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'friday-worktree-no-branch-')),
+      )
+      const home = join(root, 'friday-home')
+      const primary = join(root, 'primary')
+      const origin = join(root, 'origin.git')
+      yield* Effect.promise(() => exec('git', ['init', '--initial-branch=main', primary]))
+      yield* Effect.promise(() => exec('git', ['init', '--bare', origin]))
+      yield* Effect.promise(() => exec('git', ['-C', primary, 'remote', 'add', 'origin', origin]))
+      yield* Effect.promise(() => writeFile(join(primary, 'README.md'), 'initial\n', 'utf8'))
+      yield* Effect.promise(() => commitAll(primary, 'initial'))
+      const isolated = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-gone' },
+        home,
+      )
+      const snapshot = yield* inspectRepositoryWorktree(isolated.path)
+      assert(snapshot !== null)
+      yield* Effect.promise(() => git(primary, 'worktree', 'remove', '--force', isolated.path))
+      yield* Effect.promise(() => git(primary, 'branch', '-D', isolated.branch))
+
+      yield* removeRepositoryWorktree(snapshot, home)
+      assert.deepStrictEqual(yield* listManagedWorktrees(home), [])
 
       yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
     }).pipe(Effect.scoped),

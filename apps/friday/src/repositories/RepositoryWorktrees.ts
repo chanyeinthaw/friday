@@ -62,7 +62,6 @@ interface CommandResult {
   readonly exitCode: number
 }
 
-// Stryker disable all: Process and inspection adapters are covered by ordinary Git integration behavior.
 const readStream = async (stream: NodeJS.ReadableStream | null): Promise<string> => {
   if (stream === null) return ''
   const chunks: Array<Buffer> = []
@@ -301,8 +300,14 @@ export const readWorktreeRegistry = (
 
 // Stryker disable all: The lock protocol is exercised by separate-process integration tests, which Stryker cannot run in its vitest sandbox.
 const registrySemaphore = Semaphore.makeUnsafe(1)
-const registryLockTimeoutMs = 10_000
-const registryLockRetryMs = 25
+
+export interface RegistryLockOptions {
+  readonly timeoutMs?: number
+  readonly retryMs?: number
+}
+
+const defaultRegistryLockTimeoutMs = 10_000
+const defaultRegistryLockRetryMs = 25
 
 export const registryLockPath = (home: string): string => `${worktreeRegistryPath(home)}.lock`
 
@@ -392,9 +397,12 @@ const reclaimDeadRegistryLockOwner = Effect.fn('RepositoryWorktrees.reclaimDeadL
  */
 export const acquireRegistryLock = Effect.fn('RepositoryWorktrees.acquireRegistryLock')(function* (
   home: string,
+  options: RegistryLockOptions = {},
 ) {
   const lockPath = registryLockPath(home)
   const waitingSince = Date.now()
+  const timeoutMs = options.timeoutMs ?? defaultRegistryLockTimeoutMs
+  const retryMs = options.retryMs ?? defaultRegistryLockRetryMs
   const owner = RegistryLockOwner.make({
     token: randomUUID(),
     pid: process.pid,
@@ -427,7 +435,7 @@ export const acquireRegistryLock = Effect.fn('RepositoryWorktrees.acquireRegistr
       }),
   })
 
-  while (Date.now() - waitingSince < registryLockTimeoutMs) {
+  while (Date.now() - waitingSince < timeoutMs) {
     const acquired = yield* Effect.tryPromise({
       try: async () => {
         const created = await mkdir(lockPath).then(
@@ -482,7 +490,7 @@ export const acquireRegistryLock = Effect.fn('RepositoryWorktrees.acquireRegistr
         }
       }
     }
-    yield* pause(registryLockRetryMs)
+    yield* pause(retryMs)
   }
   yield* Effect.promise(() => rm(claimantPath, { force: true }))
   return yield* new RepositoryWorktreeError({
@@ -521,7 +529,8 @@ export const releaseRegistryLock = Effect.fn('RepositoryWorktrees.releaseRegistr
   yield* Effect.promise(() => rm(quarantinePath, { force: true }))
 })
 
-// Stryker disable all: Registry serialization outside the lock protocol is covered by existing Git lifecycle tests.
+// Stryker restore all
+
 /** Writes a complete registry by atomic rename, so readers never see a partial document. */
 const writeRegistry = (home: string, registry: WorktreeRegistry) =>
   Effect.acquireUseRelease(
@@ -650,7 +659,6 @@ export const listManagedWorktrees = Effect.fn('RepositoryWorktrees.listManaged')
   return entries.flat().toSorted((left, right) => left.path.localeCompare(right.path))
 })
 
-// Stryker restore all
 export const validateRepositoryWorktreeSnapshot = Effect.fn('RepositoryWorktrees.validateSnapshot')(
   function* (snapshot: RepositoryWorktreeSnapshot) {
     const current = yield* inspectRepositoryWorktree(snapshot.path)
@@ -669,6 +677,45 @@ export const validateRepositoryWorktreeSnapshot = Effect.fn('RepositoryWorktrees
   },
 )
 
+const validateMissingTaskBranchOwnership = Effect.fn(
+  'RepositoryWorktrees.validateMissingTaskBranchOwnership',
+)(function* (snapshot: RepositoryWorktreeSnapshot) {
+  const branchRef = `refs/heads/${snapshot.branch}`
+  const branch = yield* runGit([
+    '--git-dir',
+    snapshot.commonDirectory,
+    'show-ref',
+    '--hash',
+    '--verify',
+    branchRef,
+  ])
+  if (branch.exitCode !== 0) return false
+  if (branch.stdout !== snapshot.head) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'validate',
+      detail: `Worktree '${snapshot.path}' changed after cleanup approval was requested.`,
+    })
+  }
+
+  const listing = yield* requireGit('validate', [
+    '--git-dir',
+    snapshot.commonDirectory,
+    'worktree',
+    'list',
+    '--porcelain',
+  ])
+  const branchHasSuccessor = parseWorktreePorcelain(listing).some(
+    (record) => record.path !== snapshot.path && record.branch === snapshot.branch,
+  )
+  if (branchHasSuccessor) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'validate',
+      detail: `Worktree '${snapshot.path}' changed after cleanup approval was requested.`,
+    })
+  }
+  return true
+})
+
 export const removeRepositoryWorktree = Effect.fn('RepositoryWorktrees.removeManaged')(function* (
   snapshot: RepositoryWorktreeSnapshot,
   home: string = FRIDAY_HOME,
@@ -686,21 +733,25 @@ export const removeRepositoryWorktree = Effect.fn('RepositoryWorktrees.removeMan
     ])
   }
   if (snapshot.branch.startsWith('friday/task/')) {
-    const branch = yield* runGit([
-      '--git-dir',
-      snapshot.commonDirectory,
-      'show-ref',
-      '--verify',
-      `refs/heads/${snapshot.branch}`,
-    ])
-    if (branch.exitCode === 0) {
-      yield* requireGit('remove', [
+    const mayDeleteBranch =
+      current === null ? yield* validateMissingTaskBranchOwnership(snapshot) : true
+    if (mayDeleteBranch) {
+      const branch = yield* runGit([
         '--git-dir',
         snapshot.commonDirectory,
-        'branch',
-        '-D',
-        snapshot.branch,
+        'show-ref',
+        '--verify',
+        `refs/heads/${snapshot.branch}`,
       ])
+      if (branch.exitCode === 0) {
+        yield* requireGit('remove', [
+          '--git-dir',
+          snapshot.commonDirectory,
+          'branch',
+          '-D',
+          snapshot.branch,
+        ])
+      }
     }
   }
   yield* requireGit('remove', ['--git-dir', snapshot.commonDirectory, 'worktree', 'prune'])
@@ -709,7 +760,6 @@ export const removeRepositoryWorktree = Effect.fn('RepositoryWorktrees.removeMan
   yield* unregisterManagedWorktree(home, snapshot.path)
 })
 
-// Stryker disable all: Naming, cloning, and creation behavior is covered separately from lifecycle mutation gates.
 export interface RepositoryLocation {
   readonly host: string
   readonly path: string

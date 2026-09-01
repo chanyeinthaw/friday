@@ -360,25 +360,27 @@ export const WorkspaceCleanupLive = Layer.effect(
       // Validate every untouched resource before deleting anything. A
       // `removing` resource has durable deletion intent, so a missing worktree
       // is the expected crash-gap state and is reconciled below.
-      const remaining = proposal.resources.filter(
-        (resource) => resource.removalStatus !== 'removed',
+      const pending = proposal.resources.filter((resource) => resource.removalStatus === 'pending')
+      const removing = proposal.resources.filter(
+        (resource) => resource.removalStatus === 'removing',
       )
-      // Stryker disable all: Removed-resource filtering and validation policy are covered by focused state-reconciliation tests.
-      yield* Effect.forEach(
-        remaining,
-        (resource) =>
-          resource.removalStatus === 'pending'
-            ? validateRepositoryWorktreeSnapshot(resource)
-            : inspectRepositoryWorktree(resource.path).pipe(
+      const remaining = [...pending, ...removing]
+      yield* Effect.forEach(pending, validateRepositoryWorktreeSnapshot, {
+        discard: true,
+        concurrency: 1,
+      }).pipe(
+        Effect.andThen(
+          Effect.forEach(
+            removing,
+            (resource) =>
+              inspectRepositoryWorktree(resource.path).pipe(
                 Effect.flatMap((current) =>
                   current === null ? Effect.void : validateRepositoryWorktreeSnapshot(resource),
                 ),
               ),
-        {
-          discard: true,
-          concurrency: 1,
-        },
-      ).pipe(
+            { discard: true, concurrency: 1 },
+          ),
+        ),
         Effect.catch(
           (
             error,
@@ -391,7 +393,6 @@ export const WorkspaceCleanupLive = Layer.effect(
           },
         ),
       )
-      // Stryker restore all
       for (const resource of remaining) {
         if (resource.removalStatus === 'pending') {
           yield* sql`
