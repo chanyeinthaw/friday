@@ -74,6 +74,7 @@ const session = (): PiAgentSessionContract => ({
   bindExtensions: async () => undefined,
   prompt: async () => undefined,
   abort: async () => undefined,
+  reload: async () => undefined,
   dispose: () => undefined,
   getSessionStats: () => ({
     sessionFile: undefined,

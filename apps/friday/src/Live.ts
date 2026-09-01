@@ -80,6 +80,7 @@ const ThreadRuntimesLive = Layer.effect(
                     (cause) => new ThreadRuntimeError({ operation: 'prompt', cause }),
                   ),
                 ),
+            reload: () => runtime.reload(),
             events: runtime.events,
           })),
         ),

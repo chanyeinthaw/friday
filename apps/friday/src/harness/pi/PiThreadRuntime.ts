@@ -31,10 +31,14 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 
 import type { AppConfig } from '../../config/AppConfig.ts'
-import type {
-  PromptRequest,
-  ThreadRuntime,
-  ThreadRuntimeEvent,
+import {
+  harnessReloadFailed,
+  harnessReloadRefused,
+  harnessReloadSucceeded,
+  type HarnessReloadOutcome,
+  type PromptRequest,
+  type ThreadRuntime,
+  type ThreadRuntimeEvent,
 } from '../../conversation/ThreadRuntime.ts'
 import {
   renderModelHint,
@@ -65,6 +69,7 @@ export class PiThreadRuntimeError extends Schema.Error<PiThreadRuntimeError>(
     'bind-extensions',
     'prompt',
     'steer',
+    'reload',
     'attachments',
   ]),
   detail: Schema.String,
@@ -95,6 +100,8 @@ export interface PiAgentSessionContract {
   readonly bindExtensions: AgentSession['bindExtensions']
   readonly prompt: AgentSession['prompt']
   readonly abort: AgentSession['abort']
+  /** Reloads harness extensions/settings in place; the conversation is preserved. */
+  readonly reload: AgentSession['reload']
   readonly dispose: AgentSession['dispose']
   readonly getSessionStats: AgentSession['getSessionStats']
 }
@@ -720,6 +727,47 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
     })
   })
 
+  // Serialized against steering sends through sessionLock; concurrent Turns are
+  // refused via the runtime's active-turn state and the pool's turn accounting.
+  const reload = (): Effect.Effect<HarnessReloadOutcome> =>
+    sessionLock
+      .withPermit(
+        Effect.gen(function* () {
+          const activeTurnId = state.activeTurnId
+          if (activeTurnId !== null) {
+            yield* Effect.logDebug('pi.reload.busy').pipe(
+              Effect.annotateLogs({
+                component: 'pi',
+                threadId: options.thread.id,
+                turnId: activeTurnId,
+              }),
+            )
+            return harnessReloadRefused(
+              'busy',
+              'A turn is active in this thread; wait for it to finish before reloading.',
+            )
+          }
+          yield* Effect.tryPromise({
+            try: () => session.reload(),
+            catch: (cause) =>
+              new PiThreadRuntimeError({
+                operation: 'reload',
+                detail: errorDetail(cause),
+                cause,
+              }),
+          })
+          yield* Effect.logInfo('pi.session.reloaded').pipe(
+            Effect.annotateLogs({
+              component: 'pi',
+              threadId: options.thread.id,
+              harnessSessionId: session.sessionId,
+            }),
+          )
+          return harnessReloadSucceeded()
+        }),
+      )
+      .pipe(Effect.catch((cause) => Effect.succeed(harnessReloadFailed(cause.detail))))
+
   const sessionFile = session.sessionManager.getSessionFile()
   yield* Effect.logInfo('pi.session.opened').pipe(
     Effect.annotateLogs({
@@ -741,6 +789,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
     },
     prompt,
     cancel,
+    reload,
     events: Stream.fromQueue(eventsQueue),
   } satisfies ThreadRuntime<PiThreadRuntimeError>
 })

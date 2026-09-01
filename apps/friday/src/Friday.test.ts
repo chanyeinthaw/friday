@@ -6,6 +6,7 @@ import * as Schema from 'effect/Schema'
 
 import { Friday, FridayLive } from './Friday.ts'
 import { ThreadRuntimePool } from './conversation/ThreadRuntimePool.ts'
+import { harnessReloadSucceeded } from './conversation/ThreadRuntime.ts'
 import type { ThreadPersistenceContract } from './conversation/ThreadPersistence.ts'
 
 const thread = Schema.decodeSync(ChannelThread)({
@@ -68,6 +69,7 @@ it.effect('opens a Thread through the runtime service and returns its started co
           ),
         steer: () => Effect.void,
         cancel: () => Effect.void,
+        reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
         start: Effect.void,
         drain: Effect.void,
@@ -83,6 +85,7 @@ it.effect('opens a Thread through the runtime service and returns its started co
                     operations.push('set-harness-session')
                     return pooledCoordinator
                   }),
+                reloadHarness: () => Effect.succeed(harnessReloadSucceeded()),
                 reapIdle: Effect.void,
               }),
             ),

@@ -97,3 +97,20 @@ lock:
 
 CLI configuration commands that write SQLite (`platform invocation set`,
 `platform system-channel set/reset`) take effect on the next reload.
+
+## Harness reload
+
+`/harness reload` is a separate, per-thread operation: it reloads the Pi
+harness session (extensions, settings, resource loader) of the existing
+runtime bound to the invoking Discord thread. The conversation and its session
+file are always preserved — only harness resources are refreshed.
+
+- Registered as a global application command alongside `/friday`, with the
+  same idempotent create-or-patch-by-ID registration; replies ephemerally
+- Has no authorization guard of any kind, unlike `/friday reload` — any user
+  who can invoke the command in a resolvable Discord thread may reload
+- Targets only the Friday thread bound to the invoking conversation
+- Refuses safely when the thread has no open runtime (Friday never opens an
+  absent runtime just to reload it) or when a turn is active in the thread
+- Failures are structured outcomes (`ok`, `reason`, `detail`), never thrown
+  across the transport boundary

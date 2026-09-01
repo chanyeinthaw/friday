@@ -10,6 +10,7 @@ import { TestClock } from 'effect/testing'
 
 import type { TerminalTurn, ThreadCoordinatorContract } from './ThreadCoordinator.ts'
 import { ThreadRuntimePool, ThreadRuntimePoolLive } from './ThreadRuntimePool.ts'
+import { harnessReloadSucceeded, type HarnessReloadOutcome } from './ThreadRuntime.ts'
 import type { ThreadRuntimeError } from './ThreadRuntimes.ts'
 
 const thread = Schema.decodeSync(ChannelThread)({
@@ -144,6 +145,97 @@ it.effect('does not reap a runtime while its Turn is active', () =>
   ).pipe(Effect.provide(TestClock.layer())),
 )
 
+it.effect('refuses harness reload for a thread with no open runtime', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let opened = 0
+      const pool = yield* ThreadRuntimePool.pipe(
+        Effect.provide(testLayer(() => Effect.succeed(makeCoordinator(++opened)))),
+      )
+
+      const outcome = yield* pool.reloadHarness(thread.id)
+
+      assert.deepStrictEqual(outcome, {
+        ok: false,
+        reason: 'no-runtime',
+        detail:
+          'No live harness runtime is open for this thread; send a message to start one before reloading.',
+      })
+      // A reload never opens an absent runtime as a side effect.
+      assert.strictEqual(opened, 0)
+    }),
+  ).pipe(Effect.provide(TestClock.layer())),
+)
+
+it.effect('reloads the harness through the open runtime when idle', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let reloads = 0
+      const pool = yield* ThreadRuntimePool.pipe(
+        Effect.provide(
+          testLayer(() =>
+            Effect.succeed(
+              makeCoordinator(
+                1,
+                Effect.succeed(completedTurn(turn)),
+                Effect.sync(() => {
+                  reloads += 1
+                  return harnessReloadSucceeded()
+                }),
+              ),
+            ),
+          ),
+        ),
+      )
+      yield* pool.acquire(thread)
+
+      const outcome = yield* pool.reloadHarness(thread.id)
+
+      assert.deepStrictEqual(outcome, { ok: true })
+      assert.strictEqual(reloads, 1)
+    }),
+  ).pipe(Effect.provide(TestClock.layer())),
+)
+
+it.effect('refuses harness reload while a Turn is active', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const terminal = yield* Deferred.make<TerminalTurn>()
+      let reloads = 0
+      const pool = yield* ThreadRuntimePool.pipe(
+        Effect.provide(
+          testLayer(() =>
+            Effect.succeed(
+              makeCoordinator(
+                1,
+                Deferred.await(terminal),
+                Effect.sync(() => {
+                  reloads += 1
+                  return harnessReloadSucceeded()
+                }),
+              ),
+            ),
+          ),
+        ),
+      )
+      const coordinator = yield* pool.acquire(thread)
+      const handle = yield* coordinator.prompt(turn)
+
+      const outcome = yield* pool.reloadHarness(thread.id)
+
+      assert.deepStrictEqual(outcome, {
+        ok: false,
+        reason: 'busy',
+        detail: 'A turn is active in this thread; wait for it to finish before reloading.',
+      })
+      assert.strictEqual(reloads, 0)
+
+      yield* Deferred.succeed(terminal, completedTurn(turn))
+      yield* handle.awaitTerminal
+    }),
+  ).pipe(Effect.provide(TestClock.layer())),
+)
+
 const testLayer = (
   open: () => Effect.Effect<
     ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>,
@@ -159,6 +251,7 @@ const testLayer = (
 const makeCoordinator = (
   identity: number,
   awaitTerminal: Effect.Effect<TerminalTurn> = Effect.succeed(completedTurn(turn)),
+  reload: Effect.Effect<HarnessReloadOutcome> = Effect.succeed(harnessReloadSucceeded()),
 ): ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError> => ({
   prompt: (promptedTurn: TurnType) =>
     Effect.succeed({
@@ -167,6 +260,7 @@ const makeCoordinator = (
     }),
   steer: () => Effect.void,
   cancel: () => Effect.void,
+  reload: () => reload,
   onEvent: () => Effect.void,
   start: Effect.void,
   drain: Effect.sync(() => identity).pipe(Effect.asVoid),

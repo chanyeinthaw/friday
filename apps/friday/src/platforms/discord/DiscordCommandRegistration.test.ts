@@ -3,7 +3,8 @@ import * as Effect from 'effect/Effect'
 
 import {
   fridayCommandDefinition,
-  registerGlobalFridayCommand,
+  globalCommandDefinitions,
+  registerGlobalDiscordCommands,
 } from './DiscordCommandRegistration.ts'
 
 const recordFetch = (
@@ -25,7 +26,7 @@ const recordFetch = (
   return requests
 }
 
-it('defines /friday with a reload subcommand payload Discord accepts', () => {
+it('defines /friday and /harness with reload subcommand payloads Discord accepts', () => {
   // SUB_COMMAND options (type 1) must not carry `required`; Discord rejects the payload.
   assert.deepStrictEqual(fridayCommandDefinition, {
     name: 'friday',
@@ -38,30 +39,47 @@ it('defines /friday with a reload subcommand payload Discord accepts', () => {
       },
     ],
   })
+  assert.deepStrictEqual(globalCommandDefinitions[1], {
+    name: 'harness',
+    description: 'Friday harness commands.',
+    options: [
+      {
+        name: 'reload',
+        description: 'Reload the harness extensions for this thread.',
+        type: 1,
+      },
+    ],
+  })
 })
 
 it.effect('creates the command when no global command exists yet', () =>
   Effect.gen(function* () {
     const requests = recordFetch(() => new Response('[]', { status: 200 }))
-    yield* registerGlobalFridayCommand({
+    yield* registerGlobalDiscordCommands({
       botToken: 'bot-token',
       applicationId: 'application-1',
     })
     vi.unstubAllGlobals()
 
-    // One listing read, then a single-command create. No bulk PUT anywhere.
-    assert.strictEqual(requests.length, 2)
+    // One listing read, then one single-command create per definition. No bulk
+    // PUT anywhere.
+    assert.strictEqual(requests.length, 3)
     const list = requests[0]
-    const create = requests[1]
-    assert(list !== undefined && create !== undefined)
+    const creates = requests.slice(1)
+    assert(list !== undefined)
     assert.strictEqual(list.method, 'GET')
     assert.strictEqual(list.url, 'https://discord.com/api/v10/applications/application-1/commands')
-    assert.strictEqual(create.method, 'POST')
-    assert.strictEqual(
-      create.url,
-      'https://discord.com/api/v10/applications/application-1/commands',
+    assert.deepStrictEqual(
+      creates.map((request) => JSON.parse(request.body ?? 'null')),
+      globalCommandDefinitions,
     )
-    assert.deepStrictEqual(JSON.parse(create.body ?? 'null'), fridayCommandDefinition)
+    for (const create of creates) {
+      assert.strictEqual(create.method, 'POST')
+      assert.strictEqual(
+        create.url,
+        'https://discord.com/api/v10/applications/application-1/commands',
+      )
+    }
   }),
 )
 
@@ -78,15 +96,15 @@ it.effect('updates only the matching command instead of bulk-overwriting', () =>
           )
         : new Response(JSON.stringify({ id: '222' }), { status: 200 }),
     )
-    yield* registerGlobalFridayCommand({
+    yield* registerGlobalDiscordCommands({
       botToken: 'bot-token',
       applicationId: 'application-1',
     })
     vi.unstubAllGlobals()
 
     // The existing /friday command is PATCHed by ID; the unrelated command is
-    // never deleted or rewritten.
-    assert.strictEqual(requests.length, 2)
+    // never deleted or rewritten, and the missing /harness command is created.
+    assert.strictEqual(requests.length, 3)
     const update = requests[1]
     assert(update !== undefined)
     assert.strictEqual(update.method, 'PATCH')
@@ -95,6 +113,10 @@ it.effect('updates only the matching command instead of bulk-overwriting', () =>
       'https://discord.com/api/v10/applications/application-1/commands/222',
     )
     assert.deepStrictEqual(JSON.parse(update.body ?? 'null'), fridayCommandDefinition)
+    const createHarness = requests[2]
+    assert(createHarness !== undefined)
+    assert.strictEqual(createHarness.method, 'POST')
+    assert.deepStrictEqual(JSON.parse(createHarness.body ?? 'null'), globalCommandDefinitions[1])
   }),
 )
 
@@ -107,7 +129,7 @@ it.effect('fails with a typed error when Discord rejects the registration', () =
           : new Response('nope', { status: 403 }),
       ),
     )
-    const error = yield* registerGlobalFridayCommand({
+    const error = yield* registerGlobalDiscordCommands({
       botToken: 'bot-token',
       applicationId: 'application-1',
     }).pipe(

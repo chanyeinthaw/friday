@@ -35,27 +35,48 @@ const DiscordExistingCommand = Schema.Struct({
 const decodeCommandDefinition = Schema.decodeSync(DiscordCommandDefinition)
 const decodeExistingCommands = Schema.decodeUnknownSync(Schema.Array(DiscordExistingCommand))
 
-export const fridayCommandDefinition = decodeCommandDefinition({
-  name: 'friday',
-  description: 'Friday application commands.',
-  options: [
-    {
-      name: 'reload',
-      description: 'Reload Friday configuration from the database.',
-      type: 1,
-    },
-  ],
-})
+/**
+ * Global application command definitions Friday registers for its application.
+ * `/friday reload` reloads configuration; `/harness reload` reloads the Pi
+ * harness session of the invoking thread's existing runtime.
+ */
+export const globalCommandDefinitions = [
+  decodeCommandDefinition({
+    name: 'friday',
+    description: 'Friday application commands.',
+    options: [
+      {
+        name: 'reload',
+        description: 'Reload Friday configuration from the database.',
+        type: 1,
+      },
+    ],
+  }),
+  decodeCommandDefinition({
+    name: 'harness',
+    description: 'Friday harness commands.',
+    options: [
+      {
+        name: 'reload',
+        description: 'Reload the harness extensions for this thread.',
+        type: 1,
+      },
+    ],
+  }),
+]
+
+/** Back-compat single-command definition; kept as the first global definition. */
+export const fridayCommandDefinition = globalCommandDefinitions[0]
 
 /**
- * Registers `/friday` (with its `reload` subcommand) as a global application
- * command without touching any other command the application may have:
- * it fetches the existing global commands, then creates the command via POST
- * when missing or updates the matching command via PATCH when present. Both
- * endpoints are idempotent for Friday's definition, so repeated starts never
- * duplicate commands and unrelated commands are never overwritten.
+ * Registers Friday's global application commands without touching any other
+ * command the application may have: it fetches the existing global commands,
+ * then creates each missing command via POST and updates each present command
+ * via PATCH by command ID — never a bulk overwrite, so unrelated commands and
+ * other deployments are untouched. Both endpoints are idempotent for Friday's
+ * definitions, so repeated starts never duplicate commands.
  */
-export const registerGlobalFridayCommand = Effect.fn('registerGlobalFridayCommand')(
+export const registerGlobalDiscordCommands = Effect.fn('registerGlobalDiscordCommands')(
   function* (options: {
     readonly botToken: string
     readonly applicationId: string
@@ -86,30 +107,30 @@ export const registerGlobalFridayCommand = Effect.fn('registerGlobalFridayComman
       catch: (cause) => fail("Could not list the application's existing global commands.", cause),
     })
 
-    // Discord rejects duplicate names on create, so update the matching command
-    // by ID; POST is only used when no `friday` command exists yet.
-    const existingFriday = existingCommands.find(
-      (command) => command.name === fridayCommandDefinition.name,
-    )
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        fetch(existingFriday === undefined ? commandsUrl : `${commandsUrl}/${existingFriday.id}`, {
-          method: existingFriday === undefined ? 'POST' : 'PATCH',
-          headers,
-          body: JSON.stringify(fridayCommandDefinition),
+    for (const definition of globalCommandDefinitions) {
+      // Discord rejects duplicate names on create, so update the matching
+      // command by ID; POST is only used when no command with the name exists.
+      const existing = existingCommands.find((command) => command.name === definition.name)
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          fetch(existing === undefined ? commandsUrl : `${commandsUrl}/${existing.id}`, {
+            method: existing === undefined ? 'POST' : 'PATCH',
+            headers,
+            body: JSON.stringify(definition),
+          }),
+        catch: (cause) => fail('Discord command registration request failed.', cause),
+      })
+      if (!response.ok) {
+        return yield* fail(`Discord command registration failed: HTTP ${response.status}`)
+      }
+      yield* Effect.logInfo('discord.command.registered').pipe(
+        Effect.annotateLogs({
+          component: 'discord',
+          applicationId: options.applicationId,
+          command: definition.name,
+          created: existing === undefined,
         }),
-      catch: (cause) => fail('Discord command registration request failed.', cause),
-    })
-    if (!response.ok) {
-      return yield* fail(`Discord command registration failed: HTTP ${response.status}`)
+      )
     }
-    yield* Effect.logInfo('discord.command.registered').pipe(
-      Effect.annotateLogs({
-        component: 'discord',
-        applicationId: options.applicationId,
-        command: fridayCommandDefinition.name,
-        created: existingFriday === undefined,
-      }),
-    )
   },
 )

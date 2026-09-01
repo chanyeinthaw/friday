@@ -10,6 +10,7 @@ import * as Semaphore from 'effect/Semaphore'
 
 import type { ThreadCoordinatorContract } from './ThreadCoordinator.ts'
 import type { ThreadPersistenceError } from './ThreadPersistence.ts'
+import { harnessReloadRefused, type HarnessReloadOutcome } from './ThreadRuntime.ts'
 import type { ThreadRuntimeError } from './ThreadRuntimes.ts'
 
 export interface ThreadRuntimePoolOptions {
@@ -24,6 +25,12 @@ export interface ThreadRuntimePoolContract {
     ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>,
     ThreadRuntimeError | ThreadPersistenceError
   >
+  /**
+   * Reloads the harness session of an already-open runtime for the thread.
+   * Never opens a runtime for a thread that has none, and refuses while a Turn
+   * is active; the structured outcome reports either refusal.
+   */
+  readonly reloadHarness: (threadId: ThreadId) => Effect.Effect<HarnessReloadOutcome>
   readonly reapIdle: Effect.Effect<void>
 }
 
@@ -184,6 +191,38 @@ export const ThreadRuntimePoolLive = <R>(
             }),
           ),
         reapIdle,
+        reloadHarness: (threadId) =>
+          lock.withPermit(
+            Effect.gen(function* () {
+              const entry = entries.get(threadId)
+              if (entry === undefined) {
+                yield* Effect.logDebug('thread.runtime.reload-absent').pipe(
+                  Effect.annotateLogs({
+                    component: 'runtime-pool',
+                    threadId,
+                  }),
+                )
+                return harnessReloadRefused(
+                  'no-runtime',
+                  'No live harness runtime is open for this thread; send a message to start one before reloading.',
+                )
+              }
+              if (entry.activeTurns > 0) {
+                yield* Effect.logDebug('thread.runtime.reload-busy').pipe(
+                  Effect.annotateLogs({
+                    component: 'runtime-pool',
+                    threadId,
+                    activeTurns: entry.activeTurns,
+                  }),
+                )
+                return harnessReloadRefused(
+                  'busy',
+                  'A turn is active in this thread; wait for it to finish before reloading.',
+                )
+              }
+              return yield* entry.coordinator.reload()
+            }),
+          ),
       })
     }),
   )

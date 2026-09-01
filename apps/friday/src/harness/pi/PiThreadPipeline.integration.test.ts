@@ -188,6 +188,7 @@ const makeControllableSession = () => {
       })
     },
     abort: async () => undefined,
+    reload: async () => undefined,
     dispose: () => undefined,
     getSessionStats: () => ({
       sessionFile: '/tmp/pi-session-pipeline.jsonl',
