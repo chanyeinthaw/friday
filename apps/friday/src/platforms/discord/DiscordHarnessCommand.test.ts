@@ -13,7 +13,7 @@ import {
   harnessReloadReply,
   harnessSubcommand,
 } from './DiscordHarnessCommand.ts'
-import { FridayDiscordAdapter } from './DiscordSystemChannelAdapter.ts'
+import { FridayDiscordAdapter } from './FridayDiscordAdapter.ts'
 import {
   harnessReloadFailed,
   harnessReloadRefused,
@@ -88,7 +88,12 @@ it('matches every command path the adapter produces for /harness reload', () => 
     botToken: 'bot-token',
     applicationId: 'application-1',
     publicKey: 'public-key',
-    isAllowedLocation: () => true,
+    resolveChannelPolicy: () => ({
+      invocationMode: 'mention-only',
+      replyMode: 'reply-in-thread',
+      users: { mode: 'all', ids: [] },
+    }),
+    replyInChannelChannelIds: () => [],
   })
   // Real gateway shape, verified against chat SDK 4.38: the no-argument
   // `reload` subcommand keeps the parent-only command path.

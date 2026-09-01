@@ -98,12 +98,17 @@ and system channels at the connection level. The migration
   invocation default.
 - **Channel overrides**: old channel invocation policies migrate under their
   observed guild; former system-management channels become
-  `reply-in-channel` channel overrides.
-- **No guesses**: channel rows whose guild cannot be observed from persisted
-  data are dropped rather than guessed. Old connection-level channel
-  allow/deny policies have no equivalent in the guild model and are dropped
-  with the old tables — review them after upgrading.
+  `reply-in-channel` channel overrides. A channel recorded by both legacy
+  features merges into one override row that keeps both semantics.
+- **Fail-closed, no guesses**: when any legacy policy row cannot be mapped
+  exactly — a channel whose guild cannot be observed from persisted data, a
+  channel bound under more than one guild, or old channel access policies,
+  which have no per-channel equivalent in the guild model — the migration
+  aborts, rolls back, and Friday refuses to start. The error lists every
+  offending row and the legacy tables are left untouched, so no policy is
+  silently dropped or widened; resolve the reported rows (or record the
+  equivalent guild configuration with the CLI) and restart.
 
-Legacy tables are dropped after the migration commits. Existing conversations
+Legacy tables are dropped only after the migration commits successfully. Existing conversations
 keep working: their bindings already identify the conversation, and migrated
 reply-in-channel bindings resolve to the same persisted threads.

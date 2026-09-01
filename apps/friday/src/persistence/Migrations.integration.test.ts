@@ -3,10 +3,15 @@
 import { test } from 'bun:test'
 import { strict as assert } from 'node:assert'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { runMigrations } from './Migrations.ts'
+import { LegacyDiscordConfigMigrationError, runMigrations } from './Migrations.ts'
+
+const isLegacyMigrationError = Schema.is(LegacyDiscordConfigMigrationError)
 
 const database = SqliteClient.layer({ filename: ':memory:' })
 
@@ -221,7 +226,7 @@ test('migrates connection-scoped Discord configuration into guild-scoped tables'
     }).pipe(Effect.provide(database)),
   ))
 
-test('drops channel rows whose guild cannot be observed instead of guessing', async () =>
+test('refuses and keeps legacy tables when a channel policy has no observable guild', async () =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* seedLegacySchema
@@ -230,12 +235,110 @@ test('drops channel rows whose guild cannot be observed instead of guessing', as
         INSERT INTO platform_channel_invocation_policies (connection_id, channel_id, mode)
         VALUES ('discord', '999999999999999899', 'all-messages')
       `
+      const outcome = yield* Effect.exit(runMigrations())
+      assert(Exit.isFailure(outcome))
+      const error = Exit.findErrorOption(outcome)
+      assert(Option.isSome(error))
+      assert(isLegacyMigrationError(error.value))
+      assert.match(error.value.message, /999999999999999899/)
+      assert.match(error.value.message, /no observable guild/)
+
+      // Nothing migrated and no legacy source row was destroyed: the operator
+      // can still see and resolve the original policy.
+      const migrated = yield* sql<Record<string, unknown>>`
+        SELECT * FROM discord_guild_channels
+      `
+      assert.deepStrictEqual(migrated, [])
+      const legacyPolicies = yield* sql<Record<string, unknown>>`
+        SELECT channel_id, mode FROM platform_channel_invocation_policies ORDER BY channel_id
+      `
+      assert.deepStrictEqual(legacyPolicies, [
+        { channel_id: '999999999999999899', mode: 'all-messages' },
+        { channel_id: '999999999999999901', mode: 'mention-only' },
+      ])
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('refuses when one channel is bound under more than one guild', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      const sql = yield* SqlClient.SqlClient
+      // The same channel id observed from a second guild makes ownership
+      // ambiguous; the migration must not guess between them.
+      yield* sql`
+        INSERT INTO threads (thread_id, audience, status, payload_json, created_at, updated_at)
+        VALUES (
+          'thread-4', 'user', 'active',
+          '{"conversationBinding":{"platform":"discord","connectionId":"discord","channelId":"999999999999999901","conversationId":"discord:222222222222222222:999999999999999901"}}',
+          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `
+      const outcome = yield* Effect.exit(runMigrations())
+      assert(Exit.isFailure(outcome))
+      const error = Exit.findErrorOption(outcome)
+      assert(Option.isSome(error))
+      assert(isLegacyMigrationError(error.value))
+      assert.match(error.value.message, /bound under 2 guilds/)
+      const migrated = yield* sql<Record<string, unknown>>`
+        SELECT * FROM discord_guild_channels
+      `
+      assert.deepStrictEqual(migrated, [])
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('refuses when legacy channel access policies exist', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO platform_access_policies (connection_id, subject_type, mode)
+        VALUES ('discord', 'channel', 'allow')
+      `
+      const outcome = yield* Effect.exit(runMigrations())
+      assert(Exit.isFailure(outcome))
+      const error = Exit.findErrorOption(outcome)
+      assert(Option.isSome(error))
+      assert(isLegacyMigrationError(error.value))
+      assert.match(error.value.message, /channel access policies/)
+      // The legacy tables survive so the operator can review the policy.
+      assert.deepStrictEqual(yield* legacyTableNames, [
+        'platform_channel_invocation_policies',
+        'platform_invocation_defaults',
+        'platform_system_channels',
+      ])
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('merges a channel that is both an invocation override and a system channel', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* seedLegacySchema
+      const sql = yield* SqlClient.SqlClient
+      // Channel 901 already carries a mention-only invocation policy; a second
+      // legacy feature (system channels) records the same channel id. The
+      // migration must merge both semantics into one override row.
+      yield* sql`
+        INSERT INTO platform_system_channels (connection_id, channel_id, created_at, updated_at)
+        VALUES ('discord', '999999999999999901', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `
       yield* runMigrations()
 
-      const orphan = yield* sql<Record<string, unknown>>`
-        SELECT * FROM discord_guild_channels WHERE channel_id = '999999999999999899'
+      const merged = yield* sql<Record<string, unknown>>`
+        SELECT guild_id, channel_id, invocation_mode, users_mode, reply_mode
+        FROM discord_guild_channels
+        WHERE channel_id = '999999999999999901'
       `
-      assert.deepStrictEqual(orphan, [])
+      assert.deepStrictEqual(merged, [
+        {
+          guild_id: '111111111111111111',
+          channel_id: '999999999999999901',
+          invocation_mode: 'mention-only',
+          users_mode: null,
+          reply_mode: 'reply-in-channel',
+        },
+      ])
     }).pipe(Effect.provide(database)),
   ))
 
