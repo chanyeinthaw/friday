@@ -58,10 +58,16 @@ versions did not persist ownership metadata, so the absence of an entry cannot
 prove who created a pre-registry worktree.
 
 Registry read-modify-write operations keep the in-process semaphore and also
-hold an inter-process lock under `$FRIDAY_HOME/repositories`. Lock acquisition
-is bounded and stale locks are recoverable. The final document is replaced by
-atomic rename, so readers do not see a partly written file. A malformed
-registry is a typed error rather than silently discarded state.
+hold an inter-process lock directory next to the registry. Each holder writes a
+random owner token with its PID, process start metadata, and diagnostic start
+time. Contenders wait and retry. Friday reclaims a lock only when it can prove
+the recorded process is dead, or on Linux when the PID now belongs to a
+different process. Age alone never makes a live lock stale. Release and stale
+recovery first move the matching owner token out of the lock directory, then
+remove the empty directory, so they cannot delete a successor's lock. Lock
+waiting is bounded to 10 seconds. The final document is replaced by atomic
+rename, so readers do not see a partly written file. A malformed registry is a
+typed error rather than silently discarded state.
 
 ## `friday workspace cleanup list [--json]`
 
@@ -83,9 +89,16 @@ Listing does not validate a proposal against the live file system. Apply first
 validates every remaining resource. A changed workspace or worktree marks the
 proposal `stale` before any new deletion starts.
 
-Cleanup is not described as an atomic filesystem transaction. Each successful
-resource removal is persisted as `removed`. If a later Git, filesystem, or
-registry step fails, the proposal becomes `failed` and keeps the exact
-remaining resources as `pending`. Running apply again resumes those pending
-steps. Removal is idempotent, including the case where Git removal succeeded
-but registry persistence failed.
+Cleanup is not an atomic filesystem transaction. Each resource starts as
+`pending`. Apply persists `removing` before it changes Git, the filesystem, or
+the registry, then persists `removed` after reconciliation completes. If the
+process crashes after external deletion, the next apply treats `removing` as
+durable intent. It checks the worktree and branch, prunes Git state, and removes
+the registry entry before marking the resource `removed`. A failed proposal
+keeps `pending`, `removing`, and `removed` progress honestly and can be applied
+again.
+
+SQLite enforces one `pending` or `failed` cleanup proposal per thread with a
+partial unique index. Concurrent propose calls return that one active proposal.
+Migration keeps the newest active proposal by creation time and proposal id,
+then marks older active duplicates `stale` before creating the index.

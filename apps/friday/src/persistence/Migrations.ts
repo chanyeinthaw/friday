@@ -274,7 +274,7 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       status_porcelain TEXT NOT NULL,
       size_bytes INTEGER NOT NULL,
       removal_status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (removal_status IN ('pending', 'removed')),
+        CHECK (removal_status IN ('pending', 'removing', 'removed')),
       PRIMARY KEY (proposal_id, worktree_path),
       FOREIGN KEY (proposal_id) REFERENCES workspace_cleanup_proposals(proposal_id) ON DELETE CASCADE
     )
@@ -287,9 +287,75 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
     yield* sql`
       ALTER TABLE workspace_cleanup_resources
       ADD COLUMN removal_status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (removal_status IN ('pending', 'removed'))
+        CHECK (removal_status IN ('pending', 'removing', 'removed'))
     `
   }
+
+  const cleanupResourceTable = yield* sql<{ readonly sql: string }>`
+    SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'workspace_cleanup_resources'
+  `
+  if (!cleanupResourceTable[0]?.sql.includes("'removing'")) {
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`
+          CREATE TABLE workspace_cleanup_resources_next (
+            proposal_id TEXT NOT NULL,
+            worktree_path TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            head TEXT NOT NULL,
+            common_directory TEXT NOT NULL,
+            status_porcelain TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            removal_status TEXT NOT NULL DEFAULT 'pending'
+              CHECK (removal_status IN ('pending', 'removing', 'removed')),
+            PRIMARY KEY (proposal_id, worktree_path),
+            FOREIGN KEY (proposal_id) REFERENCES workspace_cleanup_proposals(proposal_id)
+              ON DELETE CASCADE
+          )
+        `
+        yield* sql`
+          INSERT INTO workspace_cleanup_resources_next
+          SELECT proposal_id, worktree_path, branch, head, common_directory,
+            status_porcelain, size_bytes, removal_status
+          FROM workspace_cleanup_resources
+        `
+        yield* sql`DROP TABLE workspace_cleanup_resources`
+        yield* sql`
+          ALTER TABLE workspace_cleanup_resources_next
+          RENAME TO workspace_cleanup_resources
+        `
+      }),
+    )
+  }
+
+  // Keep the newest active proposal for each thread. Older duplicates were
+  // never the proposal returned by `propose`, so marking them stale preserves
+  // the previously visible winner before the uniqueness rule is installed.
+  yield* sql`
+    UPDATE workspace_cleanup_proposals
+    SET status = 'stale', lifecycle_status = 'stale'
+    WHERE lifecycle_status IN ('pending', 'failed')
+      AND proposal_id NOT IN (
+        SELECT winner.proposal_id
+        FROM workspace_cleanup_proposals AS winner
+        WHERE winner.lifecycle_status IN ('pending', 'failed')
+          AND winner.proposal_id = (
+            SELECT candidate.proposal_id
+            FROM workspace_cleanup_proposals AS candidate
+            WHERE candidate.thread_id = winner.thread_id
+              AND candidate.lifecycle_status IN ('pending', 'failed')
+            ORDER BY candidate.created_at DESC, candidate.proposal_id DESC
+            LIMIT 1
+          )
+      )
+  `
+
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS workspace_cleanup_one_active_per_thread
+    ON workspace_cleanup_proposals (thread_id)
+    WHERE lifecycle_status IN ('pending', 'failed')
+  `
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS threads (

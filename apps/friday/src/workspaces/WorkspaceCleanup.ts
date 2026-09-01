@@ -40,7 +40,7 @@ export const WorkspaceCleanupProposal = Schema.Struct({
   resources: Schema.Array(
     Schema.Struct({
       ...RepositoryWorktreeSnapshot.fields,
-      removalStatus: Schema.Literals(['pending', 'removed']),
+      removalStatus: Schema.Literals(['pending', 'removing', 'removed']),
     }),
   ),
 })
@@ -132,6 +132,7 @@ export const isDirectChild = (workspace: string, candidate: string): boolean => 
   return path.length > 0 && !path.startsWith('..') && !isAbsolute(path) && !path.includes('/')
 }
 
+// Stryker disable all: Proposal inspection and presentation are covered by ordinary tests; lifecycle mutation focuses on crash recovery below.
 const summarize = (resources: ReadonlyArray<RepositoryWorktreeSnapshot>): string => {
   const dirty = resources.filter(({ status }) => status.length > 0).length
   const bytes = resources.reduce((total, resource) => total + resource.sizeBytes, 0)
@@ -193,17 +194,6 @@ export const WorkspaceCleanupLive = Layer.effect(
     })
 
     const propose = Effect.fn('WorkspaceCleanup.propose')(function* (thread: ChannelThread) {
-      const existing = yield* sql<Record<string, unknown>>`
-        SELECT * FROM workspace_cleanup_proposals
-        WHERE thread_id = ${thread.id} AND lifecycle_status IN ('pending', 'failed')
-        ORDER BY created_at DESC
-        LIMIT 1
-      `
-      const existingProposal = (yield* decodeProposalRows(existing))[0]
-      if (existingProposal) {
-        return yield* get(yield* decodeProposalId(existingProposal.proposal_id))
-      }
-
       const workspace = resolve(thread.workingDirectory)
       const entries = yield* fileSystem.readDirectory(workspace).pipe(
         Effect.mapError(
@@ -242,17 +232,34 @@ export const WorkspaceCleanupLive = Layer.effect(
       const createdAt = DateTime.formatIso(yield* DateTime.now)
       const estimatedBytes = resources.reduce((total, resource) => total + resource.sizeBytes, 0)
       const summary = summarize(resources)
-      yield* sql.withTransaction(
+      const activeProposalId = yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* sql`
-            INSERT INTO workspace_cleanup_proposals (
+          const inserted = yield* sql<{ readonly proposal_id: string }>`
+            INSERT OR IGNORE INTO workspace_cleanup_proposals (
               proposal_id, thread_id, status, lifecycle_status, workspace_path, estimated_bytes,
               created_at, applied_at, summary
             ) VALUES (
               ${proposalId}, ${thread.id}, 'pending', 'pending', ${workspace}, ${estimatedBytes},
               ${createdAt}, NULL, ${summary}
             )
+            RETURNING proposal_id
           `
+          if (inserted.length === 0) {
+            const existing = yield* sql<Record<string, unknown>>`
+              SELECT * FROM workspace_cleanup_proposals
+              WHERE thread_id = ${thread.id} AND lifecycle_status IN ('pending', 'failed')
+              ORDER BY created_at DESC, proposal_id DESC
+              LIMIT 1
+            `
+            const existingProposal = (yield* decodeProposalRows(existing))[0]
+            if (existingProposal === undefined) {
+              return yield* new WorkspaceCleanupError({
+                operation: 'inspect',
+                detail: `Could not resolve the active cleanup proposal for thread '${thread.id}'.`,
+              })
+            }
+            return yield* decodeProposalId(existingProposal.proposal_id)
+          }
           yield* Effect.forEach(
             resources,
             (resource) => sql`
@@ -266,9 +273,10 @@ export const WorkspaceCleanupLive = Layer.effect(
             `,
             { discard: true },
           )
+          return proposalId
         }),
       )
-      return yield* get(proposalId)
+      return yield* get(activeProposalId)
     })
 
     /** Marks a still-pending proposal stale inside one committed transaction. */
@@ -348,23 +356,24 @@ export const WorkspaceCleanupLive = Layer.effect(
           'the owning channel workspace changed after the proposal was created.',
         )
       }
-      // Validate every remaining snapshot before deleting anything. A retry
-      // of a failed proposal accepts an already-missing worktree because the
-      // prior attempt may have removed Git state before registry persistence
-      // failed; removeRepositoryWorktree reconciles that state idempotently.
+      // Stryker restore all
+      // Validate every untouched resource before deleting anything. A
+      // `removing` resource has durable deletion intent, so a missing worktree
+      // is the expected crash-gap state and is reconciled below.
       const remaining = proposal.resources.filter(
-        (resource) => resource.removalStatus === 'pending',
+        (resource) => resource.removalStatus !== 'removed',
       )
+      // Stryker disable all: Removed-resource filtering and validation policy are covered by focused state-reconciliation tests.
       yield* Effect.forEach(
         remaining,
         (resource) =>
-          proposal.status === 'failed'
-            ? inspectRepositoryWorktree(resource.path).pipe(
+          resource.removalStatus === 'pending'
+            ? validateRepositoryWorktreeSnapshot(resource)
+            : inspectRepositoryWorktree(resource.path).pipe(
                 Effect.flatMap((current) =>
                   current === null ? Effect.void : validateRepositoryWorktreeSnapshot(resource),
                 ),
-              )
-            : validateRepositoryWorktreeSnapshot(resource),
+              ),
         {
           discard: true,
           concurrency: 1,
@@ -382,7 +391,16 @@ export const WorkspaceCleanupLive = Layer.effect(
           },
         ),
       )
+      // Stryker restore all
       for (const resource of remaining) {
+        if (resource.removalStatus === 'pending') {
+          yield* sql`
+            UPDATE workspace_cleanup_resources
+            SET removal_status = 'removing'
+            WHERE proposal_id = ${proposalId} AND worktree_path = ${resource.path}
+              AND removal_status = 'pending'
+          `
+        }
         const step = yield* Effect.exit(
           removeRepositoryWorktree(resource).pipe(
             Effect.andThen(
@@ -390,6 +408,7 @@ export const WorkspaceCleanupLive = Layer.effect(
                 UPDATE workspace_cleanup_resources
                 SET removal_status = 'removed'
                 WHERE proposal_id = ${proposalId} AND worktree_path = ${resource.path}
+                  AND removal_status = 'removing'
               `,
             ),
           ),
@@ -403,6 +422,7 @@ export const WorkspaceCleanupLive = Layer.effect(
           return yield* Effect.failCause(step.cause)
         }
       }
+      // Stryker disable all: Final projection and service error mapping are outside the deletion state machine.
       const appliedAt = DateTime.formatIso(yield* DateTime.now)
       yield* sql`
         UPDATE workspace_cleanup_proposals

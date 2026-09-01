@@ -1,7 +1,7 @@
 /* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/async-function, effecttsgo/node-builtin-import -- Bun runs this integration test against real temporary Git repositories; Effect execution is the explicit test boundary. */
 
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Schema from 'effect/Schema'
@@ -9,9 +9,12 @@ import * as Schema from 'effect/Schema'
 import * as Effect from 'effect/Effect'
 
 import {
+  acquireRegistryLock,
   inspectRepositoryWorktree,
   ManagedWorktree,
   ManagedWorktreeListEntry,
+  registryLockPath,
+  releaseRegistryLock,
   removeRepositoryWorktree,
 } from './RepositoryWorktrees.ts'
 
@@ -208,6 +211,118 @@ test('keeps concurrent registry updates from separate Friday processes', async (
   expect(registry.worktrees.map((entry) => entry.path).toSorted()).toEqual(
     sources.map((source, index) => join(workspaces[index]!, source.split('/').at(-1)!)).toSorted(),
   )
+})
+
+test('waits for an ordinary live-owner contention instead of failing', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-lock-contention-')
+  const fridayHome = join(root, 'friday-home')
+  const holder = await Effect.runPromise(acquireRegistryLock(fridayHome))
+  const source = join(root, 'source')
+  const workspace = join(root, 'workspace')
+  await command(['git', 'init', '--initial-branch=main', source])
+  await Bun.write(join(source, 'README.md'), 'contention\n')
+  await command(['git', '-C', source, 'add', 'README.md'])
+  await command([
+    'git',
+    '-C',
+    source,
+    '-c',
+    'user.name=Friday',
+    '-c',
+    'user.email=friday@example.com',
+    'commit',
+    '-m',
+    'initial',
+  ])
+
+  const contender = command(
+    [
+      'bun',
+      'run',
+      './src/main.ts',
+      'worktree',
+      'ensure',
+      source,
+      '--workspace',
+      workspace,
+      '--json',
+    ],
+    { FRIDAY_HOME: fridayHome, NODE_ENV: 'test' },
+  )
+  await Bun.sleep(150)
+  expect(await Bun.file(join(fridayHome, 'repositories', 'worktrees.json')).exists()).toBe(false)
+  await Effect.runPromise(releaseRegistryLock(holder))
+  const ensured = decodeWorktree(await contender)
+  expect(ensured.path).toBe(join(workspace, 'source'))
+})
+
+test('recovers a lock whose recorded owner is dead', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-lock-stale-')
+  const fridayHome = join(root, 'friday-home')
+  const lockPath = registryLockPath(fridayHome)
+  await mkdir(lockPath, { recursive: true })
+  const token = crypto.randomUUID()
+  await writeFile(
+    join(lockPath, `owner-${token}.json`),
+    JSON.stringify({
+      token,
+      pid: 2_147_483_647,
+      startedAt: '2000-01-01T00:00:00.000Z',
+      processStartId: null,
+    }),
+  )
+
+  const holder = await Effect.runPromise(acquireRegistryLock(fridayHome))
+  await Effect.runPromise(releaseRegistryLock(holder))
+  expect(await Bun.file(lockPath).exists()).toBe(false)
+})
+
+test('does not reclaim a live owner solely because its metadata is old', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-lock-live-old-')
+  const fridayHome = join(root, 'friday-home')
+  const lockPath = registryLockPath(fridayHome)
+  await mkdir(lockPath, { recursive: true })
+  const token = crypto.randomUUID()
+  await writeFile(
+    join(lockPath, `owner-${token}.json`),
+    JSON.stringify({
+      token,
+      pid: process.pid,
+      startedAt: '2000-01-01T00:00:00.000Z',
+      processStartId: null,
+    }),
+  )
+
+  const contender = Effect.runPromiseExit(acquireRegistryLock(fridayHome))
+  await Bun.sleep(150)
+  expect(await Bun.file(join(lockPath, `owner-${token}.json`)).exists()).toBe(true)
+  await rm(lockPath, { recursive: true, force: true })
+  const exit = await contender
+  expect(exit._tag).toBe('Success')
+  if (exit._tag === 'Success') await Effect.runPromise(releaseRegistryLock(exit.value))
+})
+
+test('release leaves a lock untouched when the on-disk owner token changed', async () => {
+  const root = await makeTemporaryDirectory('friday-worktree-lock-release-token-')
+  const fridayHome = join(root, 'friday-home')
+  const holder = await Effect.runPromise(acquireRegistryLock(fridayHome))
+  const ownerFiles = await Array.fromAsync(
+    new Bun.Glob('owner-*.json').scan(registryLockPath(fridayHome)),
+  )
+  expect(ownerFiles.length).toBe(1)
+  const ownerPath = join(registryLockPath(fridayHome), ownerFiles[0]!)
+  await writeFile(
+    ownerPath,
+    JSON.stringify({
+      token: crypto.randomUUID(),
+      pid: process.pid,
+      startedAt: '2000-01-01T00:00:00.000Z',
+      processStartId: null,
+    }),
+  )
+
+  await Effect.runPromise(releaseRegistryLock(holder))
+  expect(await Bun.file(ownerPath).exists()).toBe(true)
 })
 
 test('removes an approved dirty worktree after revalidating its snapshot', async () => {

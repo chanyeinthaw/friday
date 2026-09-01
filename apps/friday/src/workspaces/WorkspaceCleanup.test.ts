@@ -303,7 +303,7 @@ describe('WorkspaceCleanup', () => {
       assert.strictEqual(failed.status, 'failed')
       assert.deepStrictEqual(
         failed.resources.map((resource) => resource.removalStatus),
-        ['pending', 'pending'],
+        ['removing', 'pending'],
       )
       const removedFirst = proposal.resources[0]!.path
       const untouchedSecond = proposal.resources[1]!.path
@@ -338,6 +338,43 @@ describe('WorkspaceCleanup', () => {
       assert.strictEqual(listedPaths.includes(first.path), false)
       assert.strictEqual(listedPaths.includes(second.path), false)
       assert(new Set([first.path, second.path]).has(removedFirst))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(SqlClientLive, ThreadPersistenceLive, TestLive)),
+    ),
+  )
+
+  it.effect('reconciles a hard crash after deletion and before completion persistence', () =>
+    Effect.gen(function* () {
+      const { workspace, worktree } = yield* makeManagedWorkspace('resume-crash-gap')
+      const cleanup = yield* WorkspaceCleanup
+      const proposal = yield* proposeForWorkspace(workspace)
+      assert(proposal !== null)
+      const sql = yield* SqlClient.SqlClient
+
+      yield* sql`
+        UPDATE workspace_cleanup_resources
+        SET removal_status = 'removing'
+        WHERE proposal_id = ${proposal.id} AND worktree_path = ${worktree.path}
+      `
+      yield* Effect.promise(() =>
+        exec('git', [
+          '--git-dir',
+          worktree.commonDirectory,
+          'worktree',
+          'remove',
+          '--force',
+          worktree.path,
+        ]),
+      )
+
+      const resumed = yield* cleanup.apply(proposal.id, workspace)
+      assert.strictEqual(resumed.status, 'applied')
+      assert.strictEqual(resumed.resources[0]!.removalStatus, 'removed')
+      assert.strictEqual(
+        (yield* listManagedWorktrees()).some((entry) => entry.path === worktree.path),
+        false,
+      )
     }).pipe(
       Effect.scoped,
       Effect.provide(Layer.mergeAll(SqlClientLive, ThreadPersistenceLive, TestLive)),

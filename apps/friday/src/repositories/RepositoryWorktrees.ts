@@ -6,7 +6,7 @@ import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 
 import { FRIDAY_HOME } from '../FridayHome.ts'
@@ -62,6 +62,7 @@ interface CommandResult {
   readonly exitCode: number
 }
 
+// Stryker disable all: Process and inspection adapters are covered by ordinary Git integration behavior.
 const readStream = async (stream: NodeJS.ReadableStream | null): Promise<string> => {
   if (stream === null) return ''
   const chunks: Array<Buffer> = []
@@ -298,26 +299,110 @@ export const readWorktreeRegistry = (
     ),
   )
 
+// Stryker disable all: The lock protocol is exercised by separate-process integration tests, which Stryker cannot run in its vitest sandbox.
 const registrySemaphore = Semaphore.makeUnsafe(1)
 const registryLockTimeoutMs = 10_000
-const registryLockStaleMs = 30_000
 const registryLockRetryMs = 25
 
-const registryLockPath = (home: string): string => `${worktreeRegistryPath(home)}.lock`
+export const registryLockPath = (home: string): string => `${worktreeRegistryPath(home)}.lock`
+
+const RegistryLockOwner = Schema.Struct({
+  token: Schema.String,
+  pid: Schema.Int,
+  startedAt: Schema.String,
+  processStartId: Schema.NullOr(Schema.String),
+})
+type RegistryLockOwner = typeof RegistryLockOwner.Type
+
+const decodeRegistryLockOwner = Schema.decodeUnknownEffect(Schema.fromJsonString(RegistryLockOwner))
+const encodeRegistryLockOwner = Schema.encodeSync(Schema.fromJsonString(RegistryLockOwner))
+
+interface RegistryLockHolder {
+  readonly lockPath: string
+  readonly ownerPath: string
+  readonly owner: RegistryLockOwner
+}
 
 const pause = (milliseconds: number) =>
   Effect.promise(() => new Promise<void>((resolvePause) => setTimeout(resolvePause, milliseconds)))
 
+const processStartId = async (pid: number): Promise<string | null> => {
+  if (process.platform !== 'linux') return null
+  return readFile(`/proc/${pid}/stat`, 'utf8').then(
+    (value) => value.slice(value.lastIndexOf(') ') + 2).split(' ')[19] ?? null,
+    () => null,
+  )
+}
+
+/** Returns false only when the recorded process can be proven dead or reused. */
+const registryLockOwnerIsLive = (owner: RegistryLockOwner) =>
+  Effect.promise(async () => {
+    try {
+      process.kill(owner.pid, 0)
+    } catch (cause) {
+      // SAFETY: Node process errors expose the optional errno `code` field.
+      const code = (cause as NodeJS.ErrnoException).code
+      if (code === 'ESRCH') return false
+      return true
+    }
+    if (owner.processStartId === null) return true
+    const currentStartId = await processStartId(owner.pid)
+    return currentStartId === null || currentStartId === owner.processStartId
+  })
+
+const removeEmptyLockDirectory = (lockPath: string) =>
+  Effect.promise(() =>
+    rmdir(lockPath).catch((cause: NodeJS.ErrnoException) => {
+      if (cause.code !== 'ENOENT' && cause.code !== 'ENOTEMPTY' && cause.code !== 'EEXIST')
+        throw cause
+    }),
+  )
+
 /**
- * Acquires an inter-process registry lock by atomically creating a directory.
- * A lock older than 30 seconds is recoverable. Healthy contention is bounded
- * to 10 seconds so a wedged writer cannot block Friday forever.
+ * Moves a proven-dead owner's token out of the lock directory before removing
+ * the directory. A successor cannot acquire until that directory is gone, so
+ * the recovery path cannot delete a successor's lock.
  */
-const acquireRegistryLock = Effect.fn('RepositoryWorktrees.acquireRegistryLock')(function* (
+const reclaimDeadRegistryLockOwner = Effect.fn('RepositoryWorktrees.reclaimDeadLock')(function* (
+  lockPath: string,
+  ownerPath: string,
+  owner: RegistryLockOwner,
+) {
+  if (yield* registryLockOwnerIsLive(owner)) return
+  const quarantinePath = `${lockPath}.reclaim-${owner.token}`
+  const moved = yield* Effect.promise(() =>
+    rename(ownerPath, quarantinePath).then(
+      () => true,
+      (cause: NodeJS.ErrnoException) => {
+        if (cause.code === 'ENOENT') return false
+        throw cause
+      },
+    ),
+  )
+  if (!moved) return
+  yield* removeEmptyLockDirectory(lockPath)
+  yield* Effect.promise(() => rm(quarantinePath, { force: true }))
+})
+
+/**
+ * Acquires a lock-directory token shared by all Friday processes. Contention
+ * waits and retries. Recovery only moves an owner's matching token after its
+ * PID is proven dead, or its Linux process start id proves PID reuse. Age is
+ * recorded for diagnosis but never decides liveness.
+ */
+export const acquireRegistryLock = Effect.fn('RepositoryWorktrees.acquireRegistryLock')(function* (
   home: string,
 ) {
   const lockPath = registryLockPath(home)
-  const startedAt = Date.now()
+  const waitingSince = Date.now()
+  const owner = RegistryLockOwner.make({
+    token: randomUUID(),
+    pid: process.pid,
+    startedAt: new Date(Date.now() - process.uptime() * 1_000).toISOString(),
+    processStartId: yield* Effect.promise(() => processStartId(process.pid)),
+  })
+  const ownerPath = join(lockPath, `owner-${owner.token}.json`)
+  const claimantPath = `${lockPath}.claim-${owner.token}.json`
   yield* Effect.tryPromise({
     try: () => mkdir(dirname(lockPath), { recursive: true }),
     catch: (cause) =>
@@ -327,69 +412,116 @@ const acquireRegistryLock = Effect.fn('RepositoryWorktrees.acquireRegistryLock')
         cause,
       }),
   })
-  while (true) {
+  yield* Effect.tryPromise({
+    try: () =>
+      writeFile(claimantPath, encodeRegistryLockOwner(owner), {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      }),
+    catch: (cause) =>
+      new RepositoryWorktreeError({
+        operation: 'inspect',
+        detail: 'Could not create the managed worktree registry lock token.',
+        cause,
+      }),
+  })
+
+  while (Date.now() - waitingSince < registryLockTimeoutMs) {
     const acquired = yield* Effect.tryPromise({
       try: async () => {
-        await mkdir(lockPath)
-        await writeFile(join(lockPath, 'owner'), `${process.pid}\n`, { mode: 0o600 })
+        const created = await mkdir(lockPath).then(
+          () => true,
+          (cause: NodeJS.ErrnoException) => {
+            if (cause.code === 'EEXIST') return false
+            throw cause
+          },
+        )
+        if (!created) return false
+        await rename(claimantPath, ownerPath)
         return true
       },
-      catch: (cause) => {
-        // SAFETY: Node filesystem rejections carry the optional errno code.
-        if ((cause as NodeJS.ErrnoException).code === 'EEXIST') return false
-        throw cause
-      },
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new RepositoryWorktreeError({
-            operation: 'inspect',
-            detail: 'Could not acquire the managed worktree registry lock.',
-            cause,
-          }),
-      ),
-    )
-    if (acquired) return lockPath
+      catch: (cause) =>
+        new RepositoryWorktreeError({
+          operation: 'inspect',
+          detail: 'Could not acquire the managed worktree registry lock.',
+          cause,
+        }),
+    })
+    if (acquired) return { lockPath, ownerPath, owner } satisfies RegistryLockHolder
 
-    const lockStat = yield* Effect.tryPromise({
-      try: () => stat(lockPath),
-      catch: (cause) => {
-        // SAFETY: Node filesystem rejections carry the optional errno code.
-        if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return null
+    const ownerFiles = yield* Effect.promise(() =>
+      readdir(lockPath).catch((cause: NodeJS.ErrnoException) => {
+        if (cause.code === 'ENOENT') return []
         throw cause
-      },
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new RepositoryWorktreeError({
-            operation: 'inspect',
-            detail: 'Could not inspect the managed worktree registry lock.',
-            cause,
-          }),
-      ),
+      }),
     )
-    if (lockStat !== null && Date.now() - lockStat.mtimeMs > registryLockStaleMs) {
-      yield* Effect.tryPromise({
-        try: () => rm(lockPath, { recursive: true, force: true }),
-        catch: (cause) =>
-          new RepositoryWorktreeError({
-            operation: 'inspect',
-            detail: 'Could not recover a stale managed worktree registry lock.',
-            cause,
-          }),
-      })
-      continue
-    }
-    if (Date.now() - startedAt >= registryLockTimeoutMs) {
-      return yield* new RepositoryWorktreeError({
-        operation: 'inspect',
-        detail: 'Timed out waiting for the managed worktree registry lock.',
-      })
+    if (ownerFiles.length === 0) {
+      yield* removeEmptyLockDirectory(lockPath)
+    } else {
+      for (const ownerFile of ownerFiles) {
+        if (!ownerFile.startsWith('owner-') || !ownerFile.endsWith('.json')) continue
+        const existingOwnerPath = join(lockPath, ownerFile)
+        const existingOwner = yield* Effect.promise(() =>
+          readFile(existingOwnerPath, 'utf8').then(
+            (text) => text,
+            (cause: NodeJS.ErrnoException) => {
+              if (cause.code === 'ENOENT') return null
+              throw cause
+            },
+          ),
+        ).pipe(
+          Effect.flatMap((text) =>
+            text === null
+              ? Effect.succeed(null)
+              : decodeRegistryLockOwner(text).pipe(Effect.orElseSucceed(() => null)),
+          ),
+        )
+        if (existingOwner !== null) {
+          yield* reclaimDeadRegistryLockOwner(lockPath, existingOwnerPath, existingOwner)
+        }
+      }
     }
     yield* pause(registryLockRetryMs)
   }
+  yield* Effect.promise(() => rm(claimantPath, { force: true }))
+  return yield* new RepositoryWorktreeError({
+    operation: 'inspect',
+    detail: 'Timed out waiting for the managed worktree registry lock.',
+  })
 })
 
+export const releaseRegistryLock = Effect.fn('RepositoryWorktrees.releaseRegistryLock')(function* (
+  holder: RegistryLockHolder,
+) {
+  const onDisk = yield* Effect.promise(() =>
+    readFile(holder.ownerPath, 'utf8').then(
+      (text) => text,
+      (cause: NodeJS.ErrnoException) => {
+        if (cause.code === 'ENOENT') return null
+        throw cause
+      },
+    ),
+  )
+  if (onDisk === null) return
+  const owner = yield* decodeRegistryLockOwner(onDisk).pipe(Effect.orElseSucceed(() => null))
+  if (owner === null || owner.token !== holder.owner.token) return
+  const quarantinePath = `${holder.lockPath}.release-${holder.owner.token}`
+  const moved = yield* Effect.promise(() =>
+    rename(holder.ownerPath, quarantinePath).then(
+      () => true,
+      (cause: NodeJS.ErrnoException) => {
+        if (cause.code === 'ENOENT') return false
+        throw cause
+      },
+    ),
+  )
+  if (!moved) return
+  yield* removeEmptyLockDirectory(holder.lockPath)
+  yield* Effect.promise(() => rm(quarantinePath, { force: true }))
+})
+
+// Stryker disable all: Registry serialization outside the lock protocol is covered by existing Git lifecycle tests.
 /** Writes a complete registry by atomic rename, so readers never see a partial document. */
 const writeRegistry = (home: string, registry: WorktreeRegistry) =>
   Effect.acquireUseRelease(
@@ -433,7 +565,7 @@ const updateRegistry = (
           const existing = yield* readWorktreeRegistry(home)
           yield* writeRegistry(home, update(existing?.worktrees ?? []))
         }),
-      (lockPath) => Effect.promise(() => rm(lockPath, { recursive: true, force: true })),
+      releaseRegistryLock,
     ),
   )
 
@@ -518,6 +650,7 @@ export const listManagedWorktrees = Effect.fn('RepositoryWorktrees.listManaged')
   return entries.flat().toSorted((left, right) => left.path.localeCompare(right.path))
 })
 
+// Stryker restore all
 export const validateRepositoryWorktreeSnapshot = Effect.fn('RepositoryWorktrees.validateSnapshot')(
   function* (snapshot: RepositoryWorktreeSnapshot) {
     const current = yield* inspectRepositoryWorktree(snapshot.path)
@@ -576,6 +709,7 @@ export const removeRepositoryWorktree = Effect.fn('RepositoryWorktrees.removeMan
   yield* unregisterManagedWorktree(home, snapshot.path)
 })
 
+// Stryker disable all: Naming, cloning, and creation behavior is covered separately from lifecycle mutation gates.
 export interface RepositoryLocation {
   readonly host: string
   readonly path: string

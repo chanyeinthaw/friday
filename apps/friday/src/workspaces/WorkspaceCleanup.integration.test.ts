@@ -2,6 +2,9 @@
 
 import { test } from 'bun:test'
 import { strict as assert } from 'node:assert'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
@@ -9,11 +12,14 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
+import { ChannelThread } from '@friday/contracts/conversation'
+import * as Schema from 'effect/Schema'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './WorkspaceCleanup.ts'
 import { ThreadPersistence } from '../conversation/ThreadPersistence.ts'
 import { makeSqliteThreadPersistence } from '../persistence/SqliteThreadPersistence.ts'
 import { runMigrations } from '../persistence/Migrations.ts'
 
+const decodeChannelThread = Schema.decodeSync(ChannelThread)
 const SqlClientLive = SqliteClient.layer({ filename: ':memory:' })
 const ThreadPersistenceLive = Layer.effect(ThreadPersistence, makeSqliteThreadPersistence()).pipe(
   Layer.provide(SqlClientLive),
@@ -98,3 +104,82 @@ test('lists recorded cleanup proposals most recent first with their resources', 
       assert.strictEqual(proposals[1]!.appliedAt, '2025-01-02T00:00:00Z')
     }),
   ))
+
+test('allows only one active proposal when separate SQLite clients propose concurrently', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-cleanup-concurrent-'))
+  const filename = join(directory, 'friday.sqlite')
+  const workspace = join(directory, 'workspace')
+  await Bun.write(join(workspace, 'repo', '.keep'), '')
+  await Bun.$`git init --initial-branch=main ${join(workspace, 'repo')}`.quiet()
+  await Bun.write(join(workspace, 'repo', 'README.md'), 'concurrent\n')
+  await Bun.$`git -C ${join(workspace, 'repo')} add README.md`.quiet()
+  await Bun.$`git -C ${join(workspace, 'repo')} -c user.name=Friday -c user.email=friday@example.com commit -m initial`.quiet()
+
+  const makeRuntime = () => {
+    const database = SqliteClient.layer({ filename })
+    const persistence = Layer.effect(ThreadPersistence, makeSqliteThreadPersistence()).pipe(
+      Layer.provide(database),
+    )
+    const cleanup = WorkspaceCleanupLive.pipe(
+      Layer.provide(Layer.mergeAll(database, persistence, BunFileSystem.layer, BunCrypto.layer)),
+    )
+    return Layer.merge(cleanup, database)
+  }
+  const thread = decodeChannelThread({
+    id: 'thread-concurrent',
+    audience: 'user',
+    parent: null,
+    harness: 'pi',
+    harnessSession: null,
+    workingDirectory: workspace,
+    model: { provider: 'anthropic', modelId: 'claude-sonnet' },
+    thinkingLevel: 'medium',
+    channelContext: { name: 'Concurrent', description: '' },
+    conversationBinding: {
+      platform: 'discord',
+      connectionId: 'discord',
+      channelId: 'channel',
+      sourceMessageId: 'message',
+      conversationId: 'conversation',
+    },
+    status: 'active',
+    createdAt: '2026-03-21T09:00:00.000Z',
+    updatedAt: '2026-03-21T09:00:00.000Z',
+    closedAt: null,
+  })
+
+  await Effect.runPromise(runMigrations().pipe(Effect.provide(SqliteClient.layer({ filename }))))
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const persistence = yield* ThreadPersistence
+      yield* persistence.createThread(thread)
+    }).pipe(
+      Effect.provide(
+        Layer.effect(ThreadPersistence, makeSqliteThreadPersistence()).pipe(
+          Layer.provide(SqliteClient.layer({ filename })),
+        ),
+      ),
+    ),
+  )
+  const propose = () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const cleanup = yield* WorkspaceCleanup
+        return yield* cleanup.propose(thread)
+      }).pipe(Effect.provide(makeRuntime())),
+    )
+  const proposals = await Promise.all([propose(), propose()])
+  assert(proposals[0] !== null && proposals[1] !== null)
+  assert.strictEqual(proposals[0].id, proposals[1].id)
+  const count = await Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      return yield* sql<{ readonly count: number }>`
+        SELECT count(*) AS count FROM workspace_cleanup_proposals
+        WHERE thread_id = 'thread-concurrent' AND lifecycle_status IN ('pending', 'failed')
+      `
+    }).pipe(Effect.provide(SqliteClient.layer({ filename }))),
+  )
+  assert.strictEqual(count[0]!.count, 1)
+  await rm(directory, { recursive: true, force: true })
+})
