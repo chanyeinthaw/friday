@@ -37,8 +37,6 @@ import {
   renderDiscordConnectionDetail,
   renderDiscordConnectionList,
   renderDiscordGuildList,
-  renderDiscordLink,
-  renderDiscordLinkList,
   renderWorktreeList,
   renderWorkspaceCleanupList,
   runFridayCli,
@@ -47,7 +45,6 @@ import type { CliCommandSpec } from './Cli.ts'
 import { DiscordGuildChannelId, DiscordGuildId } from './config/DiscordGuilds.ts'
 import { BotTokenEnvName, DiscordPublicKey } from './config/DiscordConnections.ts'
 import { InvocationMode } from './config/AppConfig.ts'
-import { DiscordLink, DiscordLinkId } from './config/DiscordLinks.ts'
 import { reloadFailed, reloadSucceeded } from './config/ConfigReload.ts'
 import { DiscordUserId } from './config/DiscordAdmins.ts'
 import { ControlSocketError } from './control/ControlSocket.ts'
@@ -77,8 +74,6 @@ const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
 const decodeMode = Schema.decodeSync(InvocationMode)
 const decodePublicKey = Schema.decodeSync(DiscordPublicKey)
 const decodeBotTokenEnv = Schema.decodeSync(BotTokenEnvName)
-const decodeDiscordLink = Schema.decodeSync(DiscordLink)
-const decodeDiscordLinkId = Schema.decodeSync(DiscordLinkId)
 
 /**
  * Base runner whose every operation dies loudly: dispatch tests override
@@ -89,7 +84,6 @@ const fridayNotRunning = new ControlSocketError({
   operation: 'connect',
   path: '/tmp/friday.sock',
   detail: 'Could not connect to the running Friday control socket.',
-  errno: 'ENOENT',
   cause: { code: 'ENOENT' },
 })
 
@@ -131,12 +125,6 @@ const strictRunnerStubs = {
   setDiscordGuildChannels: () => Effect.die('unreachable'),
   setDiscordGuildChannel: () => Effect.die('unreachable'),
   resetDiscordGuildChannel: () => Effect.die('unreachable'),
-  setDiscordLink: () => Effect.die('unreachable'),
-  getDiscordLink: () => Effect.die('unreachable'),
-  listDiscordLinks: () => Effect.die('unreachable'),
-  enableDiscordLink: () => Effect.die('unreachable'),
-  disableDiscordLink: () => Effect.die('unreachable'),
-  removeDiscordLink: () => Effect.die('unreachable'),
 }
 
 /**
@@ -162,22 +150,6 @@ const decodeJsonNull = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.N
 const lastLine = Effect.map(TestConsole.logLines, (lines) =>
   decodeLine(lines[lines.length - 1] ?? ''),
 )
-
-const discordLinkSetArguments = [
-  'config',
-  'discord',
-  'link',
-  'set',
-  'support-link',
-  'discord-source',
-  '11111111111111111',
-  '22222222222222222',
-  'thread',
-  'discord-ops',
-  '33333333333333333',
-  '44444444444444444',
-  'channel',
-] as const
 
 it.effect('uses start as the default command', () =>
   Effect.gen(function* () {
@@ -272,319 +244,6 @@ it.effect('parses typed Discord connection lifecycle commands', () =>
       { type: 'config-discord-connection-get', connectionId, json: true },
     )
   }),
-)
-
-it.effect('parses every Discord link command and required flags', () =>
-  Effect.gen(function* () {
-    const link = decodeDiscordLink({
-      id: 'support-link',
-      enabled: true,
-      source: {
-        connectionId: 'discord-source',
-        guildId: '11111111111111111',
-        conversationId: '22222222222222222',
-        kind: 'thread',
-      },
-      destination: {
-        connectionId: 'discord-ops',
-        guildId: '33333333333333333',
-        conversationId: '44444444444444444',
-        kind: 'channel',
-      },
-    })
-    const id = decodeDiscordLinkId('support-link')
-    assert.deepStrictEqual(
-      yield* parseFridayCli([
-        'config',
-        'discord',
-        'link',
-        'set',
-        'support-link',
-        'discord-source',
-        '11111111111111111',
-        '22222222222222222',
-        'thread',
-        'discord-ops',
-        '33333333333333333',
-        '44444444444444444',
-        'channel',
-      ]),
-      { type: 'config-discord-link-set', link },
-    )
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['config', 'discord', 'link', 'get', 'support-link', '--json']),
-      { type: 'config-discord-link-get', linkId: id, json: true },
-    )
-    assert.deepStrictEqual(yield* parseFridayCli(['config', 'discord', 'link', 'list', '--json']), {
-      type: 'config-discord-link-list',
-      json: true,
-    })
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['config', 'discord', 'link', 'enable', 'support-link']),
-      { type: 'config-discord-link-enable', linkId: id },
-    )
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['config', 'discord', 'link', 'disable', 'support-link']),
-      { type: 'config-discord-link-disable', linkId: id },
-    )
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['config', 'discord', 'link', 'remove', 'support-link', '--yes']),
-      { type: 'config-discord-link-remove', linkId: id, yes: true },
-    )
-
-    for (const command of [
-      ['config', 'discord', 'link', 'set', 'support-link'],
-      ['config', 'discord', 'link', 'get'],
-      ['config', 'discord', 'link', 'enable'],
-      ['config', 'discord', 'link', 'disable'],
-      ['config', 'discord', 'link', 'remove', 'support-link'],
-    ]) {
-      const error = yield* parseFridayCli(command).pipe(Effect.flip)
-      assert(isFridayCliError(error), `expected typed failure: ${command.join(' ')}`)
-    }
-  }),
-)
-
-it.effect('executes Discord link mutations and renders human and JSON output', () =>
-  Effect.gen(function* () {
-    const link = decodeDiscordLink({
-      id: 'support-link',
-      enabled: true,
-      source: {
-        connectionId: 'discord-source',
-        guildId: '11111111111111111',
-        conversationId: '22222222222222222',
-        kind: 'thread',
-      },
-      destination: {
-        connectionId: 'discord-ops',
-        guildId: '33333333333333333',
-        conversationId: '44444444444444444',
-        kind: 'channel',
-      },
-    })
-    const cases = [
-      {
-        args: [
-          'config',
-          'discord',
-          'link',
-          'set',
-          'support-link',
-          'discord-source',
-          '11111111111111111',
-          '22222222222222222',
-          'thread',
-          'discord-ops',
-          '33333333333333333',
-          '44444444444444444',
-          'channel',
-        ],
-        operation: 'setDiscordLink',
-        outcome: 'updated',
-        output: 'Discord link support-link stored.',
-      },
-      {
-        args: ['config', 'discord', 'link', 'get', 'support-link'],
-        operation: 'getDiscordLink',
-        outcome: link,
-        output: renderDiscordLink(link),
-      },
-      {
-        args: ['config', 'discord', 'link', 'get', 'support-link', '--json'],
-        operation: 'getDiscordLink',
-        outcome: link,
-        output: JSON.stringify(link),
-      },
-      {
-        args: ['config', 'discord', 'link', 'list'],
-        operation: 'listDiscordLinks',
-        outcome: [link],
-        output: renderDiscordLinkList([link]),
-      },
-      {
-        args: ['config', 'discord', 'link', 'list', '--json'],
-        operation: 'listDiscordLinks',
-        outcome: [link],
-        output: JSON.stringify([link]),
-      },
-      {
-        args: ['config', 'discord', 'link', 'enable', 'support-link'],
-        operation: 'enableDiscordLink',
-        outcome: 'already-enabled',
-        output: 'Discord link support-link: already-enabled.',
-      },
-      {
-        args: ['config', 'discord', 'link', 'disable', 'support-link'],
-        operation: 'disableDiscordLink',
-        outcome: 'updated',
-        output: 'Discord link support-link: updated.',
-      },
-      {
-        args: ['config', 'discord', 'link', 'remove', 'support-link', '--yes'],
-        operation: 'removeDiscordLink',
-        outcome: 'removed',
-        output: 'Discord link support-link: removed.',
-      },
-    ] as const
-
-    for (const testCase of cases) {
-      const recorded = recorder(testCase.outcome)
-      yield* runFridayCli([...testCase.args], {
-        ...strictRunnerStubs,
-        [testCase.operation]: recorded.operation,
-      })
-      assert.strictEqual(recorded.calls.length, 1)
-      assert.include((yield* TestConsole.logLines).join('\n'), testCase.output)
-    }
-  }),
-)
-
-it.effect('applies every committed Discord link mutation through live reload', () =>
-  Effect.gen(function* () {
-    const cases = [
-      {
-        arguments_: discordLinkSetArguments,
-        operation: 'setDiscordLink',
-        outcome: 'updated',
-        output: 'Discord link support-link stored.',
-      },
-      {
-        arguments_: ['config', 'discord', 'link', 'enable', 'support-link'],
-        operation: 'enableDiscordLink',
-        outcome: 'updated',
-        output: 'Discord link support-link: updated.',
-      },
-      {
-        arguments_: ['config', 'discord', 'link', 'disable', 'support-link'],
-        operation: 'disableDiscordLink',
-        outcome: 'updated',
-        output: 'Discord link support-link: updated.',
-      },
-      {
-        arguments_: ['config', 'discord', 'link', 'remove', 'support-link', '--yes'],
-        operation: 'removeDiscordLink',
-        outcome: 'removed',
-        output: 'Discord link support-link: removed.',
-      },
-    ] as const
-
-    for (const testCase of cases) {
-      const exit = yield* runFridayCli([...testCase.arguments_], {
-        ...strictRunnerStubs,
-        [testCase.operation]: () => Effect.succeed(testCase.outcome),
-        reloadConfig: Effect.succeed(reloadSucceeded(21)),
-      }).pipe(Effect.exit)
-      assert(Exit.isSuccess(exit), testCase.operation)
-      assert.strictEqual(
-        yield* lastLine,
-        `${testCase.output} Saved; Friday reloaded configuration version 21.`,
-      )
-    }
-  }).pipe(Effect.provide(TestConsole.layer)),
-)
-
-it.effect('reports committed Discord link changes as saved when live reload is unavailable', () =>
-  Effect.gen(function* () {
-    const cases = [
-      {
-        name: 'Friday offline',
-        arguments_: discordLinkSetArguments,
-        operation: 'setDiscordLink',
-        outcome: 'updated',
-        reload: Effect.fail(fridayNotRunning),
-        output:
-          'Discord link support-link stored. Saved. Friday is not running; the change will apply on next startup.',
-      },
-      {
-        name: 'reload rejected',
-        arguments_: ['config', 'discord', 'link', 'enable', 'support-link'],
-        operation: 'enableDiscordLink',
-        outcome: 'updated',
-        reload: Effect.succeed(reloadFailed('Stored Friday configuration is invalid.')),
-        output:
-          'Discord link support-link: updated. Saved, but the running Friday rejected the reload: Stored Friday configuration is invalid.',
-      },
-      {
-        name: 'reload unconfirmed',
-        arguments_: ['config', 'discord', 'link', 'disable', 'support-link'],
-        operation: 'disableDiscordLink',
-        outcome: 'updated',
-        reload: Effect.fail(
-          new ControlSocketError({
-            operation: 'response-timeout',
-            path: '/tmp/friday.sock',
-            detail: 'Friday did not confirm the reload before the response timeout.',
-          }),
-        ),
-        output:
-          'Discord link support-link: updated. Saved, but live application could not be confirmed: Friday control socket response-timeout failed at /tmp/friday.sock: Friday did not confirm the reload before the response timeout.',
-      },
-      {
-        name: 'control transport error',
-        arguments_: ['config', 'discord', 'link', 'remove', 'support-link', '--yes'],
-        operation: 'removeDiscordLink',
-        outcome: 'removed',
-        reload: Effect.fail(
-          new ControlSocketError({
-            operation: 'request',
-            path: '/tmp/friday.sock',
-            detail: 'The control request failed after connecting to Friday.',
-            cause: { code: 'EPIPE', errno: -32, message: 'broken pipe' },
-          }),
-        ),
-        output:
-          'Discord link support-link: removed. Saved, but live application could not be confirmed: Friday control socket request failed at /tmp/friday.sock: The control request failed after connecting to Friday. code=EPIPE, errno=-32, broken pipe',
-      },
-    ] as const
-
-    for (const testCase of cases) {
-      const exit = yield* runFridayCli([...testCase.arguments_], {
-        ...strictRunnerStubs,
-        [testCase.operation]: () => Effect.succeed(testCase.outcome),
-        reloadConfig: testCase.reload,
-      }).pipe(Effect.exit)
-      assert(Exit.isSuccess(exit), testCase.name)
-      assert.strictEqual(yield* lastLine, testCase.output)
-      assert.deepStrictEqual(yield* TestConsole.errorLines, [])
-    }
-  }).pipe(Effect.provide(TestConsole.layer)),
-)
-
-it.effect('preserves missing and unchanged Discord link outcomes without reloading', () =>
-  Effect.gen(function* () {
-    const cases = [
-      {
-        arguments_: ['config', 'discord', 'link', 'enable', 'support-link'],
-        operation: 'enableDiscordLink',
-        outcome: 'already-enabled',
-      },
-      {
-        arguments_: ['config', 'discord', 'link', 'disable', 'support-link'],
-        operation: 'disableDiscordLink',
-        outcome: 'already-disabled',
-      },
-      {
-        arguments_: ['config', 'discord', 'link', 'enable', 'support-link'],
-        operation: 'enableDiscordLink',
-        outcome: 'missing',
-      },
-      {
-        arguments_: ['config', 'discord', 'link', 'remove', 'support-link', '--yes'],
-        operation: 'removeDiscordLink',
-        outcome: 'missing',
-      },
-    ] as const
-
-    for (const testCase of cases) {
-      const exit = yield* runFridayCli([...testCase.arguments_], {
-        ...strictRunnerStubs,
-        [testCase.operation]: () => Effect.succeed(testCase.outcome),
-      }).pipe(Effect.exit)
-      assert(Exit.isSuccess(exit), testCase.outcome)
-      assert.strictEqual(yield* lastLine, `Discord link support-link: ${testCase.outcome}.`)
-    }
-  }).pipe(Effect.provide(TestConsole.layer)),
 )
 
 it.effect('rejects Discord connection secrets and unsafe removal', () =>
@@ -1300,7 +959,7 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['config', 'discord', 'wat'],
         prefix: 'friday config discord',
         head: 'wat',
-        known: 'connection, guild, link, activity-description',
+        known: 'connection, guild, activity-description',
       },
       {
         arguments_: ['config', 'discord', 'connection', 'wat'],
@@ -1375,7 +1034,7 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config', 'discord'],
         prefix: 'friday config discord',
-        known: 'connection, guild, link, activity-description',
+        known: 'connection, guild, activity-description',
       },
       {
         arguments_: ['config', 'discord', 'connection'],

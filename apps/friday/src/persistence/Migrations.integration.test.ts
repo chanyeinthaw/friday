@@ -29,6 +29,62 @@ const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
 
 const database = SqliteClient.layer({ filename: ':memory:' })
 
+const releasedDiscordLinksDdl = `
+  CREATE TABLE IF NOT EXISTS discord_links (
+    link_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    source_connection_id TEXT NOT NULL,
+    source_guild_id TEXT NOT NULL,
+    source_conversation_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('channel', 'thread')),
+    destination_connection_id TEXT NOT NULL,
+    destination_guild_id TEXT NOT NULL,
+    destination_conversation_id TEXT NOT NULL,
+    destination_kind TEXT NOT NULL CHECK (destination_kind = 'channel'),
+    updated_at TEXT NOT NULL,
+    UNIQUE (source_connection_id, source_guild_id, source_conversation_id),
+    FOREIGN KEY (source_connection_id) REFERENCES discord_connections(connection_id) ON DELETE CASCADE,
+    FOREIGN KEY (destination_connection_id) REFERENCES discord_connections(connection_id) ON DELETE CASCADE
+  )
+`
+
+const releasedDiscordLinkHandoffsDdl = `
+  CREATE TABLE IF NOT EXISTS discord_link_handoffs (
+    source_connection_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    link_id TEXT NOT NULL,
+    source_guild_id TEXT NOT NULL,
+    source_conversation_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('channel', 'thread')),
+    destination_connection_id TEXT NOT NULL,
+    destination_guild_id TEXT NOT NULL,
+    destination_conversation_id TEXT NOT NULL,
+    destination_kind TEXT NOT NULL CHECK (destination_kind = 'channel'),
+    status TEXT NOT NULL CHECK (status IN ('accepted', 'thread-created', 'dispatched', 'failed')),
+    destination_thread_id TEXT,
+    error_stage TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source_connection_id, source_message_id)
+  )
+`
+
+const normalizeDdl = (ddl: string) =>
+  ddl
+    .replace(/^\s*CREATE TABLE IF NOT EXISTS/, 'CREATE TABLE')
+    .replaceAll(/\s+/g, ' ')
+    .trim()
+
+const linkedTableDefinitions = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const rows = yield* sql<{ readonly name: string; readonly sql: string }>`
+    SELECT name, sql FROM sqlite_master
+    WHERE type = 'table' AND name IN ('discord_links', 'discord_link_handoffs')
+    ORDER BY name
+  `
+  return rows.map(({ name, sql: ddl }) => ({ name, sql: normalizeDdl(ddl) }))
+})
+
 /** Recreates the pre-guild schema pieces the migration consumes. */
 const seedLegacySchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
@@ -689,54 +745,202 @@ test('skips the migration when the legacy tables are absent', async () =>
       const sql = yield* SqlClient.SqlClient
       const guilds = yield* sql<Record<string, unknown>>`SELECT * FROM discord_guilds`
       assert.deepStrictEqual(guilds, [])
-      const handoffColumns = yield* sql<{ readonly name: string }>`
-        SELECT name FROM pragma_table_info('discord_link_handoffs') ORDER BY cid
+      const linkedTables = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name IN ('discord_links', 'discord_link_handoffs')
+        ORDER BY name
       `
-      assert.deepStrictEqual(
-        handoffColumns.map(({ name }) => name),
-        [
-          'source_connection_id',
-          'source_message_id',
-          'link_id',
-          'source_guild_id',
-          'source_conversation_id',
-          'source_kind',
-          'destination_connection_id',
-          'destination_guild_id',
-          'destination_conversation_id',
-          'destination_kind',
-          'status',
-          'destination_thread_id',
-          'error_stage',
-          'created_at',
-          'updated_at',
-        ],
-      )
+      assert.deepStrictEqual(linkedTables, [])
       // Re-running stays a no-op.
       yield* runMigrations()
       assert.deepStrictEqual(yield* legacyTableNames, [])
     }).pipe(Effect.provide(database)),
   ))
 
-test('adds linked-channel tables to the released schema without rewriting nonexistent handoff history', async () =>
+test('leaves the released linked-channel schema and historical rows untouched on upgrade', async () =>
   Effect.runPromise(
     Effect.gen(function* () {
-      // origin/main has no discord_links or discord_link_handoffs schema. There
-      // is no released dedupe history to convert from an intermediate design.
-      yield* seedLegacySchema
-      yield* runMigrations()
       const sql = yield* SqlClient.SqlClient
-      const tables = yield* sql<{ readonly name: string }>`
-        SELECT name FROM sqlite_master
-        WHERE type = 'table' AND name IN ('discord_links', 'discord_link_handoffs')
-        ORDER BY name
+      yield* sql`PRAGMA foreign_keys = ON`
+      yield* sql`
+        CREATE TABLE platform_connections (
+          connection_id TEXT PRIMARY KEY,
+          platform TEXT NOT NULL,
+          name TEXT NOT NULL,
+          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
       `
+      yield* sql`
+        CREATE TABLE discord_connections (
+          connection_id TEXT PRIMARY KEY,
+          application_id TEXT NOT NULL,
+          public_key TEXT NOT NULL,
+          bot_token_env TEXT NOT NULL,
+          respond_to_global_mentions INTEGER NOT NULL CHECK (respond_to_global_mentions IN (0, 1)),
+          activity_description_public INTEGER NOT NULL DEFAULT 0
+            CHECK (activity_description_public IN (0, 1)),
+          FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+        )
+      `
+      yield* sql`
+        CREATE TABLE discord_guilds (
+          connection_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          invocation_mode TEXT NOT NULL CHECK (invocation_mode IN ('mention-only', 'all-messages')),
+          users_mode TEXT CHECK (users_mode IN ('all', 'allow', 'deny')),
+          channels_mode TEXT CHECK (channels_mode IN ('all', 'allow', 'deny')),
+          PRIMARY KEY (connection_id, guild_id),
+          FOREIGN KEY (connection_id) REFERENCES discord_connections(connection_id) ON DELETE CASCADE
+        )
+      `
+      yield* sql`
+        INSERT INTO platform_connections (
+          connection_id, platform, name, enabled, created_at, updated_at
+        ) VALUES
+          ('discord-source', 'discord', 'Discord source', 1,
+            '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z'),
+          ('discord-destination', 'discord', 'Discord destination', 1,
+            '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')
+      `
+      yield* sql`
+        INSERT INTO discord_connections (
+          connection_id, application_id, public_key, bot_token_env,
+          respond_to_global_mentions, activity_description_public
+        ) VALUES
+          ('discord-source', 'application-source', 'public-key-source',
+            'DISCORD_SOURCE_BOT_TOKEN', 1, 0),
+          ('discord-destination', 'application-destination', 'public-key-destination',
+            'DISCORD_DESTINATION_BOT_TOKEN', 1, 1)
+      `
+      yield* sql`
+        INSERT INTO discord_guilds (
+          connection_id, guild_id, enabled, invocation_mode, users_mode, channels_mode
+        ) VALUES
+          ('discord-source', '111111111111111111', 1, 'all-messages', 'allow', 'all'),
+          ('discord-destination', '222222222222222222', 1, 'mention-only', NULL, 'allow')
+      `
+      yield* sql.unsafe(releasedDiscordLinksDdl)
+      yield* sql.unsafe(releasedDiscordLinkHandoffsDdl)
+      yield* sql`
+        INSERT INTO discord_links (
+          link_id, enabled,
+          source_connection_id, source_guild_id, source_conversation_id, source_kind,
+          destination_connection_id, destination_guild_id, destination_conversation_id,
+          destination_kind, updated_at
+        ) VALUES (
+          'released-link', 1,
+          'discord-source', '111111111111111111', '333333333333333333', 'thread',
+          'discord-destination', '222222222222222222', '444444444444444444',
+          'channel', '2026-09-02T00:00:00.000Z'
+        )
+      `
+      yield* sql`
+        INSERT INTO discord_link_handoffs (
+          source_connection_id, source_message_id, link_id,
+          source_guild_id, source_conversation_id, source_kind,
+          destination_connection_id, destination_guild_id, destination_conversation_id,
+          destination_kind, status, destination_thread_id, error_stage, created_at, updated_at
+        ) VALUES
+          (
+            'discord-source', 'message-dispatched', 'released-link',
+            '111111111111111111', '333333333333333333', 'thread',
+            'discord-destination', '222222222222222222', '444444444444444444',
+            'channel', 'dispatched', 'destination-thread-1', NULL,
+            '2026-09-02T00:01:00.000Z', '2026-09-02T00:02:00.000Z'
+          ),
+          (
+            'discord-source', 'message-failed', 'released-link',
+            '111111111111111111', '555555555555555555', 'channel',
+            'discord-destination', '222222222222222222', '444444444444444444',
+            'channel', 'failed', NULL, 'dispatch',
+            '2026-09-02T00:03:00.000Z', '2026-09-02T00:04:00.000Z'
+          )
+      `
+
+      const expectedDefinitions = [
+        { name: 'discord_link_handoffs', sql: normalizeDdl(releasedDiscordLinkHandoffsDdl) },
+        { name: 'discord_links', sql: normalizeDdl(releasedDiscordLinksDdl) },
+      ]
+      const expectedLinks = [
+        {
+          link_id: 'released-link',
+          enabled: 1,
+          source_connection_id: 'discord-source',
+          source_guild_id: '111111111111111111',
+          source_conversation_id: '333333333333333333',
+          source_kind: 'thread',
+          destination_connection_id: 'discord-destination',
+          destination_guild_id: '222222222222222222',
+          destination_conversation_id: '444444444444444444',
+          destination_kind: 'channel',
+          updated_at: '2026-09-02T00:00:00.000Z',
+        },
+      ]
+      const expectedHandoffs = [
+        {
+          source_connection_id: 'discord-source',
+          source_message_id: 'message-dispatched',
+          link_id: 'released-link',
+          source_guild_id: '111111111111111111',
+          source_conversation_id: '333333333333333333',
+          source_kind: 'thread',
+          destination_connection_id: 'discord-destination',
+          destination_guild_id: '222222222222222222',
+          destination_conversation_id: '444444444444444444',
+          destination_kind: 'channel',
+          status: 'dispatched',
+          destination_thread_id: 'destination-thread-1',
+          error_stage: null,
+          created_at: '2026-09-02T00:01:00.000Z',
+          updated_at: '2026-09-02T00:02:00.000Z',
+        },
+        {
+          source_connection_id: 'discord-source',
+          source_message_id: 'message-failed',
+          link_id: 'released-link',
+          source_guild_id: '111111111111111111',
+          source_conversation_id: '555555555555555555',
+          source_kind: 'channel',
+          destination_connection_id: 'discord-destination',
+          destination_guild_id: '222222222222222222',
+          destination_conversation_id: '444444444444444444',
+          destination_kind: 'channel',
+          status: 'failed',
+          destination_thread_id: null,
+          error_stage: 'dispatch',
+          created_at: '2026-09-02T00:03:00.000Z',
+          updated_at: '2026-09-02T00:04:00.000Z',
+        },
+      ]
+      assert.deepStrictEqual(yield* linkedTableDefinitions, expectedDefinitions)
       assert.deepStrictEqual(
-        tables.map(({ name }) => name),
-        ['discord_link_handoffs', 'discord_links'],
+        yield* sql<Record<string, unknown>>`SELECT * FROM discord_links ORDER BY link_id`,
+        expectedLinks,
       )
-      const handoffs = yield* sql<Record<string, unknown>>`SELECT * FROM discord_link_handoffs`
-      assert.deepStrictEqual(handoffs, [])
+      assert.deepStrictEqual(
+        yield* sql<Record<string, unknown>>`
+          SELECT * FROM discord_link_handoffs ORDER BY source_connection_id, source_message_id
+        `,
+        expectedHandoffs,
+      )
+
+      // This is the first rollback migration pass over the released database state.
+      yield* runMigrations()
+
+      assert.deepStrictEqual(yield* linkedTableDefinitions, expectedDefinitions)
+      assert.deepStrictEqual(
+        yield* sql<Record<string, unknown>>`SELECT * FROM discord_links ORDER BY link_id`,
+        expectedLinks,
+      )
+      assert.deepStrictEqual(
+        yield* sql<Record<string, unknown>>`
+          SELECT * FROM discord_link_handoffs ORDER BY source_connection_id, source_message_id
+        `,
+        expectedHandoffs,
+      )
     }).pipe(Effect.provide(database)),
   ))
 

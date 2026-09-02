@@ -176,18 +176,11 @@ it.effect('persists steering before delivering it to the runtime', () =>
   Effect.gen(function* () {
     const operations: Array<RecordedOperation> = []
     if (steeringActivity.type !== 'steering') return
-    let deliveredAuthorization: 'allowed' | 'denied' | undefined
     const runtime = {
       threadId: turn.threadId,
       harnessSession,
-      prompt: (request: {
-        readonly turnId: typeof turn.id
-        readonly authorization?: { readonly externalUpdateRequests: 'allowed' | 'denied' }
-      }) =>
-        Effect.sync(() => {
-          deliveredAuthorization = request.authorization?.externalUpdateRequests
-          operations.push({ type: 'prompt', value: request.turnId })
-        }),
+      prompt: ({ turnId }: { readonly turnId: typeof turn.id }) =>
+        Effect.sync(() => operations.push({ type: 'prompt', value: turnId })),
       cancel: () => Effect.void,
       reload: () => Effect.succeed(harnessReloadSucceeded()),
       events: Stream.empty,
@@ -196,15 +189,12 @@ it.effect('persists steering before delivering it to the runtime', () =>
       Effect.provideService(ThreadPersistence, makePersistence(operations)),
     )
 
-    yield* coordinator.steer(turn.id, steeringActivity, {
-      externalUpdateRequests: 'denied',
-    })
+    yield* coordinator.steer(turn.id, steeringActivity)
 
     assert.deepStrictEqual(
       operations.map(({ type }) => type),
       ['put-activity', 'prompt'],
     )
-    assert.strictEqual(deliveredAuthorization, 'denied')
   }),
 )
 

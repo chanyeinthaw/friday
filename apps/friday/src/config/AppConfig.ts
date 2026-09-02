@@ -11,8 +11,6 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { DiscordLink } from './DiscordLinks.ts'
-
 const Identifier = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
 const IdentifierArray = Schema.Array(Identifier)
 
@@ -160,8 +158,6 @@ export const AppConfig = Schema.Struct({
     discord: Schema.Array(DiscordPlatformConfig),
     slack: Schema.Array(SlackPlatformConfig),
   }),
-  /** Exact Discord conversation links. Absent on legacy in-memory fixtures. */
-  discordLinks: Schema.optionalKey(Schema.Array(DiscordLink)),
   agent: Schema.Struct({
     recentMessageCount: Schema.Int.pipe(
       Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
@@ -324,19 +320,6 @@ const GuildChannelScopeSubjectRow = Schema.Struct({
   channel_id: Schema.String,
 })
 
-const DiscordLinkRow = Schema.Struct({
-  link_id: Schema.String,
-  enabled: Schema.Number,
-  source_connection_id: Schema.String,
-  source_guild_id: Schema.String,
-  source_conversation_id: Schema.String,
-  source_kind: Schema.Literals(['channel', 'thread']),
-  destination_connection_id: Schema.String,
-  destination_guild_id: Schema.String,
-  destination_conversation_id: Schema.String,
-  destination_kind: Schema.Literal('channel'),
-})
-
 /**
  * Mutable assembly shapes for guild configuration read from SQLite: optional
  * policy sections attach only when their columns are configured.
@@ -374,7 +357,6 @@ const decodeGuildChannelUserSubjectRows = Schema.decodeUnknownEffect(
 const decodeGuildChannelScopeSubjectRows = Schema.decodeUnknownEffect(
   Schema.Array(GuildChannelScopeSubjectRow),
 )
-const decodeDiscordLinkRows = Schema.decodeUnknownEffect(Schema.Array(DiscordLinkRow))
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
 const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
@@ -454,9 +436,6 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
     SELECT * FROM discord_guild_channel_scope
     ORDER BY connection_id, guild_id, channel_id
   `
-  const links = yield* sql<Record<string, unknown>>`
-    SELECT * FROM discord_links ORDER BY link_id
-  `
   const adminUsers = yield* sql<
     Record<string, unknown>
   >`SELECT user_id FROM admin_discord_users ORDER BY user_id`
@@ -473,7 +452,6 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
     guildChannels: yield* decodeGuildChannelRows(guildChannels),
     guildChannelUsers: yield* decodeGuildChannelUserSubjectRows(guildChannelUsers),
     guildChannelScope: yield* decodeGuildChannelScopeSubjectRows(guildChannelScope),
-    links: yield* decodeDiscordLinkRows(links),
     adminUsers: yield* decodeAdminUserRows(adminUsers),
   }
 })
@@ -664,22 +642,6 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
       ),
       slack: [],
     },
-    discordLinks: rows.links.map((link) => ({
-      id: link.link_id,
-      enabled: link.enabled === 1,
-      source: {
-        connectionId: link.source_connection_id,
-        guildId: link.source_guild_id,
-        conversationId: link.source_conversation_id,
-        kind: link.source_kind,
-      },
-      destination: {
-        connectionId: link.destination_connection_id,
-        guildId: link.destination_guild_id,
-        conversationId: link.destination_conversation_id,
-        kind: link.destination_kind,
-      },
-    })),
     agent: { recentMessageCount: rows.agent.recent_message_count },
     admin: {
       discordUserIds: rows.adminUsers.map((user) => user.user_id),

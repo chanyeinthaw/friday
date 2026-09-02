@@ -15,22 +15,9 @@ import type * as Stream from 'effect/Stream'
 
 export type PromptMode = 'steer' | 'turn'
 
-/** Trusted authorization derived from the current platform input, never model text. */
-export type CurrentTurnAuthorization =
-  | { readonly externalUpdateRequests: 'allowed' }
-  | { readonly externalUpdateRequests: 'denied' }
-
-export const externalUpdatesAllowed: CurrentTurnAuthorization = {
-  externalUpdateRequests: 'allowed',
-}
-export const externalUpdatesDenied: CurrentTurnAuthorization = {
-  externalUpdateRequests: 'denied',
-}
-
 export interface PromptRequest {
   readonly turnId: TurnId
   readonly message: InputMessage
-  readonly authorization?: CurrentTurnAuthorization
   readonly mode?: PromptMode
 }
 
