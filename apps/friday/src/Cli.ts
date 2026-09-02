@@ -2,7 +2,13 @@ import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import { PlatformConnectionId } from '@friday/contracts/conversation'
+import {
+  ModelId,
+  PlatformConnectionId,
+  ProviderId,
+  SubagentProfileName,
+  ThinkingLevel,
+} from '@friday/contracts/conversation'
 
 import {
   type AccessPolicy,
@@ -34,6 +40,7 @@ import {
   type DiscordConnectionRemoveOutcome,
   type DiscordConnectionUpdateOutcome,
 } from './config/DiscordConnections.ts'
+import { ControlSocketError, isControlSocketNotRunning } from './control/ControlSocket.ts'
 import {
   formatConfigReloadOutcome,
   type ConfigReloadOutcome as ConfigReloadOutcomeType,
@@ -48,6 +55,16 @@ import {
   type ManagedWorktree,
   type ManagedWorktreeListEntry,
 } from './repositories/RepositoryWorktrees.ts'
+import {
+  ConfiguredModelSelection,
+  FixedModelName,
+  StoredSubagentProfile,
+  type FixedModelSetOutcome,
+  type SubagentProfileAddOutcome,
+  type SubagentProfileRemoveOutcome,
+  type SubagentProfileUpdateOutcome,
+} from './config/ModelConfiguration.ts'
+import type { PiCatalogModel } from './harness/pi/PiModelCatalog.ts'
 import {
   WorkspaceCleanupProposalId,
   type WorkspaceCleanupProposal,
@@ -202,6 +219,44 @@ export type FridayCliAction =
   | { readonly type: 'start' }
   | { readonly type: 'version' }
   | { readonly type: 'config-reload' }
+  | { readonly type: 'config-model-list'; readonly json: boolean }
+  | { readonly type: 'config-model-get'; readonly name: FixedModelName; readonly json: boolean }
+  | { readonly type: 'config-model-set'; readonly selection: ConfiguredModelSelection }
+  | { readonly type: 'config-profile-list'; readonly json: boolean }
+  | {
+      readonly type: 'config-profile-get'
+      readonly name: SubagentProfileName
+      readonly json: boolean
+    }
+  | { readonly type: 'config-profile-add'; readonly profile: StoredSubagentProfile }
+  | {
+      readonly type: 'config-profile-update'
+      readonly patch: {
+        readonly name: SubagentProfileName
+        readonly description?: string
+        readonly provider?: ProviderId
+        readonly modelId?: ModelId
+        readonly thinkingLevel?: typeof ThinkingLevel.Type
+      }
+    }
+  | {
+      readonly type: 'config-profile-remove'
+      readonly name: SubagentProfileName
+      readonly yes: boolean
+    }
+  | {
+      readonly type: 'model-list'
+      readonly provider?: string
+      readonly available: boolean
+      readonly json: boolean
+    }
+  | {
+      readonly type: 'model-get'
+      readonly provider: string
+      readonly modelId: string
+      readonly json: boolean
+    }
+  | { readonly type: 'model-reload' }
   | {
       readonly type: 'config-admin-discord-add' | 'config-admin-discord-remove'
       readonly userId: typeof DiscordUserId.Type
@@ -330,6 +385,15 @@ export class FridayCliError extends Schema.Error<FridayCliError>('FridayCliError
 }
 
 const decodeRepositoryUrl = Schema.decodeUnknownEffect(RepositoryUrl)
+const decodeFixedModelName = Schema.decodeUnknownEffect(FixedModelName)
+const decodeProviderId = Schema.decodeUnknownEffect(ProviderId)
+const decodeModelId = Schema.decodeUnknownEffect(ModelId)
+const decodeThinkingLevel = Schema.decodeUnknownEffect(ThinkingLevel)
+const decodeProfileName = Schema.decodeUnknownEffect(SubagentProfileName)
+const isControlSocketError = Schema.is(ControlSocketError)
+const decodeProfileDescription = Schema.decodeUnknownEffect(
+  Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+)
 const decodeWorkspaceCleanupProposalId = Schema.decodeUnknownEffect(WorkspaceCleanupProposalId)
 const decodePlatformConnectionId = Schema.decodeUnknownEffect(PlatformConnectionId)
 const decodeInvocationMode = Schema.decodeUnknownEffect(InvocationMode)
@@ -438,6 +502,224 @@ const parseConfigReload = Effect.fn('Cli.parseConfigReload')(function* (
   return { type: 'config-reload' as const }
 })
 
+const parseFlags = (
+  tokens: ReadonlyArray<string>,
+  allowed: ReadonlySet<string>,
+  booleans: ReadonlySet<string>,
+  all: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyMap<string, string | true>, FridayCliError> =>
+  Effect.gen(function* () {
+    const values = new Map<string, string | true>()
+    for (let index = 0; index < tokens.length; index += 1) {
+      const flag = tokens[index]
+      if (flag === undefined || !allowed.has(flag) || values.has(flag))
+        return yield* discordArgumentsError(all)
+      if (booleans.has(flag)) {
+        values.set(flag, true)
+        continue
+      }
+      const value = tokens[index + 1]
+      if (value === undefined || value.startsWith('-')) return yield* discordArgumentsError(all)
+      values.set(flag, value)
+      index += 1
+    }
+    return values
+  })
+
+const flagString = (
+  values: ReadonlyMap<string, string | true>,
+  name: string,
+): string | undefined => {
+  const value = values.get(name)
+  return value === true ? undefined : value
+}
+
+const parseConfigModelList = Effect.fn('Cli.parseConfigModelList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'config-model-list' as const, json }
+})
+const parseConfigModelGet = Effect.fn('Cli.parseConfigModelGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const name = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeFixedModelName),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const json = yield* parseTrailingJson(tokens.slice(1), all)
+  return { type: 'config-model-get' as const, name, json }
+})
+const parseConfigModelSet = Effect.fn('Cli.parseConfigModelSet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const name = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeFixedModelName),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const flags = yield* parseFlags(
+    tokens.slice(1),
+    new Set(['--provider', '--model-id', '--thinking']),
+    new Set(),
+    all,
+  )
+  const provider = yield* decodeProviderId(flagString(flags, '--provider')).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const modelId = yield* decodeModelId(flagString(flags, '--model-id')).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const thinkingLevel = yield* decodeThinkingLevel(flagString(flags, '--thinking')).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  return {
+    type: 'config-model-set' as const,
+    selection: { name, provider, modelId, thinkingLevel },
+  }
+})
+const parseConfigProfileList = Effect.fn('Cli.parseConfigProfileList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  return { type: 'config-profile-list' as const, json: yield* parseTrailingJson(tokens, all) }
+})
+const parseConfigProfileGet = Effect.fn('Cli.parseConfigProfileGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const name = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeProfileName),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  return {
+    type: 'config-profile-get' as const,
+    name,
+    json: yield* parseTrailingJson(tokens.slice(1), all),
+  }
+})
+const parseConfigProfileAdd = Effect.fn('Cli.parseConfigProfileAdd')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const name = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeProfileName),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const flags = yield* parseFlags(
+    tokens.slice(1),
+    new Set(['--description', '--provider', '--model-id', '--thinking']),
+    new Set(),
+    all,
+  )
+  const description = yield* decodeProfileDescription(flagString(flags, '--description')).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const provider = yield* decodeProviderId(flagString(flags, '--provider')).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const modelId = yield* decodeModelId(flagString(flags, '--model-id')).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const thinkingLevel = yield* decodeThinkingLevel(flagString(flags, '--thinking')).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  return {
+    type: 'config-profile-add' as const,
+    profile: { name, description, provider, modelId, thinkingLevel },
+  }
+})
+const parseConfigProfileUpdate = Effect.fn('Cli.parseConfigProfileUpdate')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const name = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeProfileName),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const flags = yield* parseFlags(
+    tokens.slice(1),
+    new Set(['--description', '--provider', '--model-id', '--thinking']),
+    new Set(),
+    all,
+  )
+  if (flags.size === 0) return yield* discordArgumentsError(all)
+  const descriptionValue = flagString(flags, '--description')
+  const providerValue = flagString(flags, '--provider')
+  const modelIdValue = flagString(flags, '--model-id')
+  const thinkingValue = flagString(flags, '--thinking')
+  const patch: ParsedProfilePatch = { name }
+  if (descriptionValue !== undefined) {
+    patch.description = yield* decodeProfileDescription(descriptionValue).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  }
+  if (providerValue !== undefined) {
+    patch.provider = yield* decodeProviderId(providerValue).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  }
+  if (modelIdValue !== undefined) {
+    patch.modelId = yield* decodeModelId(modelIdValue).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  }
+  if (thinkingValue !== undefined) {
+    patch.thinkingLevel = yield* decodeThinkingLevel(thinkingValue).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  }
+  return { type: 'config-profile-update' as const, patch }
+})
+const parseConfigProfileRemove = Effect.fn('Cli.parseConfigProfileRemove')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const name = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeProfileName),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  if (tokens.length !== 2 || tokens[1] !== '--yes') return yield* discordArgumentsError(all)
+  return { type: 'config-profile-remove' as const, name, yes: true }
+})
+const parseModelList = Effect.fn('Cli.parseModelList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const flags = yield* parseFlags(
+    tokens,
+    new Set(['--provider', '--available', '--json']),
+    new Set(['--available', '--json']),
+    all,
+  )
+  const provider = flagString(flags, '--provider')
+  const action: ParsedModelListAction = {
+    type: 'model-list',
+    available: flags.has('--available'),
+    json: flags.has('--json'),
+  }
+  if (provider !== undefined) action.provider = provider
+  return action
+})
+const parseModelGet = Effect.fn('Cli.parseModelGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const provider = yield* positionalToken(tokens, 0, all)
+  const modelId = yield* positionalToken(tokens, 1, all)
+  const json = yield* parseTrailingJson(tokens.slice(2), all)
+  return { type: 'model-get' as const, provider, modelId, json }
+})
+const parseModelReload = Effect.fn('Cli.parseModelReload')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length > 0) return yield* discordArgumentsError(all)
+  return { type: 'model-reload' as const }
+})
+
 const parseAdminDiscordAdd = Effect.fn('Cli.parseAdminDiscordAdd')(function* (
   tokens: ReadonlyArray<string>,
   all: ReadonlyArray<string>,
@@ -514,6 +796,26 @@ const missingUpdateFieldError = (all: ReadonlyArray<string>) =>
     detail:
       'Provide at least one field to update: --name, --application-id, --public-key, --bot-token-env, --respond-to-global-mentions, or --no-respond-to-global-mentions.',
   })
+
+interface ParsedProfilePatch {
+  name: SubagentProfileName
+  description?: string
+  provider?: ProviderId
+  modelId?: ModelId
+  thinkingLevel?: typeof ThinkingLevel.Type
+}
+
+interface ParsedModelListAction {
+  type: 'model-list'
+  provider?: string
+  available: boolean
+  json: boolean
+}
+
+interface PiModelListOptions {
+  provider?: string
+  availableOnly?: boolean
+}
 
 /** Mutable assembly shape for the connection update parsed from CLI flags. */
 interface ParsedDiscordConnectionUpdate {
@@ -1016,6 +1318,75 @@ export const cliCommandSpec: CliBranchSpec = {
           parse: parseConfigReload,
         },
         {
+          name: 'model',
+          summary: "Manage Friday's fixed primary and utility model selections.",
+          children: [
+            {
+              name: 'list',
+              summary: 'List fixed model selections.',
+              arguments: ['[--json]'],
+              parse: parseConfigModelList,
+            },
+            {
+              name: 'get',
+              summary: 'Show one fixed model selection.',
+              arguments: ['<primary|utility> [--json]'],
+              parse: parseConfigModelGet,
+            },
+            {
+              name: 'set',
+              summary: 'Set one fixed model selection and reload configuration.',
+              arguments: [
+                '<primary|utility> --provider <provider> --model-id <model-id>',
+                '--thinking <off|minimal|low|medium|high|xhigh|max>',
+              ],
+              parse: parseConfigModelSet,
+            },
+          ],
+        },
+        {
+          name: 'profile',
+          summary: 'Manage Friday subagent profiles.',
+          children: [
+            {
+              name: 'list',
+              summary: 'List subagent profiles.',
+              arguments: ['[--json]'],
+              parse: parseConfigProfileList,
+            },
+            {
+              name: 'get',
+              summary: 'Show one subagent profile.',
+              arguments: ['<name> [--json]'],
+              parse: parseConfigProfileGet,
+            },
+            {
+              name: 'add',
+              summary: 'Add a subagent profile and reload configuration.',
+              arguments: [
+                '<name> --description <description> --provider <provider>',
+                '--model-id <model-id> --thinking <level>',
+              ],
+              parse: parseConfigProfileAdd,
+            },
+            {
+              name: 'update',
+              summary: 'Update given subagent profile fields and reload configuration.',
+              arguments: [
+                '<name> [--description <description>] [--provider <provider>]',
+                '[--model-id <model-id>] [--thinking <level>]',
+              ],
+              parse: parseConfigProfileUpdate,
+            },
+            {
+              name: 'remove',
+              summary: 'Remove a subagent profile. The primary profile is protected.',
+              arguments: ['<name> --yes'],
+              parse: parseConfigProfileRemove,
+            },
+          ],
+        },
+        {
           name: 'admin',
           summary: "Manage Friday's administrator allow-list (changes need a restart).",
           children: [
@@ -1212,6 +1583,29 @@ export const cliCommandSpec: CliBranchSpec = {
       ],
     },
     {
+      name: 'model',
+      summary: "Inspect and locally reload Pi's model catalog and auth state.",
+      children: [
+        {
+          name: 'list',
+          summary: 'List Pi catalog models without exposing credentials.',
+          arguments: ['[--provider <provider>] [--available] [--json]'],
+          parse: parseModelList,
+        },
+        {
+          name: 'get',
+          summary: 'Show one Pi catalog model.',
+          arguments: ['<provider> <model-id> [--json]'],
+          parse: parseModelGet,
+        },
+        {
+          name: 'reload',
+          summary: 'Reload Pi catalog and auth state locally, without network access.',
+          parse: parseModelReload,
+        },
+      ],
+    },
+    {
       name: 'worktree',
       summary: 'Manage repository worktrees registered with Friday.',
       children: [
@@ -1298,6 +1692,48 @@ export const parseFridayCli = (
   if (all.length === 0) return Effect.succeed({ type: 'start' })
   return dispatchCommand([], cliCommandSpec, all, all)
 }
+
+export const renderConfiguredModels = (models: ReadonlyArray<ConfiguredModelSelection>): string =>
+  [
+    'Friday model selections:',
+    ...models.map(
+      (model) => `  ${model.name}: ${model.provider}/${model.modelId} (${model.thinkingLevel})`,
+    ),
+  ].join('\n')
+
+export const renderSubagentProfiles = (profiles: ReadonlyArray<StoredSubagentProfile>): string =>
+  profiles.length === 0
+    ? 'No subagent profiles are configured.'
+    : [
+        'Subagent profiles:',
+        ...profiles.map(
+          (profile) =>
+            `  ${profile.name}: ${profile.provider}/${profile.modelId} (${profile.thinkingLevel})\n    ${profile.description}`,
+        ),
+      ].join('\n')
+
+export const renderPiModels = (models: ReadonlyArray<PiCatalogModel>): string =>
+  models.length === 0
+    ? 'No matching Pi catalog models.'
+    : [
+        'Pi model catalog:',
+        ...models.map(
+          (model) =>
+            `  ${model.provider}/${model.modelId}  ${model.available ? 'available' : 'unavailable'}  ${model.name}`,
+        ),
+      ].join('\n')
+
+const renderPiModel = (model: PiCatalogModel): string =>
+  [
+    `${model.provider}/${model.modelId}`,
+    `  Name: ${model.name}`,
+    `  API: ${model.api}`,
+    `  Available: ${model.available ? 'yes' : 'no'}`,
+    `  Reasoning: ${model.reasoning ? 'yes' : 'no'}`,
+    `  Input: ${model.input.join(', ')}`,
+    `  Context window: ${model.contextWindow}`,
+    `  Max tokens: ${model.maxTokens}`,
+  ].join('\n')
 
 const renderCleanup = (
   proposal: WorkspaceCleanupProposal,
@@ -1576,9 +2012,46 @@ export type FridayCliOperations<
   ReloadError,
   AdminError,
   ConnectionError,
+  ModelConfigError,
+  ModelCatalogError,
 > = {
   readonly start: Effect.Effect<never, E>
   readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ReloadError>
+  readonly listConfiguredModels: () => Effect.Effect<
+    ReadonlyArray<ConfiguredModelSelection>,
+    ModelConfigError
+  >
+  readonly getConfiguredModel: (
+    name: FixedModelName,
+  ) => Effect.Effect<ConfiguredModelSelection, ModelConfigError>
+  readonly setConfiguredModel: (
+    selection: ConfiguredModelSelection,
+  ) => Effect.Effect<FixedModelSetOutcome, ModelConfigError>
+  readonly listSubagentProfiles: () => Effect.Effect<
+    ReadonlyArray<StoredSubagentProfile>,
+    ModelConfigError
+  >
+  readonly getSubagentProfile: (
+    name: SubagentProfileName,
+  ) => Effect.Effect<Option.Option<StoredSubagentProfile>, ModelConfigError>
+  readonly addSubagentProfile: (
+    profile: StoredSubagentProfile,
+  ) => Effect.Effect<SubagentProfileAddOutcome, ModelConfigError>
+  readonly updateSubagentProfile: (
+    patch: Extract<FridayCliAction, { readonly type: 'config-profile-update' }>['patch'],
+  ) => Effect.Effect<SubagentProfileUpdateOutcome, ModelConfigError>
+  readonly removeSubagentProfile: (
+    name: SubagentProfileName,
+  ) => Effect.Effect<SubagentProfileRemoveOutcome, ModelConfigError>
+  readonly listPiModels: (options: {
+    readonly provider?: string
+    readonly availableOnly?: boolean
+  }) => Effect.Effect<ReadonlyArray<PiCatalogModel>, ModelCatalogError>
+  readonly getPiModel: (
+    provider: string,
+    modelId: string,
+  ) => Effect.Effect<PiCatalogModel | undefined, ModelCatalogError>
+  readonly reloadPiModels: () => Effect.Effect<number, ModelCatalogError>
   readonly addDiscordAdmin: (
     userId: typeof DiscordUserId.Type,
   ) => Effect.Effect<DiscordAdminAddOutcome, AdminError>
@@ -1686,6 +2159,8 @@ export const runFridayCli = <
   ReloadError,
   AdminError,
   ConnectionError,
+  ModelConfigError,
+  ModelCatalogError,
 >(
   arguments_: ReadonlyArray<string>,
   options: FridayCliOperations<
@@ -1696,7 +2171,9 @@ export const runFridayCli = <
     GuildError,
     ReloadError,
     AdminError,
-    ConnectionError
+    ConnectionError,
+    ModelConfigError,
+    ModelCatalogError
   >,
 ): Effect.Effect<
   void,
@@ -1710,9 +2187,36 @@ export const runFridayCli = <
   | ReloadError
   | AdminError
   | ConnectionError
+  | ModelConfigError
+  | ModelCatalogError
 > =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
+    const reloadAfterCommit = Effect.fn('Cli.reloadAfterCommit')(function* () {
+      const result = yield* options.reloadConfig.pipe(
+        Effect.map(Option.some),
+        Effect.catch((cause) =>
+          isControlSocketError(cause) && isControlSocketNotRunning(cause)
+            ? Effect.succeed(Option.none())
+            : Console.error(
+                'Stored configuration change committed, but automatic reload failed.',
+              ).pipe(Effect.andThen(Effect.fail(cause))),
+        ),
+      )
+      if (Option.isNone(result)) {
+        yield* Console.log(
+          'No running Friday process accepted the reload. The next start will load the stored change.',
+        )
+        return
+      }
+      if (!result.value.ok) {
+        yield* Console.error(
+          'Stored configuration change committed, but the running Friday rejected the reload.',
+        )
+        return yield* new ConfigReloadRejectedError({ detail: result.value.detail })
+      }
+      yield* Console.log(formatConfigReloadOutcome(result.value))
+    })
     switch (action.type) {
       case 'help':
         yield* Console.log(renderCliHelp(action.topic))
@@ -1726,6 +2230,108 @@ export const runFridayCli = <
           return yield* new ConfigReloadRejectedError({ detail: outcome.detail })
         }
         yield* Console.log(formatConfigReloadOutcome(outcome))
+        return
+      }
+      case 'config-model-list': {
+        const models = yield* options.listConfiguredModels()
+        yield* Console.log(action.json ? JSON.stringify(models) : renderConfiguredModels(models))
+        return
+      }
+      case 'config-model-get': {
+        const model = yield* options.getConfiguredModel(action.name)
+        yield* Console.log(action.json ? JSON.stringify(model) : renderConfiguredModels([model]))
+        return
+      }
+      case 'config-model-set': {
+        const outcome = yield* options.setConfiguredModel(action.selection)
+        yield* Console.log(
+          outcome === 'updated'
+            ? `Friday ${action.selection.name} model updated.`
+            : `Friday ${action.selection.name} model already has the requested selection.`,
+        )
+        if (outcome === 'updated') yield* reloadAfterCommit()
+        return
+      }
+      case 'config-profile-list': {
+        const profiles = yield* options.listSubagentProfiles()
+        yield* Console.log(
+          action.json ? JSON.stringify(profiles) : renderSubagentProfiles(profiles),
+        )
+        return
+      }
+      case 'config-profile-get': {
+        const profile = yield* options.getSubagentProfile(action.name)
+        yield* Console.log(
+          Option.match(profile, {
+            onNone: () =>
+              action.json ? 'null' : `Subagent profile ${action.name} is not configured.`,
+            onSome: (value) =>
+              action.json ? JSON.stringify(value) : renderSubagentProfiles([value]),
+          }),
+        )
+        return
+      }
+      case 'config-profile-add': {
+        const outcome = yield* options.addSubagentProfile(action.profile)
+        yield* Console.log(
+          outcome === 'added'
+            ? `Subagent profile ${action.profile.name} added.`
+            : `Subagent profile ${action.profile.name} already exists.`,
+        )
+        if (outcome === 'added') yield* reloadAfterCommit()
+        return
+      }
+      case 'config-profile-update': {
+        const outcome = yield* options.updateSubagentProfile(action.patch)
+        yield* Console.log(
+          outcome === 'updated'
+            ? `Subagent profile ${action.patch.name} updated.`
+            : outcome === 'unchanged'
+              ? `Subagent profile ${action.patch.name} already has the requested configuration.`
+              : `Subagent profile ${action.patch.name} is not configured.`,
+        )
+        if (outcome === 'updated') yield* reloadAfterCommit()
+        return
+      }
+      case 'config-profile-remove': {
+        const outcome = yield* options.removeSubagentProfile(action.name)
+        yield* Console.log(
+          outcome === 'removed'
+            ? `Subagent profile ${action.name} removed.`
+            : outcome === 'protected'
+              ? 'The subagent profile named primary is protected from removal; update it instead.'
+              : `Subagent profile ${action.name} is not configured.`,
+        )
+        if (outcome === 'removed') yield* reloadAfterCommit()
+        return
+      }
+      case 'model-list': {
+        const listOptions: PiModelListOptions = {
+          availableOnly: action.available,
+        }
+        if (action.provider !== undefined) listOptions.provider = action.provider
+        const models = yield* options.listPiModels(listOptions)
+        yield* Console.log(action.json ? JSON.stringify(models) : renderPiModels(models))
+        return
+      }
+      case 'model-get': {
+        const model = yield* options.getPiModel(action.provider, action.modelId)
+        yield* Console.log(
+          model === undefined
+            ? action.json
+              ? 'null'
+              : `Pi catalog model ${action.provider}/${action.modelId} was not found.`
+            : action.json
+              ? JSON.stringify(model)
+              : renderPiModel(model),
+        )
+        return
+      }
+      case 'model-reload': {
+        const count = yield* options.reloadPiModels()
+        yield* Console.log(
+          `Pi model catalog and authentication state reloaded locally (${count} models, no network access).`,
+        )
         return
       }
       case 'config-admin-discord-add': {

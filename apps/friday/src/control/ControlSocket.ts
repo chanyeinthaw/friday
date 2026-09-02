@@ -39,6 +39,7 @@ export class ControlSocketError extends Schema.Error<ControlSocketError>('Contro
   ]),
   path: Schema.String,
   detail: Schema.String,
+  errno: Schema.optional(Schema.String),
   cause: Schema.optional(Schema.Defect()),
 }) {
   override get message(): string {
@@ -71,11 +72,13 @@ interface ConnectionLimits {
 /** Reads an errno-style `code` field off an unknown Node.js error. */
 const ErrnoCode = Schema.Struct({ code: Schema.String })
 const decodeErrnoCode = Schema.decodeUnknownOption(ErrnoCode)
-const isErrno = (cause: unknown, code: string): boolean =>
-  Option.getOrElse(
-    Option.map(decodeErrnoCode(cause), (decoded) => decoded.code === code),
-    () => false,
-  )
+const errnoCode = (cause: unknown): string | undefined =>
+  Option.getOrUndefined(Option.map(decodeErrnoCode(cause), (decoded) => decoded.code))
+const isErrno = (cause: unknown, code: string): boolean => errnoCode(cause) === code
+
+/** Connect failures that mean no Friday process is accepting control requests. */
+export const isControlSocketNotRunning = (error: ControlSocketError): boolean =>
+  error.operation === 'connect' && (error.errno === 'ENOENT' || error.errno === 'ECONNREFUSED')
 
 /** One request per connection: a JSON line in, a JSON line out. */
 const serveConnection = (
@@ -583,6 +586,7 @@ export const sendControlRequest = Effect.fn('sendControlRequest')(function* (
             operation,
             path,
             detail,
+            errno: errnoCode(cause),
             cause,
           }),
         ),

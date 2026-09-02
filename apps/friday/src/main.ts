@@ -33,6 +33,8 @@ import {
 } from './platforms/DiscordActivityDescriptions.ts'
 import { AppConfig } from './config/AppConfigLive.ts'
 import { DiscordAdmins, DiscordAdminsLive } from './config/DiscordAdmins.ts'
+import { ModelConfiguration, ModelConfigurationLive } from './config/ModelConfiguration.ts'
+import { getPiModel, listPiModels, reloadPiModels } from './harness/pi/PiModelCatalog.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
@@ -63,6 +65,9 @@ const DiscordConnectionsConfiguredLive = DiscordConnectionsLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
 const DiscordAdminsConfiguredLive = DiscordAdminsLive.pipe(Layer.provide(FridaySqliteLive))
+const ModelConfigurationConfiguredLive = ModelConfigurationLive.pipe(
+  Layer.provide(FridaySqliteLive),
+)
 
 const start = Effect.scoped(
   Effect.gen(function* () {
@@ -98,6 +103,49 @@ const application = Effect.scoped(
     runFridayCli(process.argv.slice(2), {
       start,
       reloadConfig: sendControlRequest(FRIDAY_CONTROL_SOCKET_PATH, { op: 'config.reload' }),
+      listConfiguredModels: () =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.listModels()),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      getConfiguredModel: (name) =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.getModel(name)),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      setConfiguredModel: (selection) =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.setModel(selection)),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      listSubagentProfiles: () =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.listProfiles()),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      getSubagentProfile: (name) =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.getProfile(name)),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      addSubagentProfile: (profile) =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.addProfile(profile)),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      updateSubagentProfile: (patch) =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.updateProfile(patch)),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      removeSubagentProfile: (name) =>
+        ModelConfiguration.pipe(
+          Effect.flatMap((service) => service.removeProfile(name)),
+          Effect.provide(ModelConfigurationConfiguredLive),
+        ),
+      listPiModels,
+      getPiModel,
+      reloadPiModels,
       setDiscordActivityDescription: (action, enabled) =>
         DiscordActivityDescriptions.pipe(
           Effect.flatMap((descriptions) =>

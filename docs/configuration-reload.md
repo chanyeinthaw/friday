@@ -107,7 +107,14 @@ lock:
 - are requested under a client-side deadline (10 seconds) and response size
   cap, so an unresponsive or misbehaving server fails fast with a typed error
 
-CLI configuration commands that write SQLite (`config discord guild ...`)
+Model and profile writes (`config model set` and `config profile add|update|remove`)
+automatically request this reload after their SQLite transaction commits. If no
+Friday process is running, the write remains successful and the next start
+loads it. Active turns and existing resolved runtimes are not interrupted.
+See [model-configuration.md](./model-configuration.md) for the boundary between
+Friday selections and Pi's model catalog.
+
+Other CLI configuration commands that write SQLite (`config discord guild ...`)
 take effect on the next reload. The exception is
 `config discord activity-description set/reset`, which the running process
 picks up live through its watch loop within about a second — no reload and no

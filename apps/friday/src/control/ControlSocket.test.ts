@@ -6,7 +6,7 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
-import { mkdtemp } from 'node:fs/promises'
+import { chmod, mkdtemp } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -151,7 +151,7 @@ it.effect('restricts socket permissions to the owning user', () =>
   }),
 )
 
-it.effect('fails with a typed error when no Friday process is running', () =>
+it.effect('fails with a typed absence errno when no Friday process is running', () =>
   Effect.gen(function* () {
     const path = yield* Effect.promise(() =>
       mkdtemp(join(tmpdir(), 'friday-control-')).then((dir) => join(dir, 'missing.sock')),
@@ -159,6 +159,26 @@ it.effect('fails with a typed error when no Friday process is running', () =>
     const error = yield* Effect.flip(sendControlRequest(path, { op: 'config.reload' }))
     assert(isControlSocketError(error))
     assert.strictEqual(error.operation, 'connect')
+    assert.strictEqual(error.errno, 'ENOENT')
+  }),
+)
+
+it.effect('preserves a non-absence connect errno', () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-control-')))
+    const path = join(directory, 'forbidden', 'friday.sock')
+    yield* Effect.promise(() => NodeFs.promises.mkdir(dirname(path)))
+    yield* Effect.acquireUseRelease(
+      Effect.promise(() => chmod(join(directory, 'forbidden'), 0o000)),
+      () =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(sendControlRequest(path, { op: 'config.reload' }))
+          assert(isControlSocketError(error))
+          assert.strictEqual(error.operation, 'connect')
+          assert.strictEqual(error.errno, 'EACCES')
+        }),
+      () => Effect.promise(() => chmod(join(directory, 'forbidden'), 0o700)),
+    )
   }),
 )
 
