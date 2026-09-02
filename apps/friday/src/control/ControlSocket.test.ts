@@ -6,7 +6,7 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
-import { chmod, mkdtemp } from 'node:fs/promises'
+import { chmod, mkdtemp, rm } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,9 +27,12 @@ const isControlSocketError = Schema.is(ControlSocketError)
 const decodeRequest = Schema.decodeSync(ControlRequest)
 const decodeOutcome = Schema.decodeSync(ConfigReloadOutcome)
 
-const makePath = Effect.promise(() =>
-  mkdtemp(join(tmpdir(), 'friday-control-')).then((dir) => join(dir, 'friday.sock')),
+const makeTempDirectory = Effect.acquireRelease(
+  Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-control-'))),
+  (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
 )
+
+const makePath = makeTempDirectory.pipe(Effect.map((directory) => join(directory, 'friday.sock')))
 
 /** Writes a lifecycle-lock ownership record in the format the server produces. */
 const writeLockOwner = (
@@ -153,9 +156,8 @@ it.effect('restricts socket permissions to the owning user', () =>
 
 it.effect('fails with a typed absence errno when no Friday process is running', () =>
   Effect.gen(function* () {
-    const path = yield* Effect.promise(() =>
-      mkdtemp(join(tmpdir(), 'friday-control-')).then((dir) => join(dir, 'missing.sock')),
-    )
+    const directory = yield* makeTempDirectory
+    const path = join(directory, 'missing.sock')
     const error = yield* Effect.flip(sendControlRequest(path, { op: 'config.reload' }))
     assert(isControlSocketError(error))
     assert.strictEqual(error.operation, 'connect')
@@ -165,7 +167,7 @@ it.effect('fails with a typed absence errno when no Friday process is running', 
 
 it.effect('preserves a non-absence connect errno', () =>
   Effect.gen(function* () {
-    const directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-control-')))
+    const directory = yield* makeTempDirectory
     const path = join(directory, 'forbidden', 'friday.sock')
     yield* Effect.promise(() => NodeFs.promises.mkdir(dirname(path)))
     yield* Effect.acquireUseRelease(
@@ -183,35 +185,55 @@ it.effect('preserves a non-absence connect errno', () =>
 )
 
 /** Starts a raw server with custom per-connection behavior. */
-const startRawServer = (path: string, onConnection: (socket: net.Socket) => void) =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      // Track the server-side sockets: a client that only destroys its side
-      // never ends the accepted socket, which would stall server.close.
-      const connections = new Set<net.Socket>()
-      const server = net.createServer((socket) => {
-        connections.add(socket)
-        socket.on('close', () => connections.delete(socket))
-        onConnection(socket)
-      })
-      server.listen(path)
-      return { server, connections }
-    }),
-    ({ server, connections }) =>
+const startRawServer = (onConnection: (socket: net.Socket) => void) =>
+  Effect.gen(function* () {
+    const directory = yield* makeTempDirectory
+    const path = join(directory, 'friday.sock')
+
+    yield* Effect.acquireRelease(
       Effect.promise(
         () =>
-          new Promise<void>((resolve) => {
-            for (const socket of connections) socket.destroy()
-            server.close(() => resolve())
-          }),
+          new Promise<{ readonly server: net.Server; readonly connections: Set<net.Socket> }>(
+            (resolve, reject) => {
+              // Track the server-side sockets: a client that only destroys its side
+              // never ends the accepted socket, which would stall server.close.
+              const connections = new Set<net.Socket>()
+              const server = net.createServer((socket) => {
+                connections.add(socket)
+                socket.on('close', () => connections.delete(socket))
+                onConnection(socket)
+              })
+              const onListening = () => {
+                server.off('error', onError)
+                resolve({ server, connections })
+              }
+              const onError = (error: Error) => {
+                server.off('listening', onListening)
+                reject(error)
+              }
+              server.once('listening', onListening)
+              server.once('error', onError)
+              server.listen(path)
+            },
+          ),
       ),
-  )
+      ({ server, connections }) =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              for (const socket of connections) socket.destroy()
+              server.close(() => resolve())
+            }),
+        ),
+    )
+
+    return path
+  })
 
 it.effect('fails with a typed timeout when Friday never responds', () =>
   Effect.gen(function* () {
-    const path = yield* makePath
     // A silent server accepts connections but never writes a response.
-    yield* startRawServer(path, () => {})
+    const path = yield* startRawServer(() => {})
     const error = yield* Effect.flip(
       sendControlRequest(path, { op: 'config.reload' }, { timeoutMs: 50 }),
     )
@@ -222,8 +244,7 @@ it.effect('fails with a typed timeout when Friday never responds', () =>
 
 it.effect('classifies a post-send disconnect as an indeterminate request failure', () =>
   Effect.gen(function* () {
-    const path = yield* makePath
-    yield* startRawServer(path, (socket) => {
+    const path = yield* startRawServer((socket) => {
       socket.once('data', () => socket.destroy())
     })
     const error = yield* Effect.flip(
@@ -250,8 +271,7 @@ it('includes safe errno diagnostics for connected socket failures', () => {
 
 it.effect('classifies a malformed response as an indeterminate request failure', () =>
   Effect.gen(function* () {
-    const path = yield* makePath
-    yield* startRawServer(path, (socket) => {
+    const path = yield* startRawServer((socket) => {
       socket.once('data', () => socket.end('not-json\n'))
     })
     const error = yield* Effect.flip(
@@ -266,9 +286,8 @@ it.effect('classifies a malformed response as an indeterminate request failure',
 
 it.effect('fails with a typed error when Friday streams an oversized response', () =>
   Effect.gen(function* () {
-    const path = yield* makePath
     // The server keeps writing without ever completing the response line.
-    yield* startRawServer(path, (socket) => {
+    const path = yield* startRawServer((socket) => {
       socket.write('x'.repeat(200))
     })
     const error = yield* Effect.flip(
@@ -471,7 +490,7 @@ it.effect('restores the umask when the bind fails', () =>
 
 it.effect('never touches the umask when setup fails before the bind', () =>
   Effect.gen(function* () {
-    const directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-control-')))
+    const directory = yield* makeTempDirectory
     // A regular file where the socket directory should be fails setup first.
     yield* Effect.promise(() => NodeFs.promises.writeFile(join(directory, 'file'), 'x'))
     const path = join(directory, 'file', 'friday.sock')
