@@ -37,177 +37,163 @@ const author = (id: string, bot = false) => ({
 })
 const message = (id: string, text: string, bot = false) => ({
   id,
-  threadId: 'thread-1',
   text,
   author: author(id, bot),
 })
 
 it('loads context for new bindings, mention-only invocations, and reply-in-channel transport', () => {
-  assert.strictEqual(
+  assert.isTrue(
     shouldLoadDiscordContext({
       created: true,
       invocationMode: 'all-messages',
       replyMode: 'reply-in-thread',
     }),
-    true,
   )
-  assert.strictEqual(
+  assert.isTrue(
     shouldLoadDiscordContext({
       created: false,
       invocationMode: 'mention-only',
       replyMode: 'reply-in-thread',
     }),
-    true,
   )
-  assert.strictEqual(
+  assert.isTrue(
     shouldLoadDiscordContext({
       created: false,
       invocationMode: 'all-messages',
       replyMode: 'reply-in-channel',
     }),
-    true,
   )
-  assert.strictEqual(
+  assert.isFalse(
     shouldLoadDiscordContext({
       created: false,
       invocationMode: 'all-messages',
       replyMode: 'reply-in-thread',
     }),
-    false,
   )
 })
 
-it.effect('loads recent context from an existing Discord thread once at creation input', () =>
-  Effect.gen(function* () {
-    const fetched: Array<string> = []
-    const input = yield* loadDiscordInitialContext(
-      {
-        decodeThreadId: () => ({
-          guildId: 'guild-1',
-          channelId: 'channel-1',
-          threadId: 'thread-1',
-        }),
-        encodeThreadId: () => 'unused',
-        fetchMessages: (threadId) => {
-          fetched.push(threadId)
-          return Promise.resolve({
-            messages: [
-              message('earlier-1', 'Earlier context.'),
-              message('bot-1', 'Friday output.', true),
-              message('trigger-1', 'Friday, investigate.'),
-            ],
-          })
-        },
+const load = (
+  input: Parameters<typeof loadDiscordInitialContext>[2],
+  messages: ReadonlyArray<ReturnType<typeof message>>,
+  cursor: Parameters<typeof loadDiscordInitialContext>[3] = { created: true },
+) => {
+  const fetches: Array<{ readonly threadId: string; readonly options: unknown }> = []
+  return loadDiscordInitialContext(
+    {
+      decodeThreadId: (conversationId) => {
+        const segments = conversationId.split(':')
+        return {
+          guildId: segments[1] ?? '',
+          channelId: segments[2] ?? '',
+          threadId: segments[3] ?? '',
+        }
       },
-      20,
-      { binding, message: trigger },
+      encodeThreadId: ({ guildId, channelId, threadId }) =>
+        `discord:${guildId}:${channelId}:${threadId}`,
+      fetchMessages: (threadId, options) => {
+        fetches.push({ threadId, options })
+        return Promise.resolve({ messages })
+      },
+    },
+    20,
+    input,
+    cursor,
+  ).pipe(Effect.map((result) => ({ result, fetches })))
+}
+
+it.effect('fetches history backward from the current trigger and treats the page as history', () =>
+  Effect.gen(function* () {
+    const { result, fetches } = yield* load(
+      { binding, message: trigger, discordHistorySource: 'thread' },
+      [message('earlier-1', 'Earlier context.'), message('bot-1', 'Friday output.', true)],
     )
 
-    assert.deepStrictEqual(fetched, ['discord:guild-1:channel-1:thread-1'])
+    assert.deepStrictEqual(fetches, [
+      {
+        threadId: 'discord:guild-1:channel-1:thread-1',
+        options: { limit: 20, cursor: 'trigger-1', direction: 'backward' },
+      },
+    ])
     assert.deepStrictEqual(
-      input.initialContext?.map(({ content }) => content.text),
+      result.initialContext?.map(({ content }) => content.text),
       ['Earlier context.'],
     )
   }),
 )
 
-it.effect('loads parent-channel context when Friday creates a reply thread from the trigger', () =>
+it.effect('returns no catch-up context when afterMessageId is absent from the bounded page', () =>
   Effect.gen(function* () {
-    const fetched: Array<string> = []
-    const input = yield* loadDiscordInitialContext(
-      {
-        decodeThreadId: () => ({
-          guildId: 'guild-1',
-          channelId: 'channel-1',
-          threadId: 'trigger-1',
-        }),
-        encodeThreadId: ({ guildId, channelId, threadId }) =>
-          `discord:${guildId}:${channelId}:${threadId}`,
-        fetchMessages: (threadId) => {
-          fetched.push(threadId)
-          return Promise.resolve({ messages: [message('earlier-1', 'Parent discussion.')] })
-        },
-      },
-      20,
-      {
-        binding: {
-          ...binding,
-          conversationId: decodeConversationId('discord:guild-1:channel-1:trigger-1'),
-        },
-        message: trigger,
-      },
-    )
-
-    assert.deepStrictEqual(fetched, ['discord:guild-1:channel-1:channel-1'])
-    assert.strictEqual(input.initialContext?.[0]?.content.text, 'Parent discussion.')
-  }),
-)
-
-it.effect('loads only missed messages after the latest ingested platform message', () =>
-  Effect.gen(function* () {
-    const fetches: Array<unknown> = []
-    const input = yield* loadDiscordInitialContext(
-      {
-        decodeThreadId: () => ({
-          guildId: 'guild-1',
-          channelId: 'channel-1',
-          threadId: 'thread-1',
-        }),
-        encodeThreadId: () => 'unused',
-        fetchMessages: (_threadId, options) => {
-          fetches.push(options)
-          return Promise.resolve({
-            messages: [
-              message('message-before', 'Already ingested.'),
-              message('missed-1', 'Missed one.'),
-              message('bot-1', 'Friday output.', true),
-              message('missed-2', 'Missed two.'),
-              message('trigger-1', 'Friday, investigate.'),
-            ],
-          })
-        },
-      },
-      20,
-      { binding, message: trigger },
+    const { result } = yield* load(
+      { binding, message: trigger, discordHistorySource: 'thread' },
+      [message('missed-1', 'Unproven message.'), message('missed-2', 'Also unproven.')],
       { created: false, afterMessageId: 'message-before' },
     )
 
-    assert.deepStrictEqual(fetches, [{ limit: 20 }])
+    assert.deepStrictEqual(result.initialContext, [])
+  }),
+)
+
+it.effect('loads messages after a proven prior anchor', () =>
+  Effect.gen(function* () {
+    const { result } = yield* load(
+      { binding, message: trigger, discordHistorySource: 'thread' },
+      [
+        message('message-before', 'Already ingested.'),
+        message('missed-1', 'Missed one.'),
+        message('missed-2', 'Missed two.'),
+      ],
+      { created: false, afterMessageId: 'message-before' },
+    )
+
     assert.deepStrictEqual(
-      input.initialContext?.map(({ content }) => content.text),
+      result.initialContext?.map(({ content }) => content.text),
       ['Missed one.', 'Missed two.'],
     )
   }),
 )
 
-it.effect('loads parent-channel context for a normal channel start', () =>
+it.effect('uses parent history for a top-level message whose reply thread has a different ID', () =>
   Effect.gen(function* () {
-    const fetched: Array<string> = []
-    const input = yield* loadDiscordInitialContext(
+    const { fetches } = yield* load(
       {
-        decodeThreadId: () => ({
-          guildId: 'guild-1',
-          channelId: 'channel-1',
-          threadId: 'channel-1',
-        }),
-        encodeThreadId: ({ guildId, channelId, threadId }) =>
-          `discord:${guildId}:${channelId}:${threadId}`,
-        fetchMessages: (threadId) => {
-          fetched.push(threadId)
-          return Promise.resolve({ messages: [message('earlier-1', 'Channel context.')] })
+        binding: {
+          ...binding,
+          conversationId: decodeConversationId('discord:guild-1:channel-1:reply-thread-9'),
         },
+        message: trigger,
+        discordHistorySource: 'channel',
       },
-      20,
+      [message('earlier-1', 'Parent discussion.')],
+    )
+
+    assert.strictEqual(fetches[0]?.threadId, 'discord:guild-1:channel-1:channel-1')
+  }),
+)
+
+it.effect('uses exact thread history for a message received inside a real thread', () =>
+  Effect.gen(function* () {
+    const { fetches } = yield* load({ binding, message: trigger, discordHistorySource: 'thread' }, [
+      message('earlier-1', 'Thread discussion.'),
+    ])
+
+    assert.strictEqual(fetches[0]?.threadId, 'discord:guild-1:channel-1:thread-1')
+  }),
+)
+
+it.effect('uses channel history for channel-sentinel mode', () =>
+  Effect.gen(function* () {
+    const { fetches } = yield* load(
       {
         binding: {
           ...binding,
           conversationId: decodeConversationId('discord:guild-1:channel-1:channel-1'),
         },
         message: trigger,
+        discordHistorySource: 'channel',
       },
+      [message('earlier-1', 'Channel discussion.')],
     )
 
-    assert.deepStrictEqual(fetched, ['discord:guild-1:channel-1:channel-1'])
-    assert.strictEqual(input.initialContext?.[0]?.content.text, 'Channel context.')
+    assert.strictEqual(fetches[0]?.threadId, 'discord:guild-1:channel-1:channel-1')
   }),
 )

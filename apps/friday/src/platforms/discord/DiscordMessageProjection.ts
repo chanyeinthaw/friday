@@ -3,6 +3,7 @@ import { PlatformConversationId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
+import type { PlatformInput } from '../PlatformAdapter.ts'
 import { ChatSdkCallbackError } from '../chat-sdk/Errors.ts'
 import { discordChannelConversationId, isDiscordThread } from './DiscordConversationScope.ts'
 import {
@@ -29,7 +30,8 @@ const projectWithConversationId = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
   conversationId: string,
-) => {
+  discordHistorySource: 'channel' | 'thread',
+): PlatformInput => {
   const input = projectChatSdkMessage(connectionId, thread, message)
   return {
     ...input,
@@ -37,6 +39,7 @@ const projectWithConversationId = (
       ...input.binding,
       conversationId: decodeConversationId(conversationId),
     },
+    discordHistorySource,
   }
 }
 
@@ -51,11 +54,22 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
     try: () => discord.decodeThreadId(thread.id),
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
   })
-  if (isDiscordThread(location)) return projectChatSdkMessage(connectionId, thread, message)
+  if (isDiscordThread(location)) {
+    return {
+      ...projectChatSdkMessage(connectionId, thread, message),
+      discordHistorySource: 'thread' as const,
+    }
+  }
 
   const channelConversationId = discordChannelConversationId(discord, location)
   if (location.guildId === '@me' || location.threadId === location.channelId) {
-    return projectWithConversationId(connectionId, thread, message, channelConversationId)
+    return projectWithConversationId(
+      connectionId,
+      thread,
+      message,
+      channelConversationId,
+      'channel',
+    )
   }
 
   const existingThread = yield* Effect.promise(() =>
@@ -69,7 +83,13 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
     existingThread._tag === 'None' ||
     existingThread.value.parent_id !== location.channelId
   ) {
-    return projectWithConversationId(connectionId, thread, message, channelConversationId)
+    return projectWithConversationId(
+      connectionId,
+      thread,
+      message,
+      channelConversationId,
+      'channel',
+    )
   }
 
   const repairedConversationId = discord.encodeThreadId({
@@ -84,5 +104,5 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
       messageId: message.id,
     }),
   )
-  return projectWithConversationId(connectionId, thread, message, repairedConversationId)
+  return projectWithConversationId(connectionId, thread, message, repairedConversationId, 'channel')
 })

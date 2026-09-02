@@ -10,6 +10,7 @@ export interface PlatformInput {
   readonly binding: ConversationBinding
   readonly message: InputMessage
   readonly initialContext?: ReadonlyArray<ContextMessage>
+  readonly discordHistorySource?: 'channel' | 'thread'
 }
 
 export type PlatformMessageScope = 'thread' | 'channel'
