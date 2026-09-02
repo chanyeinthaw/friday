@@ -82,12 +82,18 @@ const renderAttributedConversation = (
       : context.filter((message) => message.platformMessageId !== replyToId)
   const historicalContext = deduplicatedContext.map((message): PromptHistoricalMessage => {
     const messageId = platformMessageId(message)
-    return {
-      kind: 'historical',
-      participantId: participantFor(message.author).id,
-      ...(messageId === undefined ? {} : { platformMessageId: messageId }),
-      content: message.content.text,
-    }
+    return messageId === undefined
+      ? {
+          kind: 'historical',
+          participantId: participantFor(message.author).id,
+          content: message.content.text,
+        }
+      : {
+          kind: 'historical',
+          participantId: participantFor(message.author).id,
+          platformMessageId: messageId,
+          content: message.content.text,
+        }
   })
   const triggerParticipant = participantFor(trigger.author)
   const triggerMessageId = platformMessageId(trigger)
@@ -95,29 +101,65 @@ const renderAttributedConversation = (
   const replyTarget: PromptReplyTarget | undefined =
     replyTo === undefined || replyTargetParticipant === undefined
       ? undefined
-      : {
-          kind: 'reply-target',
-          participantId: replyTargetParticipant.id,
-          ...(replyTargetMessageId === undefined
-            ? {}
-            : { platformMessageId: replyTargetMessageId }),
-          content: replyTo.content.text,
-        }
-  const envelope: PromptMessageEnvelope = {
-    kind: 'user-message',
-    participants: Array.from(participants.values()),
-    historicalContext,
-    ...(replyTarget === undefined ? {} : { replyTarget }),
-    trigger: {
-      kind: 'trigger',
-      participantId: triggerParticipant.id,
-      ...(triggerMessageId === undefined ? {} : { platformMessageId: triggerMessageId }),
-      ...(replyTargetParticipant === undefined
-        ? {}
-        : { replyTargetParticipantId: replyTargetParticipant.id }),
-      content: trigger.content.text,
-    },
+      : replyTargetMessageId === undefined
+        ? {
+            kind: 'reply-target',
+            participantId: replyTargetParticipant.id,
+            content: replyTo.content.text,
+          }
+        : {
+            kind: 'reply-target',
+            participantId: replyTargetParticipant.id,
+            platformMessageId: replyTargetMessageId,
+            content: replyTo.content.text,
+          }
+  let triggerEnvelope: PromptTrigger
+  if (triggerMessageId === undefined) {
+    triggerEnvelope =
+      replyTargetParticipant === undefined
+        ? {
+            kind: 'trigger',
+            participantId: triggerParticipant.id,
+            content: trigger.content.text,
+          }
+        : {
+            kind: 'trigger',
+            participantId: triggerParticipant.id,
+            replyTargetParticipantId: replyTargetParticipant.id,
+            content: trigger.content.text,
+          }
+  } else {
+    triggerEnvelope =
+      replyTargetParticipant === undefined
+        ? {
+            kind: 'trigger',
+            participantId: triggerParticipant.id,
+            platformMessageId: triggerMessageId,
+            content: trigger.content.text,
+          }
+        : {
+            kind: 'trigger',
+            participantId: triggerParticipant.id,
+            platformMessageId: triggerMessageId,
+            replyTargetParticipantId: replyTargetParticipant.id,
+            content: trigger.content.text,
+          }
   }
+  const envelope: PromptMessageEnvelope =
+    replyTarget === undefined
+      ? {
+          kind: 'user-message',
+          participants: Array.from(participants.values()),
+          historicalContext,
+          trigger: triggerEnvelope,
+        }
+      : {
+          kind: 'user-message',
+          participants: Array.from(participants.values()),
+          historicalContext,
+          replyTarget,
+          trigger: triggerEnvelope,
+        }
   return encodePromptMessageEnvelope(envelope)
 }
 

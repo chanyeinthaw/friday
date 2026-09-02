@@ -76,7 +76,10 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, '`fast`: Quick investigations.')
     assert.include(prompt, 'workspace cleanup apply <proposal-id> --json')
     assert.include(prompt, '.friday/bin/friday')
-    assert.include(prompt, 'Messages may come from different people')
+    assert.include(
+      prompt,
+      'Attributed channel user messages arrive as an Effect Schema JSON envelope',
+    )
     assert.include(prompt, 'Do not assume that a new message was written by the same person')
     assert.include(prompt, 'Background tasks are private implementation details')
     assert.include(prompt, 'Say "I\'m still working on it,"')

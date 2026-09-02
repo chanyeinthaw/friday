@@ -32,6 +32,7 @@ const decodeTurnId = Schema.decodeSync(TurnId)
 const decodeThread = Schema.decodeSync(ChannelThread)
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
 const decodeAuthor = Schema.decodeSync(MessageAuthor)
+const decodePromptMessageEnvelope = Schema.decodeSync(PromptMessageEnvelopeJson)
 
 const piEvent = (event: AgentSessionEvent): AgentSessionEvent => event
 
@@ -164,7 +165,7 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
     const firstPrompt = prompts[0]
     assert.isDefined(firstPrompt)
     if (firstPrompt !== undefined) {
-      assert.deepStrictEqual(Schema.decodeSync(PromptMessageEnvelopeJson)(firstPrompt.text), {
+      assert.deepStrictEqual(decodePromptMessageEnvelope(firstPrompt.text), {
         kind: 'user-message',
         participants: [
           {
