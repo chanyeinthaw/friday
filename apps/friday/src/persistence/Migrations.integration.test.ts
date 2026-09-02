@@ -689,9 +689,54 @@ test('skips the migration when the legacy tables are absent', async () =>
       const sql = yield* SqlClient.SqlClient
       const guilds = yield* sql<Record<string, unknown>>`SELECT * FROM discord_guilds`
       assert.deepStrictEqual(guilds, [])
+      const handoffColumns = yield* sql<{ readonly name: string }>`
+        SELECT name FROM pragma_table_info('discord_link_handoffs') ORDER BY cid
+      `
+      assert.deepStrictEqual(
+        handoffColumns.map(({ name }) => name),
+        [
+          'source_connection_id',
+          'source_message_id',
+          'link_id',
+          'source_guild_id',
+          'source_conversation_id',
+          'source_kind',
+          'destination_connection_id',
+          'destination_guild_id',
+          'destination_conversation_id',
+          'destination_kind',
+          'status',
+          'destination_thread_id',
+          'error_stage',
+          'created_at',
+          'updated_at',
+        ],
+      )
       // Re-running stays a no-op.
       yield* runMigrations()
       assert.deepStrictEqual(yield* legacyTableNames, [])
+    }).pipe(Effect.provide(database)),
+  ))
+
+test('adds linked-channel tables to the released schema without rewriting nonexistent handoff history', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      // origin/main has no discord_links or discord_link_handoffs schema. There
+      // is no released dedupe history to convert from an intermediate design.
+      yield* seedLegacySchema
+      yield* runMigrations()
+      const sql = yield* SqlClient.SqlClient
+      const tables = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name IN ('discord_links', 'discord_link_handoffs')
+        ORDER BY name
+      `
+      assert.deepStrictEqual(
+        tables.map(({ name }) => name),
+        ['discord_link_handoffs', 'discord_links'],
+      )
+      const handoffs = yield* sql<Record<string, unknown>>`SELECT * FROM discord_link_handoffs`
+      assert.deepStrictEqual(handoffs, [])
     }).pipe(Effect.provide(database)),
   ))
 

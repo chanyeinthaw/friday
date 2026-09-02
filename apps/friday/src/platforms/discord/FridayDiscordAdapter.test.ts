@@ -2,10 +2,17 @@
 
 import type { DiscordInteractionFlagsContext } from '@chat-adapter/discord'
 import { assert, it } from '@effect/vitest'
+import { rejects } from 'node:assert/strict'
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 
+import { DiscordLink } from '../../config/DiscordLinks.ts'
 import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
-import { FridayDiscordAdapter, type FridayDiscordAdapterConfig } from './FridayDiscordAdapter.ts'
+import {
+  FridayDiscordAdapter,
+  type DiscordGatewayMessage,
+  type FridayDiscordAdapterConfig,
+} from './FridayDiscordAdapter.ts'
 
 const GUILD = '111111111111111111'
 const CHANNEL = '222222222222222222'
@@ -42,7 +49,12 @@ class RecordingFridayDiscordAdapter extends FridayDiscordAdapter {
 
   constructor(
     config: Pick<FridayDiscordAdapterConfig, 'resolveChannelPolicy' | 'replyInChannelChannelIds'> &
-      Partial<Pick<FridayDiscordAdapterConfig, 'interactionFlags'>>,
+      Partial<
+        Pick<
+          FridayDiscordAdapterConfig,
+          'interactionFlags' | 'resolveLinkedSource' | 'handoffLinkedSource'
+        >
+      >,
   ) {
     // SAFETY: required Discord credentials and Friday policy callbacks are all
     // present; the test only omits unrelated optional adapter configuration.
@@ -392,5 +404,175 @@ it.effect('dispatches application commands inside enabled guilds', () =>
       { guildId: GUILD, channelId: CHANNEL },
       { guildId: GUILD, channelId: CHANNEL },
     ])
+  }),
+)
+
+const decodeLink = Schema.decodeSync(DiscordLink)
+
+const linkedSource = (kind: 'channel' | 'thread', conversationId?: string) =>
+  decodeLink({
+    id: 'support-link',
+    enabled: true,
+    source: {
+      connectionId: 'discord-source',
+      guildId: GUILD,
+      conversationId: conversationId ?? (kind === 'thread' ? THREAD : CHANNEL),
+      kind,
+    },
+    destination: {
+      connectionId: 'discord-ops',
+      guildId: '999999999999999999',
+      conversationId: CHANNEL,
+      kind: 'channel',
+    },
+  })
+
+const linkedAdapter = (options: {
+  readonly link: DiscordLink
+  readonly invocationMode?: 'mention-only' | 'all-messages'
+  readonly handoff?: (link: DiscordLink, message: DiscordGatewayMessage) => Promise<void>
+}) => {
+  const handoffs: Array<{
+    readonly link: DiscordLink
+    readonly messageId: string
+    readonly sourceParentConversationId: string | undefined
+  }> = []
+  const discord = new RecordingFridayDiscordAdapter({
+    resolveChannelPolicy: () =>
+      options.invocationMode === undefined
+        ? allowAll
+        : { ...allowAll, invocationMode: options.invocationMode },
+    replyInChannelChannelIds: () => [],
+    resolveLinkedSource: (_guildId, conversationId) =>
+      conversationId === options.link.source.conversationId ? options.link : undefined,
+    handoffLinkedSource: (link, message, sourceParentConversationId) => {
+      handoffs.push({ link, messageId: message.id, sourceParentConversationId })
+      return options.handoff ? options.handoff(link, message) : Promise.resolve()
+    },
+  })
+  discord.attachRecordingChat()
+  return { discord, handoffs }
+}
+
+it.effect('hands off an exact linked parent-channel mention before any thread creation', () =>
+  Effect.promise(async () => {
+    const { discord, handoffs } = linkedAdapter({ link: linkedSource('channel') })
+
+    await discord.runGatewayMessage(guildMessage({ id: 'message-9' }), true)
+
+    assert.deepStrictEqual(handoffs, [
+      {
+        link: linkedSource('channel'),
+        messageId: 'message-9',
+        sourceParentConversationId: undefined,
+      },
+    ])
+    // The handoff owns the message: no source thread creation, no chat dispatch.
+    assert.deepStrictEqual(discord.discordRequests, [])
+    assert.deepStrictEqual(discord.dispatchedMessages, [])
+  }),
+)
+
+it.effect('does not link a child thread of a linked parent channel', () =>
+  Effect.promise(async () => {
+    const { discord, handoffs } = linkedAdapter({ link: linkedSource('channel') })
+
+    await discord.runGatewayMessage(
+      guildMessage({ channelId: THREAD, isThread: true, parentId: CHANNEL }),
+      true,
+    )
+
+    // The child thread is not the linked source; the message takes the normal
+    // in-thread path instead of the handoff.
+    assert.deepStrictEqual(handoffs, [])
+    assert.deepStrictEqual(discord.dispatchedMessages, [
+      { threadId: `discord:${GUILD}:${CHANNEL}:${THREAD}` },
+    ])
+  }),
+)
+
+it.effect('hands off an exact linked thread mention', () =>
+  Effect.promise(async () => {
+    const { discord, handoffs } = linkedAdapter({ link: linkedSource('thread') })
+
+    await discord.runGatewayMessage(
+      guildMessage({ channelId: THREAD, isThread: true, parentId: CHANNEL, id: 'message-7' }),
+      true,
+    )
+
+    assert.deepStrictEqual(handoffs, [
+      {
+        link: linkedSource('thread'),
+        messageId: 'message-7',
+        sourceParentConversationId: CHANNEL,
+      },
+    ])
+    assert.deepStrictEqual(discord.discordRequests, [])
+    assert.deepStrictEqual(discord.dispatchedMessages, [])
+  }),
+)
+
+it.effect('fails closed when an exact linked thread has no observable parent channel', () =>
+  Effect.promise(async () => {
+    const { discord, handoffs } = linkedAdapter({ link: linkedSource('thread') })
+
+    await discord.runGatewayMessage(
+      guildMessage({ channelId: THREAD, isThread: true, parentId: null }),
+      true,
+    )
+
+    assert.deepStrictEqual(handoffs, [])
+    assert.deepStrictEqual(discord.discordRequests, [])
+    assert.deepStrictEqual(discord.dispatchedMessages, [])
+  }),
+)
+
+it.effect('ignores a linked source whose observed conversation kind mismatches', () =>
+  Effect.promise(async () => {
+    // The link claims a thread but its conversation ID is the channel itself;
+    // the observed channel kind mismatches, so the handoff must not fire.
+    const { discord, handoffs } = linkedAdapter({
+      link: linkedSource('thread', CHANNEL),
+    })
+
+    await discord.runGatewayMessage(guildMessage({}), true)
+
+    assert.deepStrictEqual(handoffs, [])
+    assert.deepStrictEqual(discord.discordRequests, [])
+    assert.deepStrictEqual(discord.dispatchedMessages, [])
+  }),
+)
+
+it.effect('requires an actual mention in a linked source even under all-messages', () =>
+  Effect.promise(async () => {
+    const { discord, handoffs } = linkedAdapter({
+      link: linkedSource('channel'),
+      invocationMode: 'all-messages',
+    })
+
+    await discord.runGatewayMessage(guildMessage({}), false)
+
+    assert.deepStrictEqual(handoffs, [])
+    assert.deepStrictEqual(discord.discordRequests, [])
+    assert.deepStrictEqual(discord.dispatchedMessages, [])
+
+    // Contrast: an unlinked all-messages channel still invokes without a mention.
+    await discord.runGatewayMessage(guildMessage({ channelId: '888888888888888888' }), false)
+    assert.deepStrictEqual(discord.dispatchedMessages.length, 1)
+  }),
+)
+
+it.effect('never falls through to normal routing when the linked handoff fails', () =>
+  Effect.promise(async () => {
+    const { discord, handoffs } = linkedAdapter({
+      link: linkedSource('channel'),
+      handoff: () => Promise.reject(new Error('handoff failed')),
+    })
+
+    await rejects(discord.runGatewayMessage(guildMessage({}), true))
+
+    assert.deepStrictEqual(handoffs.length, 1)
+    assert.deepStrictEqual(discord.discordRequests, [])
+    assert.deepStrictEqual(discord.dispatchedMessages, [])
   }),
 )

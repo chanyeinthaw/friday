@@ -124,6 +124,61 @@ test('loads global agent configuration and enabled platform connections from SQL
     }).pipe(Effect.provide(database)),
   ))
 
+test('loads Discord links from SQLite and legacy databases yield an empty link list', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const legacy = yield* configured
+      assert.deepStrictEqual(legacy.discordLinks, [])
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+        INSERT INTO platform_connections (
+          connection_id, platform, name, enabled, created_at, updated_at
+        ) VALUES ('discord-ops', 'discord', 'Ops', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `
+      yield* sql`
+        INSERT INTO discord_connections (
+          connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions
+        ) VALUES ('discord-ops', 'ops-app', 'ops-key', 'OPS_TOKEN', 0)
+      `
+      yield* sql`
+        INSERT INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode)
+        VALUES ('discord-ops', '333333333333333333', 1, 'mention-only')
+      `
+      yield* sql`
+        INSERT INTO discord_links (
+          link_id, enabled, source_connection_id, source_guild_id, source_conversation_id,
+          source_kind, destination_connection_id, destination_guild_id,
+          destination_conversation_id, destination_kind, updated_at
+        ) VALUES (
+          'support-link', 1, 'discord-personal', '111111111111111111',
+          '222222222222222222', 'thread', 'discord-ops', '333333333333333333',
+          '444444444444444444', 'channel', CURRENT_TIMESTAMP
+        )
+      `
+      const loaded = yield* loadAppConfig({
+        environment: { DISCORD_BOT_TOKEN: 'discord-token', OPS_TOKEN: 'ops-token' },
+      })
+      assert.deepStrictEqual(loaded.discordLinks, [
+        {
+          id: 'support-link',
+          enabled: true,
+          source: {
+            connectionId: 'discord-personal',
+            guildId: '111111111111111111',
+            conversationId: '222222222222222222',
+            kind: 'thread',
+          },
+          destination: {
+            connectionId: 'discord-ops',
+            guildId: '333333333333333333',
+            conversationId: '444444444444444444',
+            kind: 'channel',
+          },
+        },
+      ])
+    }).pipe(Effect.provide(database)),
+  ))
+
 test('enables and resets Discord activity-description publication through typed configuration', async () =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -280,6 +335,18 @@ test('reloads the complete configuration and bumps the snapshot version', async 
         INSERT INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
         VALUES ('discord-personal', '333333333333333333', 0, 'all-messages', NULL)
       `
+      yield* sql`
+        INSERT INTO discord_links (
+          link_id, enabled, source_connection_id, source_guild_id, source_conversation_id,
+          source_kind, destination_connection_id, destination_guild_id,
+          destination_conversation_id, destination_kind, updated_at
+        ) VALUES (
+          'self-ops-link', 1, 'discord-personal', '111111111111111111',
+          '222222222222222222', 'channel', 'discord-personal', '111111111111111111',
+          '333333333333333333', 'channel', CURRENT_TIMESTAMP
+        )
+      `
+      assert.deepStrictEqual(first.discordLinks, [])
       const version = yield* config.reload
       assert.strictEqual(version, 2)
       const second = config.current()
@@ -288,6 +355,10 @@ test('reloads the complete configuration and bumps the snapshot version', async 
         ['111111111111111111', '333333333333333333'],
       )
       assert.strictEqual(second.platforms.discord[0]?.guilds[1]?.enabled, false)
+      assert.deepStrictEqual(
+        second.discordLinks?.map(({ id }) => id),
+        ['self-ops-link'],
+      )
       assert.strictEqual(second.agent.recentMessageCount, first.agent.recentMessageCount)
     }).pipe(Effect.provide(reloadable), Effect.provide(database)),
   ))

@@ -46,12 +46,40 @@ const ThreadFields = {
   closedAt: Schema.NullOr(IsoDateTime),
 } as const
 
+export const LinkedDiscordSource = Schema.Struct({
+  linkId: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  sourceConnectionId: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  sourceGuildId: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  sourceConversationId: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  /** Parent channel used for policy checks when the exact source is a Discord thread. */
+  sourceParentConversationId: Schema.optionalKey(
+    Schema.String.pipe(
+      Schema.check(Schema.isTrimmed()),
+      Schema.check(Schema.isPattern(/^[1-9][0-9]{16,19}$/)),
+    ),
+  ),
+  sourceMessageId: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  sourceKind: Schema.Literals(['channel', 'thread']),
+  sourceAuthorId: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  destinationConnectionId: Schema.String.pipe(
+    Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()),
+  ),
+  destinationGuildId: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  destinationConversationId: Schema.String.pipe(
+    Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()),
+  ),
+  destinationKind: Schema.Literal('channel'),
+})
+export type LinkedDiscordSource = typeof LinkedDiscordSource.Type
+
 export const ChannelThread = Schema.Struct({
   ...ThreadFields,
   audience: Schema.Literal('user'),
   parent: Schema.Null,
   channelContext: ChannelContext,
   conversationBinding: ConversationBinding,
+  /** Immutable provenance for a channel thread created from an exact Discord link. */
+  linkedDiscordSource: Schema.optionalKey(LinkedDiscordSource),
 })
 export type ChannelThread = typeof ChannelThread.Type
 

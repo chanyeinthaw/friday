@@ -1,9 +1,11 @@
 import { DiscordAdapter, type DiscordAdapterConfig } from '@chat-adapter/discord'
+import type { Message } from 'chat'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
 import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
+import type { DiscordLink } from '../../config/DiscordLinks.ts'
 
 /** Location and author fields of a discord.js gateway message needed for policy gating. */
 const DiscordLocationSegments = Schema.Union([
@@ -12,7 +14,21 @@ const DiscordLocationSegments = Schema.Union([
 ])
 const decodeDiscordLocationSegments = Schema.decodeUnknownResult(DiscordLocationSegments)
 
-interface DiscordGatewayMessage {
+export interface DiscordRequestBody {
+  readonly name?: string
+  readonly type?: number
+  readonly auto_archive_duration?: number
+  readonly content?: string
+  readonly allowed_mentions?: {
+    readonly parse: ReadonlyArray<string>
+    readonly users: ReadonlyArray<string>
+    readonly roles: ReadonlyArray<string>
+    readonly replied_user: boolean
+  }
+}
+
+export interface DiscordGatewayMessage {
+  readonly id: string
   readonly guildId: string | null
   readonly channelId: string
   readonly author: {
@@ -41,6 +57,17 @@ export type FridayDiscordAdapterConfig = DiscordAdapterConfig & {
    * adapter.
    */
   readonly replyInChannelChannelIds: () => ReadonlyArray<string>
+  /** Exact linked source lookup from the current reloadable snapshot. */
+  readonly resolveLinkedSource?: (
+    guildId: string,
+    conversationId: string,
+  ) => DiscordLink | undefined
+  /** Intercepts an accepted linked mention before upstream thread creation. */
+  readonly handoffLinkedSource?: (
+    link: DiscordLink,
+    message: DiscordGatewayMessage,
+    sourceParentConversationId: string | undefined,
+  ) => Promise<void>
 }
 
 /**
@@ -54,16 +81,41 @@ export type FridayDiscordAdapterConfig = DiscordAdapterConfig & {
 export class FridayDiscordAdapter extends DiscordAdapter {
   private readonly resolveChannelPolicy: FridayDiscordAdapterConfig['resolveChannelPolicy']
   private readonly replyInChannelChannelIds: FridayDiscordAdapterConfig['replyInChannelChannelIds']
+  private readonly resolveLinkedSource: NonNullable<
+    FridayDiscordAdapterConfig['resolveLinkedSource']
+  >
+  private readonly handoffLinkedSource: NonNullable<
+    FridayDiscordAdapterConfig['handoffLinkedSource']
+  >
 
   constructor(config: FridayDiscordAdapterConfig) {
     super(config)
     this.resolveChannelPolicy = config.resolveChannelPolicy
     this.replyInChannelChannelIds = config.replyInChannelChannelIds
+    this.resolveLinkedSource = config.resolveLinkedSource ?? (() => undefined)
+    this.handoffLinkedSource = config.handoffLinkedSource ?? (() => Promise.resolve())
   }
 
   /** Live view of the channels whose replies stay in the channel itself. */
   protected get replyInChannelIdList(): ReadonlyArray<string> {
     return this.replyInChannelChannelIds()
+  }
+
+  /** Narrow Discord operations used by Friday-owned linked-channel capabilities. */
+  fridayDiscordRequest(path: string, method: string, body?: DiscordRequestBody): Promise<Response> {
+    return this.discordFetch(path, method, body)
+  }
+
+  async fridayFetchMessage(threadId: string, messageId: string): Promise<Message<unknown>> {
+    const { channelId, threadId: discordThreadId } = this.decodeThreadId(threadId)
+    const response = await this.discordFetch(
+      `/channels/${discordThreadId ?? channelId}/messages/${messageId}`,
+      'GET',
+    )
+    const raw = await response.json()
+    // SAFETY: parseDiscordMessage is the adapter's decoder for raw Discord API
+    // message payloads returned by this exact endpoint.
+    return this.parseDiscordMessage(raw as never, threadId)
   }
 
   protected override createDiscordThread(
@@ -144,6 +196,47 @@ export class FridayDiscordAdapter extends DiscordAdapter {
         userId: message.author.id,
       })
       return Promise.resolve()
+    }
+    const linked =
+      guildId === '@me' ? undefined : this.resolveLinkedSource(guildId, message.channelId)
+    const observedKind = message.channel.isThread() ? 'thread' : 'channel'
+    if (linked !== undefined && linked.source.kind !== observedKind) {
+      this.logger.debug('Rejected linked source whose observed kind mismatches configuration', {
+        guildId: message.guildId,
+        channelId: message.channelId,
+        linkId: linked.id,
+        configuredKind: linked.source.kind,
+        observedKind,
+      })
+      return Promise.resolve()
+    }
+    if (linked !== undefined) {
+      const sourceParentConversationId =
+        observedKind === 'thread' &&
+        message.channel.parentId !== null &&
+        message.channel.parentId !== message.channelId
+          ? message.channel.parentId
+          : undefined
+      if (observedKind === 'thread' && sourceParentConversationId === undefined) {
+        this.logger.debug('Ignored linked thread source without a resolvable parent channel', {
+          guildId: message.guildId,
+          channelId: message.channelId,
+          linkId: linked.id,
+        })
+        return Promise.resolve()
+      }
+      if (!isMentioned) {
+        this.logger.debug('Ignored linked source message without an actual Friday mention', {
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          linkId: linked.id,
+        })
+        return Promise.resolve()
+      }
+      // The handoff owns the message from this point. It never falls through to
+      // upstream thread creation or the normal route, even when handoff fails.
+      return this.handoffLinkedSource(linked, message, sourceParentConversationId)
     }
     // Direct messages route through Chat's DM handling and never need an
     // adapter-side thread; guild messages invoke on mention or when the

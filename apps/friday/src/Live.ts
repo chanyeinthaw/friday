@@ -19,6 +19,11 @@ import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
 import { DiscordActivityDescriptionsLive } from './platforms/DiscordActivityDescriptions.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
+import {
+  DiscordCapabilityRegistry,
+  DiscordCapabilityRegistryLive,
+} from './platforms/discord/DiscordLinkedRuntime.ts'
+import { DiscordLinkHandoffsLive } from './platforms/discord/DiscordLinkHandoffs.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
 import {
   SystemPromptTemplates,
@@ -37,6 +42,7 @@ const ThreadRuntimesLive = Layer.effect(
     const systemPromptTemplates = yield* SystemPromptTemplates
     const tasks = yield* TaskToolDispatcher
     const platforms = yield* PlatformRegistry
+    const discordCapabilities = yield* DiscordCapabilityRegistry
 
     return ThreadRuntimes.of({
       open: (thread) =>
@@ -49,6 +55,8 @@ const ThreadRuntimesLive = Layer.effect(
           availableAgentModels: () => config.current().models.subagents,
           tasks,
           platforms,
+          discordCapabilities,
+          configuration: () => config.current(),
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError(
@@ -98,6 +106,7 @@ const CoreLive = Layer.mergeAll(
   BunCrypto.layer,
   BunFileSystem.layer,
   PlatformRegistryLive,
+  DiscordCapabilityRegistryLive,
   DiscordActivityDescriptionsConfiguredLive,
   AppConfigConfiguredLive,
   SystemPromptTemplatesLive,
@@ -152,6 +161,12 @@ const TaskToolBindingLive = Layer.effectDiscard(
     yield* dispatcher.bind(tasks)
   }),
 ).pipe(Layer.provide(Layer.merge(CoreLive, TasksConfiguredLive)))
+const DiscordLinkHandoffsConfiguredLive = DiscordLinkHandoffsLive.pipe(
+  Layer.provide(FridaySqliteLive),
+  Layer.provide(BunCrypto.layer),
+  Layer.provide(BunFileSystem.layer),
+  Layer.provide(Layer.mergeAll(CoreLive, ChannelTurnsConfiguredLive, TextGenerationLive)),
+)
 const IngestionLive = PlatformIngestionLive.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -176,4 +191,5 @@ export const FridayLive = Layer.mergeAll(
   TasksConfiguredLive,
   TaskToolBindingLive,
   IngestionLive,
+  DiscordLinkHandoffsConfiguredLive,
 )

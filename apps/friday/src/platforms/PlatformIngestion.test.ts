@@ -106,7 +106,10 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
         Layer.succeed(AppConfig, testAppConfig),
         Layer.succeed(
           TextGeneration,
-          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+          TextGeneration.of({
+            generateThreadTitle: () => Effect.succeed('Test Thread'),
+            generateLinkedHandoff: () => Effect.die('unreachable'),
+          }),
         ),
         Layer.succeed(
           ConversationTitles,
@@ -159,7 +162,10 @@ it.effect('loads initial platform context only when creating a new channel Threa
         Layer.succeed(AppConfig, testAppConfig),
         Layer.succeed(
           TextGeneration,
-          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+          TextGeneration.of({
+            generateThreadTitle: () => Effect.succeed('Test Thread'),
+            generateLinkedHandoff: () => Effect.die('unreachable'),
+          }),
         ),
         Layer.succeed(
           ConversationTitles,
@@ -214,7 +220,10 @@ it.effect('adds bounded catch-up context to an existing channel Turn', () =>
         Layer.succeed(AppConfig, testAppConfig),
         Layer.succeed(
           TextGeneration,
-          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+          TextGeneration.of({
+            generateThreadTitle: () => Effect.succeed('Test Thread'),
+            generateLinkedHandoff: () => Effect.die('unreachable'),
+          }),
         ),
         Layer.succeed(
           ConversationTitles,
@@ -291,7 +300,10 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         Layer.succeed(AppConfig, testAppConfig),
         Layer.succeed(
           TextGeneration,
-          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+          TextGeneration.of({
+            generateThreadTitle: () => Effect.succeed('Test Thread'),
+            generateLinkedHandoff: () => Effect.die('unreachable'),
+          }),
         ),
         Layer.succeed(
           ConversationTitles,

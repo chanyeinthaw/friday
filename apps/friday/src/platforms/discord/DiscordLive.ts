@@ -53,18 +53,55 @@ import {
   harnessReloadReply,
   harnessSubcommand,
 } from './DiscordHarnessCommand.ts'
-import { FridayDiscordAdapter, type FridayDiscordAdapterConfig } from './FridayDiscordAdapter.ts'
+import {
+  FridayDiscordAdapter,
+  type DiscordGatewayMessage,
+  type FridayDiscordAdapterConfig,
+} from './FridayDiscordAdapter.ts'
+import { DiscordCapabilityRegistry, makeDiscordCapability } from './DiscordLinkedRuntime.ts'
+import { DiscordLinkHandoffs } from './DiscordLinkHandoffs.ts'
 import { searchDiscordMessages } from './DiscordMessageSearch.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
 } from './DiscordChannelBootstrap.ts'
 
-export const startDiscord = Effect.fn('startDiscord')(function* () {
+export const prepareThenStartDiscordConnections = Effect.fn('prepareThenStartDiscordConnections')(
+  function* <Config, Prepared, Started, PrepareError, StartError, PrepareR, StartR>(options: {
+    readonly connections: ReadonlyArray<Config>
+    readonly prepare: (config: Config) => Effect.Effect<Prepared, PrepareError, PrepareR>
+    readonly start: (prepared: Prepared) => Effect.Effect<Started, StartError, StartR>
+  }) {
+    const prepared = yield* Effect.forEach(options.connections, options.prepare, {
+      concurrency: 'unbounded',
+    })
+    return yield* Effect.forEach(prepared, options.start, { concurrency: 'unbounded' })
+  },
+)
+
+interface PreparedDiscordConnection {
+  readonly connectionId: string
+  readonly discord: FridayDiscordAdapter
+}
+
+export interface StartDiscordOptions<StartError = never, TestR = never> {
+  /** Test seam at the exact lifecycle boundary. Production leaves this unset. */
+  readonly startPrepared?: (
+    prepared: PreparedDiscordConnection,
+  ) => Effect.Effect<void, StartError, TestR>
+}
+
+export const startDiscord = Effect.fn('startDiscord')(function* <StartError = never, TestR = never>(
+  options: StartDiscordOptions<StartError, TestR> = {},
+) {
   const platforms = yield* PlatformRegistry
   const activityDescriptions = yield* DiscordActivityDescriptions
   const ingestion = yield* PlatformIngestion
+  const capabilities = yield* DiscordCapabilityRegistry
+  const handoffs = yield* DiscordLinkHandoffs
   const config = yield* AppConfig
+  const effectContext = yield* Effect.context()
+  const runPromise = Effect.runPromiseWith(effectContext)
   // Startup topology snapshot: Discord resources are built once per process.
   const startup = config.current()
   const connections = startup.platforms.discord
@@ -93,9 +130,9 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
     })
   }
 
-  return yield* Effect.forEach(
+  return yield* prepareThenStartDiscordConnections({
     connections,
-    (discordConfig) =>
+    prepare: (discordConfig) =>
       Effect.gen(function* () {
         const state = yield* makeSqliteChatStateAdapter(`friday:${discordConfig.connectionId}`)
         // Reloadable policies are read from the in-memory snapshot on every
@@ -127,6 +164,27 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               // through the snapshot; the adapter drops anything unresolved.
               resolveChannelPolicy,
               replyInChannelChannelIds: () => replyInChannelChannelIds(currentPolicies()),
+              resolveLinkedSource: (guildId, conversationId) =>
+                (config.current().discordLinks ?? []).find(
+                  (link) =>
+                    link.enabled &&
+                    link.source.connectionId === discordConfig.connectionId &&
+                    link.source.guildId === guildId &&
+                    link.source.conversationId === conversationId,
+                ),
+              handoffLinkedSource: (
+                link,
+                message: DiscordGatewayMessage,
+                sourceParentConversationId,
+              ) =>
+                runPromise(
+                  handoffs.handoff({
+                    link,
+                    messageId: message.id,
+                    authorId: message.author.id,
+                    sourceParentConversationId,
+                  }),
+                ),
               // The adapter flattens (or drops) subcommands in the command
               // path depending on arguments; match every produced path and
               // make the Friday and harness command replies ephemeral.
@@ -137,6 +195,20 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
             } satisfies FridayDiscordAdapterConfig),
           catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
         })
+        yield* capabilities.register(makeDiscordCapability(discordConfig.connectionId, discord))
+        return { discordConfig, state, currentPolicies, resolveChannelPolicy, discord }
+      }),
+    // Phase two starts only after every adapter and cross-connection capability
+    // exists. A phase-one failure aborts startup without starting any lifecycle.
+    start: ({ discordConfig, state, currentPolicies, resolveChannelPolicy, discord }) =>
+      Effect.gen(function* () {
+        if (options.startPrepared) {
+          yield* options.startPrepared({
+            connectionId: String(discordConfig.connectionId),
+            discord,
+          })
+          return { connectionId: discordConfig.connectionId, platform: null }
+        }
         const chat = yield* Effect.try({
           try: () =>
             new Chat({
@@ -374,8 +446,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         )
         return { connectionId: discordConfig.connectionId, platform: chatSdkPlatform }
       }),
-    { concurrency: 'unbounded' },
-  )
+  })
 })
 
 const respondEphemeral = (event: SlashCommandEvent, message: string) =>
