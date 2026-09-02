@@ -18,6 +18,7 @@ import {
   formatDiscordConnectionUpdate,
   formatDiscordGuildChannelReset,
   formatDiscordGuildChannelSet,
+  formatDiscordGuildChannels,
   formatDiscordGuildDisable,
   formatDiscordGuildEnable,
   formatDiscordGuildInvocation,
@@ -92,6 +93,7 @@ const strictRunnerStubs = {
   removeDiscordGuild: () => Effect.die('unreachable'),
   setDiscordGuildInvocation: () => Effect.die('unreachable'),
   setDiscordGuildUsers: () => Effect.die('unreachable'),
+  setDiscordGuildChannels: () => Effect.die('unreachable'),
   setDiscordGuildChannel: () => Effect.die('unreachable'),
   resetDiscordGuildChannel: () => Effect.die('unreachable'),
 }
@@ -312,6 +314,23 @@ it.effect('parses Discord guild management commands', () =>
       ]),
       {
         type: 'config-discord-guild-set-users',
+        connectionId,
+        guildId,
+        policy: { mode: 'allow', ids: ['123456789012345678', '234567890123456789'] },
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'discord',
+        'guild',
+        'set-channels',
+        'discord',
+        '111111111111111111',
+        'allow=123456789012345678,234567890123456789',
+      ]),
+      {
+        type: 'config-discord-guild-set-channels',
         connectionId,
         guildId,
         policy: { mode: 'allow', ids: ['123456789012345678', '234567890123456789'] },
@@ -922,7 +941,7 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['config', 'discord', 'guild', 'wat'],
         prefix: 'friday config discord guild',
         head: 'wat',
-        known: 'enable, disable, remove, list, set-invocation, set-users, channel',
+        known: 'enable, disable, remove, list, set-invocation, set-users, set-channels, channel',
       },
       {
         arguments_: ['config', 'discord', 'guild', 'channel', 'wat'],
@@ -995,7 +1014,7 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config', 'discord', 'guild'],
         prefix: 'friday config discord guild',
-        known: 'enable, disable, remove, list, set-invocation, set-users, channel',
+        known: 'enable, disable, remove, list, set-invocation, set-users, set-channels, channel',
       },
       {
         arguments_: ['config', 'discord', 'guild', 'channel'],
@@ -1086,7 +1105,7 @@ it.effect('names known subcommands and removals in validation errors', () =>
       unknownGuild.message,
       /Unknown 'friday config discord guild' subcommand 'frobnicate'/,
     )
-    assert.match(unknownGuild.message, /set-invocation, set-users/)
+    assert.match(unknownGuild.message, /set-invocation, set-users, set-channels/)
 
     const unknownTop = yield* parseFridayCli(['wat']).pipe(Effect.flip)
     assert.match(unknownTop.message, /Unknown 'friday' subcommand 'wat'/)
@@ -1319,6 +1338,14 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
       'Guild 111111111111111111 is not configured. Enable it first.',
     )
     assert.strictEqual(
+      formatDiscordGuildChannels(guildId, { mode: 'deny', ids: ['444444444444444444'] }, 'updated'),
+      `Guild channel scope for 111111111111111111 set to deny=444444444444444444. ${note}`,
+    )
+    assert.strictEqual(
+      formatDiscordGuildChannels(guildId, { mode: 'all', ids: [] }, 'missing'),
+      'Guild 111111111111111111 is not configured. Enable it first.',
+    )
+    assert.strictEqual(
       formatDiscordGuildChannelSet(channelId, 'updated'),
       `Channel 222222222222222222 overrides updated. ${note}`,
     )
@@ -1422,6 +1449,7 @@ it.effect('renders connection and guild listings', () =>
           enabled: true,
           invocation: { defaultMode: 'mention-only' },
           users: { mode: 'allow', ids: ['333333333333333333', '666666666666666666'] },
+          channelScope: { mode: 'allow', ids: ['222222222222222222'] },
           channels: [],
         },
       ]),
@@ -1429,7 +1457,7 @@ it.effect('renders connection and guild listings', () =>
         'guild 111111111111111111: disabled, invocation: all-messages',
         '  channel 222222222222222222: invocation: mention-only, users: deny=333333333333333333, reply: reply-in-channel',
         '  channel 444444444444444444: (no overrides)',
-        'guild 555555555555555555: enabled, invocation: mention-only, users: allow=333333333333333333,666666666666666666',
+        'guild 555555555555555555: enabled, invocation: mention-only, users: allow=333333333333333333,666666666666666666, channels: allow=222222222222222222',
       ].join('\n'),
     )
   }),
@@ -1599,6 +1627,23 @@ it.effect('dispatches guild commands to exactly one operation with decoded argum
     )
     assert.deepStrictEqual(users.calls, [
       [connectionId, guildId, { mode: 'allow', ids: ['333333333333333333', '234567890123456789'] }],
+    ])
+
+    const channels = recorder('updated' as const)
+    yield* runFridayCli(
+      [
+        'config',
+        'discord',
+        'guild',
+        'set-channels',
+        'discord',
+        '111111111111111111',
+        'deny=444444444444444444',
+      ],
+      { ...strictRunnerStubs, setDiscordGuildChannels: channels.operation },
+    )
+    assert.deepStrictEqual(channels.calls, [
+      [connectionId, guildId, { mode: 'deny', ids: ['444444444444444444'] }],
     ])
 
     // A partial channel patch carries only the override given on the command

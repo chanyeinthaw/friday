@@ -98,6 +98,12 @@ export interface DiscordGuildsContract {
     guildId: DiscordGuildId,
     policy: AccessPolicy,
   ) => Effect.Effect<DiscordGuildUpdateOutcome, DiscordGuildError>
+  /** Replaces the guild-wide channel scope: which channels admit Friday at all. */
+  readonly setGuildChannelScope: (
+    connectionId: PlatformConnectionId,
+    guildId: DiscordGuildId,
+    policy: AccessPolicy,
+  ) => Effect.Effect<DiscordGuildUpdateOutcome, DiscordGuildError>
   /**
    * Upserts one channel override. Absent patch fields keep their current
    * value, so a row only carries the overrides it needs.
@@ -126,6 +132,7 @@ interface AssembledDiscordGuild {
   enabled: boolean
   invocation: { defaultMode: InvocationMode }
   users?: AccessPolicy
+  channelScope?: AccessPolicy
   channels: ReadonlyArray<DiscordGuildChannelConfig>
 }
 
@@ -141,8 +148,10 @@ const GuildRow = Schema.Struct({
   enabled: Schema.Number,
   invocation_mode: InvocationMode,
   users_mode: Schema.NullOr(Schema.Literals(['all', 'allow', 'deny'])),
+  channels_mode: Schema.NullOr(Schema.Literals(['all', 'allow', 'deny'])),
 })
 const GuildUserRow = Schema.Struct({ guild_id: Schema.String, user_id: Schema.String })
+const GuildChannelScopeRow = Schema.Struct({ guild_id: Schema.String, channel_id: Schema.String })
 const GuildChannelRow = Schema.Struct({
   guild_id: Schema.String,
   channel_id: Schema.String,
@@ -163,6 +172,7 @@ const CurrentChannelRow = Schema.Struct({
 const ConnectionRow = Schema.Struct({ platform: Schema.String })
 const decodeGuildRows = Schema.decodeUnknownEffect(Schema.Array(GuildRow))
 const decodeGuildUserRows = Schema.decodeUnknownEffect(Schema.Array(GuildUserRow))
+const decodeGuildChannelScopeRows = Schema.decodeUnknownEffect(Schema.Array(GuildChannelScopeRow))
 const decodeGuildChannelRows = Schema.decodeUnknownEffect(Schema.Array(GuildChannelRow))
 const decodeGuildChannelUserRows = Schema.decodeUnknownEffect(Schema.Array(GuildChannelUserRow))
 const decodeCurrentChannelRows = Schema.decodeUnknownEffect(Schema.Array(CurrentChannelRow))
@@ -234,6 +244,7 @@ export const DiscordGuildsLive = Layer.effect(
     const assembleGuilds = (
       guildRows: ReadonlyArray<typeof GuildRow.Type>,
       userRows: ReadonlyArray<typeof GuildUserRow.Type>,
+      channelScopeRows: ReadonlyArray<typeof GuildChannelScopeRow.Type>,
       channelRows: ReadonlyArray<typeof GuildChannelRow.Type>,
       channelUserRows: ReadonlyArray<typeof GuildChannelUserRow.Type>,
     ): ReadonlyArray<DiscordGuildConfig> =>
@@ -279,6 +290,14 @@ export const DiscordGuildsLive = Layer.effect(
               .map((subject) => subject.user_id),
           }
         }
+        if (guild.channels_mode !== null) {
+          guildEntry.channelScope = {
+            mode: guild.channels_mode,
+            ids: channelScopeRows
+              .filter((subject) => subject.guild_id === guild.guild_id)
+              .map((subject) => subject.channel_id),
+          }
+        }
         return guildEntry
       })
 
@@ -319,11 +338,33 @@ export const DiscordGuildsLive = Layer.effect(
         )
       })
 
+    /** Replaces the channel-id subject rows of a guild channel scope policy. */
+    const replaceScopeSubjects = (
+      connectionId: PlatformConnectionId,
+      guildId: string,
+      policy: AccessPolicy,
+    ) =>
+      Effect.gen(function* () {
+        yield* sql`
+          DELETE FROM discord_guild_channel_scope
+          WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+        `.pipe(Effect.mapError(writeError(connectionId)))
+        yield* Effect.forEach(
+          policy.ids,
+          (channelId) =>
+            sql`
+              INSERT INTO discord_guild_channel_scope (connection_id, guild_id, channel_id)
+              VALUES (${connectionId}, ${guildId}, ${channelId})
+            `.pipe(Effect.mapError(writeError(connectionId))),
+          { discard: true },
+        )
+      })
+
     return DiscordGuilds.of({
       listGuilds: (connectionId) =>
         Effect.gen(function* () {
           const guildRows = yield* sql<Record<string, unknown>>`
-            SELECT guild_id, enabled, invocation_mode, users_mode
+            SELECT guild_id, enabled, invocation_mode, users_mode, channels_mode
             FROM discord_guilds
             WHERE connection_id = ${connectionId}
             ORDER BY guild_id
@@ -332,6 +373,11 @@ export const DiscordGuildsLive = Layer.effect(
             SELECT guild_id, user_id FROM discord_guild_users
             WHERE connection_id = ${connectionId}
             ORDER BY guild_id, user_id
+          `.pipe(Effect.mapError(readError(connectionId)))
+          const channelScopeRows = yield* sql<Record<string, unknown>>`
+            SELECT guild_id, channel_id FROM discord_guild_channel_scope
+            WHERE connection_id = ${connectionId}
+            ORDER BY guild_id, channel_id
           `.pipe(Effect.mapError(readError(connectionId)))
           const channelRows = yield* sql<Record<string, unknown>>`
             SELECT guild_id, channel_id, invocation_mode, users_mode, reply_mode
@@ -347,6 +393,9 @@ export const DiscordGuildsLive = Layer.effect(
           return assembleGuilds(
             yield* decodeGuildRows(guildRows).pipe(Effect.mapError(readError(connectionId))),
             yield* decodeGuildUserRows(userRows).pipe(Effect.mapError(readError(connectionId))),
+            yield* decodeGuildChannelScopeRows(channelScopeRows).pipe(
+              Effect.mapError(readError(connectionId)),
+            ),
             yield* decodeGuildChannelRows(channelRows).pipe(
               Effect.mapError(readError(connectionId)),
             ),
@@ -445,6 +494,26 @@ export const DiscordGuildsLive = Layer.effect(
             `.pipe(Effect.mapError(writeError(connectionId)))
                   if (updated[0] === undefined) return 'missing' as const
                   yield* replaceUserSubjects(connectionId, { guildId }, policy)
+                  return 'updated' as const
+                }),
+              )
+              .pipe(Effect.mapError(writeError(connectionId))),
+          ),
+        ),
+
+      setGuildChannelScope: (connectionId, guildId, policy) =>
+        requireDiscordConnection(connectionId).pipe(
+          Effect.andThen(
+            sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const updated = yield* sql<Record<string, unknown>>`
+              UPDATE discord_guilds SET channels_mode = ${policy.mode}
+              WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+              RETURNING guild_id
+            `.pipe(Effect.mapError(writeError(connectionId)))
+                  if (updated[0] === undefined) return 'missing' as const
+                  yield* replaceScopeSubjects(connectionId, guildId, policy)
                   return 'updated' as const
                 }),
               )

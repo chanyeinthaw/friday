@@ -98,6 +98,9 @@ const isLeaf = (node: CliCommandSpec): node is CliLeafSpec =>
   !isCliBranch(node) && !isCliRemoved(node)
 
 const permissionPoliciesNote = `Permission policies are "all", "allow=<id>[,<id>...]", or "deny=<id>[,<id>...]".
+Channel entries set with "guild channel set" are per-channel overrides of the
+guild defaults; which channels admit Friday at all is controlled separately by
+the guild channel scope ("guild set-channels"). Overrides never grant admission.
 The default reply mode is reply-in-thread; channels already inside a
 user-created thread always stay in that thread.`
 
@@ -261,6 +264,12 @@ export type FridayCliAction =
     }
   | {
       readonly type: 'config-discord-guild-set-users'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly guildId: typeof DiscordGuildId.Type
+      readonly policy: AccessPolicy
+    }
+  | {
+      readonly type: 'config-discord-guild-set-channels'
       readonly connectionId: typeof PlatformConnectionId.Type
       readonly guildId: typeof DiscordGuildId.Type
       readonly policy: AccessPolicy
@@ -822,6 +831,15 @@ const parseConfigDiscordGuildSetUsers = Effect.fn('Cli.parseConfigDiscordGuildSe
   return { type: 'config-discord-guild-set-users' as const, connectionId, guildId, policy }
 })
 
+const parseConfigDiscordGuildSetChannels = Effect.fn('Cli.parseConfigDiscordGuildSetChannels')(
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length !== 3) return yield* discordArgumentsError(all)
+    const { connectionId, guildId } = yield* parseConnectionGuild(tokens, 0, 1, all)
+    const policy = yield* parseAccessPolicySpec(tokens[2] ?? '')
+    return { type: 'config-discord-guild-set-channels' as const, connectionId, guildId, policy }
+  },
+)
+
 /** Mutable assembly shape for the channel patch parsed from CLI flags. */
 interface ParsedDiscordGuildChannelPatch {
   invocationMode?: InvocationModeType
@@ -1127,6 +1145,12 @@ export const cliCommandSpec: CliBranchSpec = {
                   summary: 'Set the guild-wide user permission default.',
                   arguments: ['<connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>'],
                   parse: parseConfigDiscordGuildSetUsers,
+                },
+                {
+                  name: 'set-channels',
+                  summary: 'Set the guild channel scope: which channels admit Friday at all.',
+                  arguments: ['<connection-id> <guild-id> <all|allow=<id>[,...]|deny=<id>[,...]>'],
+                  parse: parseConfigDiscordGuildSetChannels,
                 },
                 {
                   name: 'channel',
@@ -1456,7 +1480,7 @@ export const renderDiscordGuildList = (guilds: ReadonlyArray<DiscordGuildConfig>
     : guilds
         .map((guild) =>
           [
-            `guild ${guild.guildId}: ${guild.enabled ? 'enabled' : 'disabled'}, invocation: ${guild.invocation.defaultMode}${guild.users === undefined ? '' : `, users: ${renderGuildPolicy(guild.users)}`}`,
+            `guild ${guild.guildId}: ${guild.enabled ? 'enabled' : 'disabled'}, invocation: ${guild.invocation.defaultMode}${guild.users === undefined ? '' : `, users: ${renderGuildPolicy(guild.users)}`}${guild.channelScope === undefined ? '' : `, channels: ${renderGuildPolicy(guild.channelScope)}`}`,
             ...guild.channels.map(renderGuildChannel),
           ].join('\n'),
         )
@@ -1506,6 +1530,15 @@ export const formatDiscordGuildUsers = (
 ): string =>
   outcome === 'updated'
     ? `Guild-wide user permission default for ${guildId} set to ${renderGuildPolicy(policy)}. ${reloadNote}`
+    : `Guild ${guildId} is not configured. Enable it first.`
+
+export const formatDiscordGuildChannels = (
+  guildId: typeof DiscordGuildId.Type,
+  policy: AccessPolicy,
+  outcome: DiscordGuildUpdateOutcome,
+): string =>
+  outcome === 'updated'
+    ? `Guild channel scope for ${guildId} set to ${renderGuildPolicy(policy)}. ${reloadNote}`
     : `Guild ${guildId} is not configured. Enable it first.`
 
 export const formatDiscordGuildChannelSet = (
@@ -1596,6 +1629,11 @@ export type FridayCliOperations<
     mode: InvocationModeType,
   ) => Effect.Effect<DiscordGuildUpdateOutcome, GuildError>
   readonly setDiscordGuildUsers: (
+    connectionId: typeof PlatformConnectionId.Type,
+    guildId: typeof DiscordGuildId.Type,
+    policy: AccessPolicy,
+  ) => Effect.Effect<DiscordGuildUpdateOutcome, GuildError>
+  readonly setDiscordGuildChannels: (
     connectionId: typeof PlatformConnectionId.Type,
     guildId: typeof DiscordGuildId.Type,
     policy: AccessPolicy,
@@ -1784,6 +1822,15 @@ export const runFridayCli = <
           action.policy,
         )
         yield* Console.log(formatDiscordGuildUsers(action.guildId, action.policy, outcome))
+        return
+      }
+      case 'config-discord-guild-set-channels': {
+        const outcome = yield* options.setDiscordGuildChannels(
+          action.connectionId,
+          action.guildId,
+          action.policy,
+        )
+        yield* Console.log(formatDiscordGuildChannels(action.guildId, action.policy, outcome))
         return
       }
       case 'config-discord-guild-channel-set': {

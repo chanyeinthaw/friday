@@ -86,6 +86,31 @@ test('manages guild enablement, defaults, and channel overrides', async () =>
         'updated',
       )
 
+      // The guild channel scope replaces its subjects in place.
+      assert.strictEqual(
+        yield* store.setGuildChannelScope(connectionId, guildId, {
+          mode: 'allow',
+          ids: ['222222222222222222', '777777777777777777'],
+        }),
+        'updated',
+      )
+      assert.deepStrictEqual(yield* store.listGuilds(connectionId), [
+        {
+          guildId: '111111111111111111',
+          enabled: true,
+          invocation: { defaultMode: 'all-messages' },
+          users: { mode: 'all', ids: [] },
+          channelScope: { mode: 'allow', ids: ['222222222222222222', '777777777777777777'] },
+          channels: [],
+        },
+      ])
+      assert.strictEqual(
+        yield* store.setGuildChannelScope(connectionId, guildId, { mode: 'all', ids: [] }),
+        'updated',
+      )
+      const scopeListed = yield* store.listGuilds(connectionId)
+      assert.deepStrictEqual(scopeListed[0]?.channelScope, { mode: 'all', ids: [] })
+
       // Channel overrides merge: a later partial set preserves earlier fields.
       assert.strictEqual(
         yield* store.setChannel(connectionId, guildId, channelId, {
@@ -163,6 +188,10 @@ test('every guild mutation rejects unknown and non-Discord connections with type
           (c: ConnectionId) => store.setGuildUsers(c, guildId, { mode: 'all', ids: [] }),
         ],
         [
+          'setGuildChannelScope',
+          (c: ConnectionId) => store.setGuildChannelScope(c, guildId, { mode: 'all', ids: [] }),
+        ],
+        [
           'setChannel',
           (c: ConnectionId) =>
             store.setChannel(c, guildId, channelId, { replyMode: 'reply-in-channel' }),
@@ -212,6 +241,10 @@ test('configured guilds flow into the loaded application configuration', async (
         decodeChannelId('222222222222222222'),
         { replyMode: 'reply-in-channel' },
       )
+      yield* store.setGuildChannelScope(connectionId, decodeGuildId('111111111111111111'), {
+        mode: 'deny',
+        ids: ['888888888888888888'],
+      })
 
       const config = yield* loadAppConfig({ environment: { DISCORD_BOT_TOKEN: 'token' } })
       const discord = config.platforms.discord[0]
@@ -222,6 +255,7 @@ test('configured guilds flow into the loaded application configuration', async (
           enabled: true,
           invocation: { defaultMode: 'all-messages' },
           users: { mode: 'allow', ids: ['333333333333333333'] },
+          channelScope: { mode: 'deny', ids: ['888888888888888888'] },
           channels: [{ channelId: '222222222222222222', replyMode: 'reply-in-channel' }],
         },
       ])

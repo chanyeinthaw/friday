@@ -2,6 +2,7 @@ import * as Option from 'effect/Option'
 
 import type { AccessPolicy, DiscordPlatformConfig } from '../../config/AppConfig.ts'
 import { DefaultReplyMode } from '../../config/AppConfig.ts'
+import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import type { ChatSdkInboundKind } from '../chat-sdk/ChatSdkLifecycle.ts'
 
 /**
@@ -41,8 +42,13 @@ export interface DiscordResolvedChannelPolicy {
 
 /**
  * Resolves the effective policy for one Discord location. A guild that is
- * absent from the configuration, or disabled, resolves to None: Friday takes no
- * action there. Direct messages (`@me`) resolve against the connection-wide
+ * absent from the configuration, disabled, or whose channel scope does not
+ * admit the channel resolves to None: Friday takes no action there. The scope
+ * check (`channelScope`, default `all`) is the single admission gate — it
+ * applies before invocation, permissions, and reply behavior, so a channel
+ * outside the scope never invokes Friday and never gains thread or reply
+ * behavior. Per-channel entries only override resolved behavior; they never
+ * grant admission. Direct messages (`@me`) resolve against the connection-wide
  * user policy only; they are always operational and always mention-invoked.
  *
  * Callers pass the parent channel for messages inside threads, so thread
@@ -63,6 +69,10 @@ export const resolveDiscordChannelPolicy = (
   }
   const guild = connection.guilds.find((candidate) => candidate.guildId === guildId)
   if (guild === undefined || !guild.enabled) return Option.none()
+  // Channel admission: absent scope means `all`, preserving pre-scope behavior.
+  if (!isAllowedByPolicy(channelId, guild.channelScope ?? { mode: 'all', ids: [] })) {
+    return Option.none()
+  }
   const channel = guild.channels.find((candidate) => candidate.channelId === channelId)
   return Option.some({
     invocationMode: channel?.invocationMode ?? guild.invocation.defaultMode,

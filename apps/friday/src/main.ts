@@ -172,6 +172,11 @@ const application = Effect.scoped(
           Effect.flatMap((guilds) => guilds.setGuildUsers(connectionId, guildId, policy)),
           Effect.provide(DiscordGuildsConfiguredLive),
         ),
+      setDiscordGuildChannels: (connectionId, guildId, policy) =>
+        DiscordGuilds.pipe(
+          Effect.flatMap((guilds) => guilds.setGuildChannelScope(connectionId, guildId, policy)),
+          Effect.provide(DiscordGuildsConfiguredLive),
+        ),
       setDiscordGuildChannel: (connectionId, guildId, channelId, patch) =>
         DiscordGuilds.pipe(
           Effect.flatMap((guilds) => guilds.setChannel(connectionId, guildId, channelId, patch)),

@@ -754,3 +754,63 @@ test('canonicalizes Discord channel bindings and closes newer active duplicates'
       ])
     }).pipe(Effect.provide(database)),
   ))
+
+test('adds the guild channel scope column to pre-scope databases', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      // Pre-create the guild tables in their pre-scope shape; structural
+      // migrations must keep them and add the missing column idempotently.
+      yield* sql`
+        CREATE TABLE platform_connections (
+          connection_id TEXT PRIMARY KEY,
+          platform TEXT NOT NULL,
+          name TEXT NOT NULL,
+          enabled INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `
+      yield* sql`
+        CREATE TABLE discord_connections (
+          connection_id TEXT PRIMARY KEY,
+          application_id TEXT NOT NULL,
+          public_key TEXT NOT NULL,
+          bot_token_env TEXT NOT NULL,
+          respond_to_global_mentions INTEGER NOT NULL,
+          FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+        )
+      `
+      yield* sql`
+        CREATE TABLE discord_guilds (
+          connection_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          invocation_mode TEXT NOT NULL CHECK (invocation_mode IN ('mention-only', 'all-messages')),
+          users_mode TEXT CHECK (users_mode IN ('all', 'allow', 'deny')),
+          PRIMARY KEY (connection_id, guild_id),
+          FOREIGN KEY (connection_id) REFERENCES discord_connections(connection_id) ON DELETE CASCADE
+        )
+      `
+      yield* sql`
+        INSERT INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
+        VALUES ('discord', '111111111111111111', 1, 'mention-only', NULL)
+      `
+
+      yield* runStructuralMigrations()
+      yield* runStructuralMigrations()
+
+      const columns = yield* sql<{ readonly name: string }>`
+        SELECT name FROM pragma_table_info('discord_guilds') ORDER BY name
+      `
+      assert.deepStrictEqual(
+        columns.map((column) => column.name),
+        ['channels_mode', 'connection_id', 'enabled', 'guild_id', 'invocation_mode', 'users_mode'],
+      )
+      // The pre-existing row survives with a NULL scope (every channel admitted).
+      const rows = yield* sql<{ readonly channels_mode: string | null }>`
+        SELECT channels_mode FROM discord_guilds
+      `
+      assert.strictEqual(rows[0]?.channels_mode, null)
+    }).pipe(Effect.provide(database)),
+  ))

@@ -9,6 +9,7 @@ interface GuildFixture {
   enabled: boolean
   invocation: { defaultMode: 'mention-only' | 'all-messages' }
   users?: AccessPolicy
+  channelScope?: AccessPolicy
   channels: DiscordGuildConfig['channels']
 }
 
@@ -31,6 +32,7 @@ const guild = (
     readonly enabled?: boolean
     readonly invocationMode?: 'mention-only' | 'all-messages'
     readonly users?: AccessPolicy
+    readonly channelScope?: AccessPolicy
     readonly channels?: DiscordGuildConfig['channels']
   } = {},
 ): DiscordGuildConfig => {
@@ -41,6 +43,7 @@ const guild = (
     channels: overrides.channels ?? [],
   }
   if (overrides.users !== undefined) entry.users = overrides.users
+  if (overrides.channelScope !== undefined) entry.channelScope = overrides.channelScope
   return entry
 }
 
@@ -212,6 +215,63 @@ it('treats direct messages as operational with connection-level permissions', ()
   assert(Option.isSome(resolved))
   assert.strictEqual(resolved.value.invocationMode, 'mention-only')
   assert.deepStrictEqual(resolved.value.users, users)
+})
+
+it('admits every channel of a guild without a channel scope', () => {
+  const resolved = resolveDiscordChannelPolicy(
+    policies({ guilds: [guild()] }),
+    '111111111111111111',
+    '222222222222222222',
+  )
+  assert(Option.isSome(resolved))
+})
+
+it('admits only listed channels under an allow scope', () => {
+  const scope: AccessPolicy = { mode: 'allow', ids: ['222222222222222222'] }
+  const connection = policies({ guilds: [guild({ channelScope: scope })] })
+  assert(
+    Option.isSome(
+      resolveDiscordChannelPolicy(connection, '111111111111111111', '222222222222222222'),
+    ),
+  )
+  assert(
+    Option.isNone(
+      resolveDiscordChannelPolicy(connection, '111111111111111111', '888888888888888888'),
+    ),
+  )
+})
+
+it('excludes listed channels under a deny scope', () => {
+  const scope: AccessPolicy = { mode: 'deny', ids: ['222222222222222222'] }
+  const connection = policies({ guilds: [guild({ channelScope: scope })] })
+  assert(
+    Option.isNone(
+      resolveDiscordChannelPolicy(connection, '111111111111111111', '222222222222222222'),
+    ),
+  )
+  assert(
+    Option.isSome(
+      resolveDiscordChannelPolicy(connection, '111111111111111111', '888888888888888888'),
+    ),
+  )
+})
+
+it('applies the scope before channel overrides, which never grant admission', () => {
+  // A per-channel entry is an override of resolved behavior only; a channel
+  // outside an allow scope stays closed even when it carries an entry.
+  const resolved = resolveDiscordChannelPolicy(
+    policies({
+      guilds: [
+        guild({
+          channelScope: { mode: 'allow', ids: ['222222222222222222'] },
+          channels: [channel({ channelId: '888888888888888888', invocationMode: 'all-messages' })],
+        }),
+      ],
+    }),
+    '111111111111111111',
+    '888888888888888888',
+  )
+  assert(Option.isNone(resolved))
 })
 
 it('collects reply-in-channel overrides only from enabled guilds', () => {

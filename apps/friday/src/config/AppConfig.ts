@@ -74,6 +74,12 @@ export const DiscordGuildConfig = Schema.Struct({
   invocation: Schema.Struct({ defaultMode: InvocationMode }),
   /** Guild-wide user permission default; absent means inherit the connection policy. */
   users: Schema.optionalKey(AccessPolicy),
+  /**
+   * Guild-wide channel scope: which channels admit Friday at all. Absent means
+   * `all` (every channel of the guild). This is the scope control and stays
+   * separate from `channels`, which only carries per-channel overrides.
+   */
+  channelScope: Schema.optionalKey(AccessPolicy),
   channels: Schema.Array(DiscordGuildChannelConfig),
 })
 export type DiscordGuildConfig = typeof DiscordGuildConfig.Type
@@ -283,6 +289,7 @@ const GuildRow = Schema.Struct({
   enabled: Schema.Number,
   invocation_mode: InvocationMode,
   users_mode: Schema.NullOr(Schema.Literals(['all', 'allow', 'deny'])),
+  channels_mode: Schema.NullOr(Schema.Literals(['all', 'allow', 'deny'])),
 })
 
 const GuildUserSubjectRow = Schema.Struct({
@@ -307,6 +314,12 @@ const GuildChannelUserSubjectRow = Schema.Struct({
   user_id: Schema.String,
 })
 
+const GuildChannelScopeSubjectRow = Schema.Struct({
+  connection_id: Schema.String,
+  guild_id: Schema.String,
+  channel_id: Schema.String,
+})
+
 /**
  * Mutable assembly shapes for guild configuration read from SQLite: optional
  * policy sections attach only when their columns are configured.
@@ -316,6 +329,7 @@ interface AssembledDiscordGuild {
   enabled: boolean
   invocation: { defaultMode: InvocationMode }
   users?: AccessPolicy
+  channelScope?: AccessPolicy
   channels: ReadonlyArray<DiscordGuildChannelConfig>
 }
 
@@ -339,6 +353,9 @@ const decodeGuildUserSubjectRows = Schema.decodeUnknownEffect(Schema.Array(Guild
 const decodeGuildChannelRows = Schema.decodeUnknownEffect(Schema.Array(GuildChannelRow))
 const decodeGuildChannelUserSubjectRows = Schema.decodeUnknownEffect(
   Schema.Array(GuildChannelUserSubjectRow),
+)
+const decodeGuildChannelScopeSubjectRows = Schema.decodeUnknownEffect(
+  Schema.Array(GuildChannelScopeSubjectRow),
 )
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
 const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
@@ -415,6 +432,10 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
     SELECT * FROM discord_guild_channel_users
     ORDER BY connection_id, guild_id, channel_id, user_id
   `
+  const guildChannelScope = yield* sql<Record<string, unknown>>`
+    SELECT * FROM discord_guild_channel_scope
+    ORDER BY connection_id, guild_id, channel_id
+  `
   const adminUsers = yield* sql<
     Record<string, unknown>
   >`SELECT user_id FROM admin_discord_users ORDER BY user_id`
@@ -430,6 +451,7 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
     guildUsers: yield* decodeGuildUserSubjectRows(guildUsers),
     guildChannels: yield* decodeGuildChannelRows(guildChannels),
     guildChannelUsers: yield* decodeGuildChannelUserSubjectRows(guildChannelUsers),
+    guildChannelScope: yield* decodeGuildChannelScopeSubjectRows(guildChannelScope),
     adminUsers: yield* decodeAdminUserRows(adminUsers),
   }
 })
@@ -599,6 +621,18 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
                           subject.guild_id === guild.guild_id,
                       )
                       .map((subject) => subject.user_id),
+                  }
+                }
+                if (guild.channels_mode !== null) {
+                  guildEntry.channelScope = {
+                    mode: guild.channels_mode,
+                    ids: rows.guildChannelScope
+                      .filter(
+                        (subject) =>
+                          subject.connection_id === guild.connection_id &&
+                          subject.guild_id === guild.guild_id,
+                      )
+                      .map((subject) => subject.channel_id),
                   }
                 }
                 return guildEntry
