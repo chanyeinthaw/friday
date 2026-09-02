@@ -59,6 +59,21 @@ const decodeCapabilityUnavailableAnnotations = Schema.decodeUnknownEffect(
     reactionAttempted: Schema.Boolean,
   }),
 )
+const decodeFailureAnnotations = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    stage: Schema.String,
+    errorTag: Schema.String,
+    reason: Schema.String,
+  }),
+)
+const decodeAcceptedLinkedThread = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    id: Schema.String.pipe(Schema.brand('ThreadId')),
+    linkedDiscordSource: Schema.Struct({
+      sourceParentConversationId: Schema.optionalKey(Schema.String),
+    }),
+  }),
+)
 
 const link: DiscordLinkType = decodeLink({
   id: 'support-link',
@@ -82,6 +97,16 @@ const input = {
   messageId: '55555555555555555',
   authorId: '66666666666666666',
   sourceParentConversationId: '99999999999999999',
+} as const
+
+const channelLink = decodeLink({
+  ...link,
+  source: { ...link.source, kind: 'channel' },
+})
+const channelInput = {
+  link: channelLink,
+  messageId: input.messageId,
+  authorId: input.authorId,
 } as const
 
 const sourceUrl = `https://discord.com/channels/${link.source.guildId}/${link.source.conversationId}/${input.messageId}`
@@ -124,6 +149,7 @@ const capabilityError = (detail: string) =>
 
 interface TestOptions {
   readonly databaseFilename?: string
+  readonly link?: DiscordLinkType
   readonly context?: ReadonlyArray<DiscordSourceMessage>
   readonly generation?: 'fail' | { readonly prompt: string; readonly title?: string }
   readonly removeReactionFails?: boolean
@@ -132,6 +158,7 @@ interface TestOptions {
 }
 
 const makeTest = (options: TestOptions = {}) => {
+  const testLink = options.link ?? link
   const events: Array<string> = []
   const accepted: Array<{ readonly thread: unknown; readonly message: unknown }> = []
   const posted: Array<{
@@ -177,7 +204,7 @@ const makeTest = (options: TestOptions = {}) => {
   const registry = DiscordCapabilityRegistry.of({
     register: () => Effect.void,
     get: (connectionId) =>
-      options.sourceCapabilityUnavailable === true && connectionId === link.source.connectionId
+      options.sourceCapabilityUnavailable === true && connectionId === testLink.source.connectionId
         ? Effect.fail(
             new DiscordCapabilityError({
               operation: 'unavailable',
@@ -187,9 +214,9 @@ const makeTest = (options: TestOptions = {}) => {
           )
         : Effect.succeed(
             capability(
-              connectionId === link.source.connectionId
-                ? link.source.connectionId
-                : link.destination.connectionId,
+              connectionId === testLink.source.connectionId
+                ? testLink.source.connectionId
+                : testLink.destination.connectionId,
             ),
           ),
   })
@@ -219,7 +246,7 @@ const makeTest = (options: TestOptions = {}) => {
       if (options.acceptFails === true) {
         return Effect.fail(
           new PlatformNotFoundError({
-            connectionId: link.destination.connectionId,
+            connectionId: testLink.destination.connectionId,
             kind: 'dispatch-test',
           }),
         )
@@ -247,7 +274,7 @@ const makeTest = (options: TestOptions = {}) => {
         Layer.succeed(TextGeneration, generationService),
         Layer.succeed(ChannelTurns, turns),
         Layer.succeed(AppConfig, {
-          current: () => appConfig,
+          current: () => ({ ...appConfig, discordLinks: [testLink] }),
           reload: Effect.die('reload is not expected in handoff tests'),
         }),
       ),
@@ -259,28 +286,30 @@ const makeTest = (options: TestOptions = {}) => {
 
 /** The handoff table references discord_links, whose endpoints reference the
  * connection tables, so the minimal relational chain must exist first. */
-const seedLink = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-  for (const [index, connectionId] of [
-    link.source.connectionId,
-    link.destination.connectionId,
-  ].entries()) {
-    yield* sql`INSERT INTO platform_connections (connection_id, platform, name, enabled, created_at, updated_at)
-      VALUES (${connectionId}, 'discord', ${connectionId}, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    yield* sql`INSERT INTO discord_connections (connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions)
-      VALUES (${connectionId}, ${`app-${index}`}, 'key', 'FRIDAY_DISCORD_TEST_TOKEN', 0)`
-  }
-  yield* sql`INSERT INTO discord_links (
-    link_id, enabled, source_connection_id, source_guild_id, source_conversation_id,
-    source_kind, destination_connection_id, destination_guild_id,
-    destination_conversation_id, destination_kind, updated_at
-  ) VALUES (
-    ${link.id}, 1, ${link.source.connectionId}, ${link.source.guildId},
-    ${link.source.conversationId}, ${link.source.kind}, ${link.destination.connectionId},
-    ${link.destination.guildId}, ${link.destination.conversationId},
-    ${link.destination.kind}, CURRENT_TIMESTAMP
-  )`
-})
+const seedLinkFor = (testLink: DiscordLinkType) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    for (const [index, connectionId] of [
+      testLink.source.connectionId,
+      testLink.destination.connectionId,
+    ].entries()) {
+      yield* sql`INSERT INTO platform_connections (connection_id, platform, name, enabled, created_at, updated_at)
+        VALUES (${connectionId}, 'discord', ${connectionId}, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+      yield* sql`INSERT INTO discord_connections (connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions)
+        VALUES (${connectionId}, ${`app-${index}`}, 'key', 'FRIDAY_DISCORD_TEST_TOKEN', 0)`
+    }
+    yield* sql`INSERT INTO discord_links (
+      link_id, enabled, source_connection_id, source_guild_id, source_conversation_id,
+      source_kind, destination_connection_id, destination_guild_id,
+      destination_conversation_id, destination_kind, updated_at
+    ) VALUES (
+      ${testLink.id}, 1, ${testLink.source.connectionId}, ${testLink.source.guildId},
+      ${testLink.source.conversationId}, ${testLink.source.kind}, ${testLink.destination.connectionId},
+      ${testLink.destination.guildId}, ${testLink.destination.conversationId},
+      ${testLink.destination.kind}, CURRENT_TIMESTAMP
+    )`
+  })
+const seedLink = seedLinkFor(link)
 
 const handoffStatusRows = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
@@ -291,13 +320,57 @@ const handoffStatusRows = Effect.gen(function* () {
   }>`SELECT status, error_stage, destination_thread_id FROM discord_link_handoffs`
 })
 
+const persistedThreadCount = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const [row] = yield* sql<{ readonly count: number }>`SELECT COUNT(*) AS count FROM threads`
+  return row?.count ?? 0
+})
+
 /** Runs one handoff suite against its own isolated SQLite database. */
 const withTest = <A, E>(
   test: ReturnType<typeof makeTest>,
   body: Effect.Effect<A, E, DiscordLinkHandoffs | SqlClient.SqlClient | ThreadPersistence>,
 ) => body.pipe(Effect.provide(test.TestLive), Effect.scoped)
 
-it.effect('completes a handoff once and ignores delayed gateway redelivery', () =>
+it.effect('completes a channel-source handoff with absent parent provenance', () =>
+  Effect.gen(function* () {
+    const test = makeTest({ link: channelLink })
+    yield* withTest(
+      test,
+      Effect.gen(function* () {
+        yield* seedLinkFor(channelLink)
+        const handoffs = yield* DiscordLinkHandoffs
+
+        yield* handoffs.handoff(channelInput)
+
+        assert.deepStrictEqual(test.events.slice(-3), [
+          'turn:accept',
+          'reaction:remove:👀',
+          'reaction:add:✅',
+        ])
+        assert.strictEqual(test.accepted.length, 1)
+        const acceptedThread = test.accepted[0]!.thread
+        const decodedThread = yield* decodeAcceptedLinkedThread(acceptedThread)
+        assert.isFalse('sourceParentConversationId' in decodedThread.linkedDiscordSource)
+
+        const threadId = decodedThread.id
+        assert.isString(threadId)
+        const persistence = yield* ThreadPersistence
+        const restored = Option.getOrThrow(yield* persistence.getThread(threadId))
+        assert.strictEqual(restored.audience, 'user')
+        if (restored.audience === 'user') {
+          assert.isDefined(restored.linkedDiscordSource)
+          assert.isFalse('sourceParentConversationId' in restored.linkedDiscordSource)
+        }
+        assert.deepStrictEqual(yield* handoffStatusRows, [
+          { status: 'dispatched', error_stage: null, destination_thread_id: '66666666666666660' },
+        ])
+      }),
+    )
+  }),
+)
+
+it.effect('completes a thread-source handoff once and ignores delayed gateway redelivery', () =>
   Effect.gen(function* () {
     const test = makeTest()
     const { events, accepted, posted, sourceMaterial } = test
@@ -389,6 +462,91 @@ it.effect('completes a handoff once and ignores delayed gateway redelivery', () 
     )
   }),
 )
+
+it.effect('fails closed when thread-source parent provenance is missing', () => {
+  const test = makeTest()
+  const logs: Array<{ message: unknown; annotations: unknown }> = []
+  const captureLogger = Logger.map(Logger.formatStructured, (output) => {
+    logs.push({ message: output.message, annotations: output.annotations })
+  })
+  return withTest(
+    test,
+    Effect.gen(function* () {
+      yield* seedLink
+      const handoffs = yield* DiscordLinkHandoffs
+
+      yield* handoffs.handoff({
+        link,
+        messageId: input.messageId,
+        authorId: input.authorId,
+      })
+
+      assert.isTrue(test.events.includes('header:post'))
+      assert.isFalse(test.events.includes('turn:accept'))
+      assert.isTrue(test.events.includes('reaction:add:❌'))
+      assert.deepStrictEqual(yield* handoffStatusRows, [
+        {
+          status: 'failed',
+          error_stage: 'construction',
+          destination_thread_id: '66666666666666660',
+        },
+      ])
+      const log = logs.find(({ message }) => message === 'discord.link.handoff.failed')
+      assert.isDefined(log)
+      const annotations = yield* decodeFailureAnnotations(log?.annotations)
+      assert.strictEqual(annotations.stage, 'construction')
+      assert.strictEqual(annotations.errorTag, 'DiscordLinkHandoffError')
+      assert.strictEqual(
+        annotations.reason,
+        'Thread source provenance is missing its parent conversation ID.',
+      )
+      assert.notInclude(String(log?.annotations), triggerMessage().text)
+    }),
+  ).pipe(Effect.provide(Logger.layer([captureLogger], { mergeWithExisting: true })))
+})
+
+it.effect('fails closed when thread-source parent provenance matches the source thread', () => {
+  const test = makeTest()
+  const logs: Array<{ message: unknown; annotations: unknown }> = []
+  const captureLogger = Logger.map(Logger.formatStructured, (output) => {
+    logs.push({ message: output.message, annotations: output.annotations })
+  })
+  return withTest(
+    test,
+    Effect.gen(function* () {
+      yield* seedLink
+      const handoffs = yield* DiscordLinkHandoffs
+
+      yield* handoffs.handoff({
+        ...input,
+        sourceParentConversationId: link.source.conversationId,
+      })
+
+      assert.isTrue(test.events.includes('header:post'))
+      assert.isFalse(test.events.includes('turn:accept'))
+      assert.strictEqual(yield* persistedThreadCount, 0)
+      assert.deepStrictEqual(test.events.slice(-2), ['reaction:remove:👀', 'reaction:add:❌'])
+      assert.isFalse(test.events.includes('reaction:add:✅'))
+      assert.deepStrictEqual(yield* handoffStatusRows, [
+        {
+          status: 'failed',
+          error_stage: 'construction',
+          destination_thread_id: '66666666666666660',
+        },
+      ])
+      const log = logs.find(({ message }) => message === 'discord.link.handoff.failed')
+      assert.isDefined(log)
+      const annotations = yield* decodeFailureAnnotations(log?.annotations)
+      assert.strictEqual(annotations.stage, 'construction')
+      assert.strictEqual(annotations.errorTag, 'DiscordLinkHandoffError')
+      assert.strictEqual(
+        annotations.reason,
+        'Thread source provenance parent matches the source thread conversation ID.',
+      )
+      assert.notInclude(String(log?.annotations), triggerMessage().text)
+    }),
+  ).pipe(Effect.provide(Logger.layer([captureLogger], { mergeWithExisting: true })))
+})
 
 it.effect('retains a completed claim across link and connection deletion and link recreation', () =>
   Effect.gen(function* () {
