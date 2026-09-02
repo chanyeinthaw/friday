@@ -37,12 +37,20 @@ export class DiscordLinkHandoffError extends Schema.Error<DiscordLinkHandoffErro
     'generation',
     'thread',
     'starter',
+    'construction',
+    'persistence',
+    'turn-setup',
     'dispatch',
   ]),
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 const isDiscordLinkHandoffError = Schema.is(DiscordLinkHandoffError)
+
+const handoffDiagnostic = (error: DiscordLinkHandoffError) => ({
+  errorTag: error._tag,
+  reason: error.detail,
+})
 
 export interface LinkedInboundMessage {
   readonly link: DiscordLink
@@ -155,6 +163,20 @@ const makeThread = Effect.fn('DiscordLinkHandoffs.makeThread')(function* (
   title: string,
   config: AppConfig,
 ) {
+  if (input.link.source.kind === 'thread') {
+    if (input.sourceParentConversationId === undefined) {
+      return yield* new DiscordLinkHandoffError({
+        stage: 'construction',
+        detail: 'Thread source provenance is missing its parent conversation ID.',
+      })
+    }
+    if (input.sourceParentConversationId === input.link.source.conversationId) {
+      return yield* new DiscordLinkHandoffError({
+        stage: 'construction',
+        detail: 'Thread source provenance parent matches the source thread conversation ID.',
+      })
+    }
+  }
   const timestamp = DateTime.formatIso(yield* DateTime.now)
   const workingDirectory = join(
     FRIDAY_HOME,
@@ -162,6 +184,26 @@ const makeThread = Effect.fn('DiscordLinkHandoffs.makeThread')(function* (
     destinationThread.conversationId.replaceAll(':', '-'),
   )
   yield* fileSystem.makeDirectory(workingDirectory, { recursive: true })
+  const linkedDiscordSourceBase = {
+    linkId: input.link.id,
+    sourceConnectionId: input.link.source.connectionId,
+    sourceGuildId: input.link.source.guildId,
+    sourceConversationId: input.link.source.conversationId,
+    sourceMessageId: input.messageId,
+    sourceKind: input.link.source.kind,
+    sourceAuthorId: input.authorId,
+    destinationConnectionId: input.link.destination.connectionId,
+    destinationGuildId: input.link.destination.guildId,
+    destinationConversationId: input.link.destination.conversationId,
+    destinationKind: input.link.destination.kind,
+  }
+  const linkedDiscordSource =
+    input.link.source.kind === 'thread'
+      ? {
+          ...linkedDiscordSourceBase,
+          sourceParentConversationId: input.sourceParentConversationId,
+        }
+      : linkedDiscordSourceBase
   return yield* decodeChannelThread({
     id: yield* crypto.randomUUIDv4,
     audience: 'user',
@@ -182,20 +224,7 @@ const makeThread = Effect.fn('DiscordLinkHandoffs.makeThread')(function* (
       sourceMessageId: destinationThread.id,
       conversationId: destinationThread.conversationId,
     },
-    linkedDiscordSource: {
-      linkId: input.link.id,
-      sourceConnectionId: input.link.source.connectionId,
-      sourceGuildId: input.link.source.guildId,
-      sourceConversationId: input.link.source.conversationId,
-      sourceParentConversationId: input.sourceParentConversationId,
-      sourceMessageId: input.messageId,
-      sourceKind: input.link.source.kind,
-      sourceAuthorId: input.authorId,
-      destinationConnectionId: input.link.destination.connectionId,
-      destinationGuildId: input.link.destination.guildId,
-      destinationConversationId: input.link.destination.conversationId,
-      destinationKind: input.link.destination.kind,
-    },
+    linkedDiscordSource,
     status: 'active',
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -231,25 +260,25 @@ export const DiscordLinkHandoffsLive = Layer.effect(
 
     const finalReaction = (source: DiscordCapability, input: LinkedInboundMessage, emoji: string) =>
       source.removeReaction(input.link.source, input.messageId, '👀').pipe(
-        Effect.tapError((cause) =>
+        Effect.tapError(() =>
           Effect.logWarning('discord.link.reaction.remove-failed').pipe(
             Effect.annotateLogs({
               linkId: input.link.id,
               messageId: input.messageId,
-              cause: String(cause),
+              errorTag: 'OperationError',
             }),
           ),
         ),
         Effect.ignore,
         Effect.andThen(
           source.addReaction(input.link.source, input.messageId, emoji).pipe(
-            Effect.tapError((cause) =>
+            Effect.tapError(() =>
               Effect.logWarning('discord.link.reaction.final-failed').pipe(
                 Effect.annotateLogs({
                   linkId: input.link.id,
                   messageId: input.messageId,
                   emoji,
-                  cause: String(cause),
+                  errorTag: 'OperationError',
                 }),
               ),
             ),
@@ -262,7 +291,7 @@ export const DiscordLinkHandoffsLive = Layer.effect(
       handoff: (input) =>
         registry.get(input.link.source.connectionId).pipe(
           Effect.matchEffect({
-            onFailure: (cause) =>
+            onFailure: () =>
               Effect.logError('discord.link.handoff.source-capability-unavailable').pipe(
                 Effect.annotateLogs({
                   linkId: input.link.id,
@@ -271,7 +300,7 @@ export const DiscordLinkHandoffsLive = Layer.effect(
                   sourceConversationId: input.link.source.conversationId,
                   sourceMessageId: input.messageId,
                   reactionAttempted: false,
-                  cause: String(cause),
+                  errorTag: 'OperationError',
                 }),
               ),
             onSuccess: (source) => {
@@ -311,12 +340,12 @@ export const DiscordLinkHandoffsLive = Layer.effect(
                   )
                 if (!claimed) return
                 yield* source.addReaction(input.link.source, input.messageId, '👀').pipe(
-                  Effect.tapError((cause) =>
+                  Effect.tapError(() =>
                     Effect.logWarning('discord.link.reaction.eyes-failed').pipe(
                       Effect.annotateLogs({
                         linkId: input.link.id,
                         messageId: input.messageId,
-                        cause: String(cause),
+                        errorTag: 'OperationError',
                       }),
                     ),
                   ),
@@ -370,7 +399,16 @@ export const DiscordLinkHandoffsLive = Layer.effect(
                   })
                 }
                 const title = normalizeLinkedTitle(generated.title, input.messageId)
-                const destination = yield* registry.get(input.link.destination.connectionId)
+                const destination = yield* registry.get(input.link.destination.connectionId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new DiscordLinkHandoffError({
+                        stage: 'thread',
+                        detail: 'Destination Discord capability is unavailable.',
+                        cause,
+                      }),
+                  ),
+                )
                 const created = yield* destination
                   .createStandaloneThread(input.link.destination, title)
                   .pipe(
@@ -383,7 +421,16 @@ export const DiscordLinkHandoffsLive = Layer.effect(
                         }),
                     ),
                   )
-                yield* sql`UPDATE discord_link_handoffs SET status='thread-created', destination_thread_id=${created.id}, updated_at=CURRENT_TIMESTAMP WHERE source_connection_id=${input.link.source.connectionId} AND source_message_id=${input.messageId}`
+                yield* sql`UPDATE discord_link_handoffs SET status='thread-created', destination_thread_id=${created.id}, updated_at=CURRENT_TIMESTAMP WHERE source_connection_id=${input.link.source.connectionId} AND source_message_id=${input.messageId}`.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new DiscordLinkHandoffError({
+                        stage: 'persistence',
+                        detail: 'Could not record the created destination thread.',
+                        cause,
+                      }),
+                  ),
+                )
                 const header = `Linked Discord source: <${sourceUrl(input)}>\nParticipants: ${aliases(
                   messages,
                 )
@@ -412,13 +459,42 @@ export const DiscordLinkHandoffsLive = Layer.effect(
                   created,
                   title,
                   config.current(),
+                ).pipe(
+                  Effect.mapError((cause) =>
+                    isDiscordLinkHandoffError(cause)
+                      ? cause
+                      : new DiscordLinkHandoffError({
+                          stage: 'construction',
+                          detail: 'Could not construct the linked ChannelThread.',
+                          cause,
+                        }),
+                  ),
                 )
-                yield* persistence.createThread(thread)
+                yield* persistence.createThread(thread).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new DiscordLinkHandoffError({
+                        stage: 'persistence',
+                        detail: 'Could not persist the linked ChannelThread.',
+                        cause,
+                      }),
+                  ),
+                )
                 const prompt = `${generated.prompt.trim()}\n\n${authoritativeProvenance(input, messages)}`
+                const message = yield* messageInput(prompt, input.messageId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new DiscordLinkHandoffError({
+                        stage: 'turn-setup',
+                        detail: 'Could not construct the initial linked handoff message.',
+                        cause,
+                      }),
+                  ),
+                )
                 yield* turns
                   .accept({
                     thread,
-                    message: yield* messageInput(prompt, input.messageId),
+                    message,
                     authorization: externalUpdatesDenied,
                   })
                   .pipe(
@@ -432,12 +508,12 @@ export const DiscordLinkHandoffsLive = Layer.effect(
                     ),
                   )
                 yield* sql`UPDATE discord_link_handoffs SET status='dispatched', updated_at=CURRENT_TIMESTAMP WHERE source_connection_id=${input.link.source.connectionId} AND source_message_id=${input.messageId}`.pipe(
-                  Effect.tapError((cause) =>
+                  Effect.tapError(() =>
                     Effect.logError('discord.link.handoff.dispatch-persistence-failed').pipe(
                       Effect.annotateLogs({
                         linkId: input.link.id,
                         messageId: input.messageId,
-                        cause: String(cause),
+                        errorTag: 'OperationError',
                       }),
                     ),
                   ),
@@ -447,16 +523,23 @@ export const DiscordLinkHandoffsLive = Layer.effect(
               })
               return workflow.pipe(
                 Effect.catch((error) => {
-                  const stage = isDiscordLinkHandoffError(error) ? error.stage : 'dispatch'
+                  const handoffError = isDiscordLinkHandoffError(error)
+                    ? error
+                    : new DiscordLinkHandoffError({
+                        stage: 'dispatch',
+                        detail: 'The linked handoff failed outside a classified stage.',
+                        cause: error,
+                      })
+                  const stage = handoffError.stage
                   const persistFailure =
                     sql`UPDATE discord_link_handoffs SET status='failed', error_stage=${stage}, updated_at=CURRENT_TIMESTAMP WHERE source_connection_id=${input.link.source.connectionId} AND source_message_id=${input.messageId}`.pipe(
-                      Effect.tapError((cause) =>
+                      Effect.tapError(() =>
                         Effect.logError('discord.link.handoff.failure-persistence-failed').pipe(
                           Effect.annotateLogs({
                             linkId: input.link.id,
                             messageId: input.messageId,
                             stage,
-                            cause: String(cause),
+                            errorTag: 'OperationError',
                           }),
                         ),
                       ),
@@ -472,6 +555,7 @@ export const DiscordLinkHandoffsLive = Layer.effect(
                           linkId: input.link.id,
                           messageId: input.messageId,
                           stage,
+                          ...handoffDiagnostic(handoffError),
                         }),
                       ),
                     ),
@@ -480,7 +564,11 @@ export const DiscordLinkHandoffsLive = Layer.effect(
               )
             },
           }),
-          Effect.catchCause((cause) => Effect.logError('discord.link.handoff.defect', cause)),
+          Effect.catchCause(() =>
+            Effect.logError('discord.link.handoff.defect').pipe(
+              Effect.annotateLogs({ errorTag: 'Cause' }),
+            ),
+          ),
           Effect.asVoid,
         ),
     })
