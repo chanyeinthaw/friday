@@ -3,7 +3,7 @@
 import { test } from 'bun:test'
 import { PlatformConnectionId } from '@friday/contracts/conversation'
 import { strict as assert } from 'node:assert'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
@@ -28,6 +28,16 @@ import { sendControlRequest, serveControlSocket } from '../control/ControlSocket
 
 const database = SqliteClient.layer({ filename: ':memory:' })
 const guilds = DiscordGuildsLive.pipe(Layer.provide(database))
+const databaseLayer = (filename: string) => SqliteClient.layer({ filename })
+const guildLayer = (filename: string) => {
+  const sqlite = databaseLayer(filename)
+  return Layer.merge(DiscordGuildsLive.pipe(Layer.provide(sqlite)), sqlite)
+}
+const temporaryDirectory = (prefix: string) =>
+  Effect.acquireRelease(
+    Effect.promise(() => mkdtemp(join(tmpdir(), prefix))),
+    (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+  )
 const decodeGuildId = Schema.decodeSync(DiscordGuildId)
 const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
 const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
@@ -51,6 +61,32 @@ const seed = Effect.gen(function* () {
       connection_id, application_id, public_key, bot_token_env, respond_to_global_mentions
     ) VALUES ('discord', 'application-1', 'public-key-1', 'DISCORD_BOT_TOKEN', 1)
   `
+})
+
+const installWriteAudit = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`CREATE TEMP TABLE discord_guild_write_audit (table_name TEXT NOT NULL)`
+  for (const table of [
+    'discord_guilds',
+    'discord_guild_users',
+    'discord_guild_channel_scope',
+    'discord_guild_channels',
+    'discord_guild_channel_users',
+  ]) {
+    for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+      yield* sql.unsafe(
+        `CREATE TEMP TRIGGER audit_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table} BEGIN INSERT INTO discord_guild_write_audit (table_name) VALUES ('${table}'); END`,
+      )
+    }
+  }
+})
+
+const writeAuditCount = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const rows = yield* sql<{ readonly count: number }>`
+    SELECT count(*) AS count FROM discord_guild_write_audit
+  `
+  return rows[0]?.count ?? 0
 })
 
 test('manages guild enablement, defaults, and channel overrides', async () =>
@@ -198,91 +234,156 @@ test('manages guild enablement, defaults, and channel overrides', async () =>
 
 test('joins a committed guild write to the real control socket reload exchange', async () =>
   Effect.runPromise(
-    Effect.gen(function* () {
-      yield* seed
-      const store = yield* DiscordGuilds
-      const connectionId = decodeConnectionId('discord')
-      const guildId = decodeGuildId('111111111111111111')
-      const directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-guild-reload-')))
-      const path = join(directory, 'friday.sock')
+    Effect.scoped(
+      Effect.gen(function* () {
+        const directory = yield* temporaryDirectory('friday-guild-reload-')
+        const filename = join(directory, 'friday.sqlite')
+        const path = join(directory, 'friday.sock')
+        const connectionId = decodeConnectionId('discord')
+        const guildId = decodeGuildId('111111111111111111')
 
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          yield* serveControlSocket({
-            path,
-            reload: store.listGuilds(connectionId).pipe(
-              Effect.map((configured) => {
-                assert.strictEqual(configured[0]?.guildId, guildId)
-                return reloadSucceeded(7)
-              }),
-              Effect.orDie,
-            ),
-          })
-          const result = yield* applyDiscordConfigMutation(
-            store.enableGuild(connectionId, guildId),
-            (outcome) => outcome === 'enabled',
-            sendControlRequest(path, { op: 'config.reload' }),
+        yield* Effect.gen(function* () {
+          yield* seed
+          const store = yield* DiscordGuilds
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* serveControlSocket({
+                path,
+                reload: store.listGuilds(connectionId).pipe(
+                  Effect.map((configured) => {
+                    assert.strictEqual(configured[0]?.guildId, guildId)
+                    return reloadSucceeded(7)
+                  }),
+                  Effect.orDie,
+                ),
+              })
+              const result = yield* applyDiscordConfigMutation(
+                store.enableGuild(connectionId, guildId),
+                (outcome) => outcome === 'enabled',
+                sendControlRequest(path, { op: 'config.reload' }),
+              )
+              assert.deepStrictEqual(result, {
+                outcome: 'enabled',
+                application: { _tag: 'reloaded', version: 7 },
+              })
+            }),
           )
-          assert.deepStrictEqual(result, {
-            outcome: 'enabled',
-            application: { _tag: 'reloaded', version: 7 },
-          })
-        }),
-      )
-    }).pipe(Effect.provide(Layer.merge(guilds, database))),
+        }).pipe(Effect.provide(guildLayer(filename)))
+
+        const reopened = yield* Effect.gen(function* () {
+          const store = yield* DiscordGuilds
+          return yield* store.listGuilds(connectionId)
+        }).pipe(Effect.provide(guildLayer(filename)))
+        assert.strictEqual(reopened[0]?.guildId, guildId)
+      }),
+    ),
   ))
 
 test('preserves committed guild writes when the socket is offline or rejects reload', async () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const directory = yield* temporaryDirectory('friday-guild-reload-')
+        const filename = join(directory, 'friday.sqlite')
+        const path = join(directory, 'friday.sock')
+        const connectionId = decodeConnectionId('discord')
+        const offlineGuild = decodeGuildId('111111111111111111')
+        const rejectedGuild = decodeGuildId('222222222222222222')
+
+        yield* Effect.gen(function* () {
+          yield* seed
+          const store = yield* DiscordGuilds
+          const offline = yield* applyDiscordConfigMutation(
+            store.enableGuild(connectionId, offlineGuild),
+            (outcome) => outcome === 'enabled',
+            sendControlRequest(path, { op: 'config.reload' }),
+          )
+          assert.deepStrictEqual(offline, {
+            outcome: 'enabled',
+            application: { _tag: 'next-startup' },
+          })
+
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* serveControlSocket({
+                path,
+                reload: store.listGuilds(connectionId).pipe(
+                  Effect.map((configured) => {
+                    assert(configured.some((guild) => guild.guildId === rejectedGuild))
+                    return reloadFailed('Stored Friday configuration is invalid.')
+                  }),
+                  Effect.orDie,
+                ),
+              })
+              const rejected = yield* applyDiscordConfigMutation(
+                store.enableGuild(connectionId, rejectedGuild),
+                (outcome) => outcome === 'enabled',
+                sendControlRequest(path, { op: 'config.reload' }),
+              )
+              assert.deepStrictEqual(rejected, {
+                outcome: 'enabled',
+                application: {
+                  _tag: 'rejected',
+                  detail: 'Stored Friday configuration is invalid.',
+                },
+              })
+            }),
+          )
+        }).pipe(Effect.provide(guildLayer(filename)))
+
+        const reopened = yield* Effect.gen(function* () {
+          const store = yield* DiscordGuilds
+          return yield* store.listGuilds(connectionId)
+        }).pipe(Effect.provide(guildLayer(filename)))
+        assert(reopened.some((guild) => guild.guildId === offlineGuild))
+        assert(reopened.some((guild) => guild.guildId === rejectedGuild))
+      }),
+    ),
+  ))
+
+test('identical guild setters perform no SQLite writes', async () =>
   Effect.runPromise(
     Effect.gen(function* () {
       yield* seed
       const store = yield* DiscordGuilds
       const connectionId = decodeConnectionId('discord')
-      const offlineGuild = decodeGuildId('111111111111111111')
-      const rejectedGuild = decodeGuildId('222222222222222222')
-      const directory = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-guild-reload-')))
-      const path = join(directory, 'friday.sock')
-
-      const offline = yield* applyDiscordConfigMutation(
-        store.enableGuild(connectionId, offlineGuild),
-        (outcome) => outcome === 'enabled',
-        sendControlRequest(path, { op: 'config.reload' }),
-      )
-      assert.deepStrictEqual(offline, {
-        outcome: 'enabled',
-        application: { _tag: 'next-startup' },
+      const guildId = decodeGuildId('111111111111111111')
+      const channelId = decodeChannelId('222222222222222222')
+      yield* store.enableGuild(connectionId, guildId)
+      yield* store.setGuildInvocation(connectionId, guildId, decodeMode('all-messages'))
+      yield* store.setGuildUsers(connectionId, guildId, {
+        mode: 'allow',
+        ids: ['333333333333333333'],
       })
-      assert.strictEqual((yield* store.listGuilds(connectionId))[0]?.guildId, offlineGuild)
+      yield* store.setGuildChannelScope(connectionId, guildId, {
+        mode: 'allow',
+        ids: ['222222222222222222'],
+      })
+      yield* store.setChannel(connectionId, guildId, channelId, {
+        invocationMode: decodeMode('all-messages'),
+        users: { mode: 'deny', ids: ['444444444444444444'] },
+        replyMode: 'reply-in-channel',
+      })
+      yield* installWriteAudit
 
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          yield* serveControlSocket({
-            path,
-            reload: store.listGuilds(connectionId).pipe(
-              Effect.map((configured) => {
-                assert(configured.some((guild) => guild.guildId === rejectedGuild))
-                return reloadFailed('Stored Friday configuration is invalid.')
-              }),
-              Effect.orDie,
-            ),
-          })
-          const rejected = yield* applyDiscordConfigMutation(
-            store.enableGuild(connectionId, rejectedGuild),
-            (outcome) => outcome === 'enabled',
-            sendControlRequest(path, { op: 'config.reload' }),
-          )
-          assert.deepStrictEqual(rejected, {
-            outcome: 'enabled',
-            application: {
-              _tag: 'rejected',
-              detail: 'Stored Friday configuration is invalid.',
-            },
-          })
+      const unchanged = [
+        store.setGuildInvocation(connectionId, guildId, decodeMode('all-messages')),
+        store.setGuildUsers(connectionId, guildId, {
+          mode: 'allow',
+          ids: ['333333333333333333', '333333333333333333'],
         }),
-      )
-      assert(
-        (yield* store.listGuilds(connectionId)).some((guild) => guild.guildId === rejectedGuild),
-      )
+        store.setGuildChannelScope(connectionId, guildId, {
+          mode: 'allow',
+          ids: ['222222222222222222', '222222222222222222'],
+        }),
+        store.setChannel(connectionId, guildId, channelId, {
+          invocationMode: decodeMode('all-messages'),
+          users: { mode: 'deny', ids: ['444444444444444444'] },
+          replyMode: 'reply-in-channel',
+        }),
+      ] as const
+      for (const mutation of unchanged) assert.strictEqual(yield* mutation, 'unchanged')
+      assert.strictEqual(yield* writeAuditCount, 0)
     }).pipe(Effect.provide(Layer.merge(guilds, database))),
   ))
 

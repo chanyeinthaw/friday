@@ -1591,24 +1591,38 @@ it.effect(
         /Saved, but the running Friday rejected the reload: Stored Friday configuration is invalid\./,
       )
 
-      yield* runFridayCli(
-        ['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'],
-        {
-          ...strictRunnerStubs,
-          enableDiscordGuild: () => Effect.succeed('enabled'),
-          reloadConfig: Effect.fail(
-            new ControlSocketError({
-              operation: 'response-timeout',
-              path: '/tmp/friday.sock',
-              detail: 'Friday did not respond before the control request deadline.',
-            }),
-          ),
-        },
-      )
-      assert.match(
-        yield* lastLine,
-        /Saved, but live application could not be confirmed: Friday control socket response-timeout failed at \/tmp\/friday\.sock: Friday did not respond/,
-      )
+      const transportCases = [
+        new ControlSocketError({
+          operation: 'request',
+          path: '/tmp/friday.sock',
+          detail: 'The control request failed after connecting to Friday.',
+          cause: { code: 'EPIPE', errno: -32, message: 'broken pipe' },
+        }),
+        new ControlSocketError({
+          operation: 'request',
+          path: '/tmp/friday.sock',
+          detail:
+            'Friday returned an invalid control socket response. Expected a valid JSON string',
+        }),
+      ]
+      for (const transportError of transportCases) {
+        yield* runFridayCli(
+          ['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'],
+          {
+            ...strictRunnerStubs,
+            enableDiscordGuild: () => Effect.succeed('enabled'),
+            reloadConfig: Effect.fail(transportError),
+          },
+        )
+        const output = yield* lastLine
+        assert.match(output, /Saved, but live application could not be confirmed:/)
+        assert.match(
+          output,
+          transportError === transportCases[0]
+            ? /code=EPIPE.*errno=-32.*broken pipe/
+            : /Expected a valid JSON string/,
+        )
+      }
     }).pipe(Effect.provide(TestConsole.layer)),
 )
 
@@ -1894,58 +1908,78 @@ it.effect('restart and reload guidance tracks whether anything changed', () =>
   }).pipe(Effect.provide(TestConsole.layer)),
 )
 
-it.effect('skips reload for unchanged guild setter outcomes', () =>
+it.effect('skips reload for every explicit non-changing guild outcome', () =>
   Effect.gen(function* () {
+    const guild = ['discord', '111111111111111111'] as const
+    const channel = [...guild, '222222222222222222'] as const
     const commands = [
       {
-        arguments_: [
-          'config',
-          'discord',
-          'guild',
-          'set-invocation',
-          'discord',
-          '111111111111111111',
-          'mention-only',
-        ],
-        override: { setDiscordGuildInvocation: () => Effect.succeed('unchanged' as const) },
+        name: 'already enabled',
+        arguments_: ['config', 'discord', 'guild', 'enable', ...guild],
+        override: { enableDiscordGuild: () => Effect.succeed('already-enabled' as const) },
       },
       {
-        arguments_: [
-          'config',
-          'discord',
-          'guild',
-          'set-users',
-          'discord',
-          '111111111111111111',
-          'all',
-        ],
-        override: { setDiscordGuildUsers: () => Effect.succeed('unchanged' as const) },
+        name: 'already disabled',
+        arguments_: ['config', 'discord', 'guild', 'disable', ...guild],
+        override: { disableDiscordGuild: () => Effect.succeed('already-disabled' as const) },
       },
       {
-        arguments_: [
-          'config',
-          'discord',
-          'guild',
-          'set-channels',
-          'discord',
-          '111111111111111111',
-          'all',
-        ],
-        override: { setDiscordGuildChannels: () => Effect.succeed('unchanged' as const) },
+        name: 'disable missing guild',
+        arguments_: ['config', 'discord', 'guild', 'disable', ...guild],
+        override: { disableDiscordGuild: () => Effect.succeed('missing' as const) },
       },
       {
+        name: 'remove missing guild',
+        arguments_: ['config', 'discord', 'guild', 'remove', ...guild, '--yes'],
+        override: { removeDiscordGuild: () => Effect.succeed('missing' as const) },
+      },
+      ...(['unchanged', 'missing'] as const).flatMap((outcome) => [
+        {
+          name: `invocation ${outcome}`,
+          arguments_: ['config', 'discord', 'guild', 'set-invocation', ...guild, 'mention-only'],
+          override: { setDiscordGuildInvocation: () => Effect.succeed(outcome) },
+        },
+        {
+          name: `users ${outcome}`,
+          arguments_: ['config', 'discord', 'guild', 'set-users', ...guild, 'all'],
+          override: { setDiscordGuildUsers: () => Effect.succeed(outcome) },
+        },
+        {
+          name: `channel scope ${outcome}`,
+          arguments_: ['config', 'discord', 'guild', 'set-channels', ...guild, 'all'],
+          override: { setDiscordGuildChannels: () => Effect.succeed(outcome) },
+        },
+      ]),
+      {
+        name: 'channel patch unchanged',
         arguments_: [
           'config',
           'discord',
           'guild',
           'channel',
           'set',
-          'discord',
-          '111111111111111111',
-          '222222222222222222',
+          ...channel,
           '--reply-in-thread',
         ],
         override: { setDiscordGuildChannel: () => Effect.succeed('unchanged' as const) },
+      },
+      {
+        name: 'channel patch missing guild',
+        arguments_: [
+          'config',
+          'discord',
+          'guild',
+          'channel',
+          'set',
+          ...channel,
+          '--reply-in-thread',
+        ],
+        override: { setDiscordGuildChannel: () => Effect.succeed('missing-guild' as const) },
+      },
+      {
+        name: 'channel reset missing',
+        arguments_: ['config', 'discord', 'guild', 'channel', 'reset', ...channel],
+        override: { resetDiscordGuildChannel: () => Effect.succeed('missing' as const) },
       },
     ] as const
 
@@ -1953,9 +1987,9 @@ it.effect('skips reload for unchanged guild setter outcomes', () =>
       yield* runFridayCli(command.arguments_, {
         ...strictRunnerStubs,
         ...command.override,
-        reloadConfig: Effect.die('unchanged setters must not reload'),
+        reloadConfig: Effect.die(`${command.name} must not reload`),
       })
-      assert(!(yield* lastLine).includes('Saved'))
+      assert(!(yield* lastLine).includes('Saved'), `${command.name} printed an application suffix`)
     }
   }).pipe(Effect.provide(TestConsole.layer)),
 )

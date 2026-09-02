@@ -43,7 +43,12 @@ export class ControlSocketError extends Schema.Error<ControlSocketError>('Contro
   cause: Schema.optional(Schema.Defect()),
 }) {
   override get message(): string {
-    return `Friday control socket ${this.operation} failed at ${this.path}: ${this.detail}`
+    const diagnostic = formatControlSocketCause(this.cause)
+    const detail =
+      diagnostic === undefined || this.detail.includes(diagnostic)
+        ? this.detail
+        : `${this.detail} ${diagnostic}`
+    return `Friday control socket ${this.operation} failed at ${this.path}: ${detail}`
   }
 }
 
@@ -69,16 +74,48 @@ interface ConnectionLimits {
   readonly connectionTimeoutMs: number
 }
 
-/** Reads an errno-style `code` field off an unknown Node.js error. */
-const ErrnoCode = Schema.Struct({ code: Schema.String })
-const decodeErrnoCode = Schema.decodeUnknownOption(ErrnoCode)
+/** Safe diagnostic fields accepted from Node errno and schema errors. */
+const SafeCauseDetail = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  errno: Schema.optional(Schema.Union([Schema.String, Schema.Finite])),
+  message: Schema.optional(Schema.String),
+})
+const decodeSafeCauseDetail = Schema.decodeUnknownOption(SafeCauseDetail)
 const errnoCode = (cause: unknown): string | undefined =>
-  Option.getOrUndefined(Option.map(decodeErrnoCode(cause), (decoded) => decoded.code))
+  Option.getOrUndefined(Option.map(decodeSafeCauseDetail(cause), (decoded) => decoded.code))
+
+const safeDiagnosticText = (value: string): string =>
+  value
+    .replaceAll(/[\r\n\t]+/g, ' ')
+    .replaceAll(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500)
+
+/** Formats only actionable, non-stack diagnostic fields from an underlying failure. */
+export const formatControlSocketCause = (cause: unknown): string | undefined => {
+  if (Schema.isSchemaError(cause)) return safeDiagnosticText(cause.message)
+  return Option.getOrUndefined(
+    Option.flatMap(decodeSafeCauseDetail(cause), (decoded) => {
+      const fields = [
+        decoded.code === undefined ? undefined : `code=${safeDiagnosticText(decoded.code)}`,
+        decoded.errno === undefined ? undefined : `errno=${decoded.errno}`,
+        decoded.message === undefined ? undefined : safeDiagnosticText(decoded.message),
+      ].filter((field): field is string => field !== undefined && field.length > 0)
+      return fields.length === 0 ? Option.none() : Option.some(fields.join(', '))
+    }),
+  )
+}
+
 const isErrno = (cause: unknown, code: string): boolean => errnoCode(cause) === code
 
 /** Connect failures that mean no Friday process is accepting control requests. */
 export const isControlSocketNotRunning = (error: ControlSocketError): boolean =>
   error.operation === 'connect' && (error.errno === 'ENOENT' || error.errno === 'ECONNREFUSED')
+
+const detailWithCause = (detail: string, cause: unknown): string => {
+  const diagnostic = formatControlSocketCause(cause)
+  return diagnostic === undefined ? detail : `${detail} ${diagnostic}`
+}
 
 /** Whether a control request failed because no Friday process is listening. */
 export const isControlSocketUnavailable = (error: ControlSocketError): boolean =>
@@ -592,7 +629,7 @@ export const sendControlRequest = Effect.fn('sendControlRequest')(function* (
           new ControlSocketError({
             operation,
             path,
-            detail,
+            detail: cause === undefined ? detail : detailWithCause(detail, cause),
             errno: errnoCode(cause),
             cause,
           }),
@@ -647,7 +684,7 @@ export const sendControlRequest = Effect.fn('sendControlRequest')(function* (
         new ControlSocketError({
           operation: 'request',
           path,
-          detail: 'Friday returned an invalid control socket response.',
+          detail: detailWithCause('Friday returned an invalid control socket response.', cause),
           cause,
         }),
     ),

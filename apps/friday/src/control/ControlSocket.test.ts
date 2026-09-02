@@ -235,6 +235,19 @@ it.effect('classifies a post-send disconnect as an indeterminate request failure
   }),
 )
 
+it('includes safe errno diagnostics for connected socket failures', () => {
+  const error = new ControlSocketError({
+    operation: 'request',
+    path: '/tmp/friday.sock',
+    detail: 'The control request failed after connecting to Friday.',
+    cause: { code: 'EPIPE', errno: -32, message: 'broken pipe', stack: 'sensitive stack' },
+  })
+  assert.match(error.message, /code=EPIPE/)
+  assert.match(error.message, /errno=-32/)
+  assert.match(error.message, /broken pipe/)
+  assert(!error.message.includes('sensitive stack'))
+})
+
 it.effect('classifies a malformed response as an indeterminate request failure', () =>
   Effect.gen(function* () {
     const path = yield* makePath
@@ -246,7 +259,8 @@ it.effect('classifies a malformed response as an indeterminate request failure',
     )
     assert(isControlSocketError(error))
     assert.strictEqual(error.operation, 'request')
-    assert.strictEqual(error.detail, 'Friday returned an invalid control socket response.')
+    assert.match(error.detail, /Friday returned an invalid control socket response\./)
+    assert.match(error.detail, /Expected a valid JSON string/)
   }),
 )
 
