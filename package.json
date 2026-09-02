@@ -1,6 +1,6 @@
 {
   "name": "friday",
-  "version": "0.0.0-nightly.17",
+  "version": "0.0.0-nightly.18",
   "private": true,
   "type": "module",
   "scripts": {
