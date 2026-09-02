@@ -11,7 +11,6 @@ import {
   type ThreadPersistenceError,
 } from './ThreadPersistence.ts'
 import type {
-  CurrentTurnAuthorization,
   HarnessReloadOutcome,
   PromptRequest,
   ThreadRuntime,
@@ -45,12 +44,10 @@ export interface TurnHandle<EventError = never> {
 export interface ThreadCoordinatorContract<PromptError, EventError> {
   readonly prompt: (
     turn: Turn,
-    authorization?: CurrentTurnAuthorization,
   ) => Effect.Effect<TurnHandle<EventError>, PromptError | ThreadPersistenceError>
   readonly steer: (
     turnId: Turn['id'],
     activity: SteeringActivity,
-    authorization?: CurrentTurnAuthorization,
   ) => Effect.Effect<void, PromptError | ThreadPersistenceError>
   readonly cancel: (turnId: TurnId) => Effect.Effect<void, PromptError>
   readonly reload: () => Effect.Effect<HarnessReloadOutcome>
@@ -152,17 +149,12 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
   )
 
   return {
-    prompt: (turn, authorization?: CurrentTurnAuthorization) =>
+    prompt: (turn) =>
       Effect.gen(function* () {
         const signal = yield* Deferred.make<TerminalTurn, EventError | ThreadPersistenceError>()
         const request: PromptRequest = {
           turnId: turn.id,
           message: turn.input,
-          authorization:
-            authorization ??
-            (turn.input.source === 'user'
-              ? { externalUpdateRequests: 'allowed' }
-              : { externalUpdateRequests: 'denied' }),
           mode: 'turn',
         }
 
@@ -214,15 +206,10 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
         Effect.sync(() => void eventListeners.add(listener)),
         () => Effect.sync(() => void eventListeners.delete(listener)),
       ).pipe(Effect.asVoid),
-    steer: (turnId, activity, authorization?: CurrentTurnAuthorization) => {
+    steer: (turnId, activity) => {
       const request: PromptRequest = {
         turnId,
         message: activity.message,
-        authorization:
-          authorization ??
-          (activity.message.source === 'user'
-            ? { externalUpdateRequests: 'allowed' }
-            : { externalUpdateRequests: 'denied' }),
       }
 
       return persistence

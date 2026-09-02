@@ -25,7 +25,7 @@ import { FridayLive } from './Live.ts'
 import { withFridayLogging } from './logging/Live.ts'
 import { reloadApplicationConfig } from './config/ConfigReload.ts'
 import { sendControlRequest, serveControlSocket } from './control/ControlSocket.ts'
-import { DiscordGuildError, DiscordGuilds, DiscordGuildsLive } from './config/DiscordGuilds.ts'
+import { DiscordGuilds, DiscordGuildsLive } from './config/DiscordGuilds.ts'
 import { DiscordConnections, DiscordConnectionsLive } from './config/DiscordConnections.ts'
 import {
   DiscordActivityDescriptions,
@@ -34,7 +34,6 @@ import {
 import { AppConfig } from './config/AppConfigLive.ts'
 import { DiscordAdmins, DiscordAdminsLive } from './config/DiscordAdmins.ts'
 import { ModelConfiguration, ModelConfigurationLive } from './config/ModelConfiguration.ts'
-import { DiscordLinks, DiscordLinksLive } from './config/DiscordLinks.ts'
 import { getPiModel, listPiModels, reloadPiModels } from './harness/pi/PiModelCatalog.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
@@ -69,7 +68,6 @@ const DiscordAdminsConfiguredLive = DiscordAdminsLive.pipe(Layer.provide(FridayS
 const ModelConfigurationConfiguredLive = ModelConfigurationLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
-const DiscordLinksConfiguredLive = DiscordLinksLive.pipe(Layer.provide(FridaySqliteLive))
 
 const start = Effect.scoped(
   Effect.gen(function* () {
@@ -148,42 +146,6 @@ const application = Effect.scoped(
       listPiModels,
       getPiModel,
       reloadPiModels,
-      setDiscordLink: (link) =>
-        DiscordLinks.pipe(
-          Effect.flatMap((links) => links.set(link)),
-          Effect.mapError((cause) => new DiscordGuildError({ operation: 'write', cause })),
-          Effect.provide(DiscordLinksConfiguredLive),
-        ),
-      getDiscordLink: (id) =>
-        DiscordLinks.pipe(
-          Effect.flatMap((links) => links.get(id)),
-          Effect.mapError((cause) => new DiscordGuildError({ operation: 'read', cause })),
-          Effect.provide(DiscordLinksConfiguredLive),
-        ),
-      listDiscordLinks: () =>
-        DiscordLinks.pipe(
-          Effect.flatMap((links) => links.list()),
-          Effect.mapError((cause) => new DiscordGuildError({ operation: 'read', cause })),
-          Effect.provide(DiscordLinksConfiguredLive),
-        ),
-      enableDiscordLink: (id) =>
-        DiscordLinks.pipe(
-          Effect.flatMap((links) => links.enable(id)),
-          Effect.mapError((cause) => new DiscordGuildError({ operation: 'write', cause })),
-          Effect.provide(DiscordLinksConfiguredLive),
-        ),
-      disableDiscordLink: (id) =>
-        DiscordLinks.pipe(
-          Effect.flatMap((links) => links.disable(id)),
-          Effect.mapError((cause) => new DiscordGuildError({ operation: 'write', cause })),
-          Effect.provide(DiscordLinksConfiguredLive),
-        ),
-      removeDiscordLink: (id) =>
-        DiscordLinks.pipe(
-          Effect.flatMap((links) => links.remove(id)),
-          Effect.mapError((cause) => new DiscordGuildError({ operation: 'write', cause })),
-          Effect.provide(DiscordLinksConfiguredLive),
-        ),
       setDiscordActivityDescription: (action, enabled) =>
         DiscordActivityDescriptions.pipe(
           Effect.flatMap((descriptions) =>

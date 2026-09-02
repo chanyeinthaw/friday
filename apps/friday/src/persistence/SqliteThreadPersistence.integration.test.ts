@@ -12,6 +12,7 @@ import {
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +22,7 @@ import { makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
 const decodeToolResultActivity = Schema.decodeSync(ToolResultActivity)
 const decodeTurn = Schema.decodeSync(Turn)
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-1',
@@ -217,6 +219,48 @@ test('creates and retrieves a channel Thread', async () => {
   await rm(directory, { recursive: true, force: true })
 
   expect(persisted).toEqual(thread)
+})
+
+test('reads a released linked Discord channel Thread and ignores its retired provenance', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const releasedThread = {
+    ...thread,
+    linkedDiscordSource: {
+      linkId: 'released-link',
+      sourceConnectionId: 'discord-source',
+      sourceGuildId: '111111111111111111',
+      sourceConversationId: '333333333333333333',
+      sourceParentConversationId: '666666666666666666',
+      sourceMessageId: '777777777777777777',
+      sourceKind: 'thread',
+      sourceAuthorId: '888888888888888888',
+      destinationConnectionId: 'discord-destination',
+      destinationGuildId: '222222222222222222',
+      destinationConversationId: '444444444444444444',
+      destinationKind: 'channel',
+    },
+  }
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      INSERT INTO threads (
+        thread_id, audience, status, payload_json, created_at, updated_at, closed_at
+      ) VALUES (
+        ${thread.id}, ${thread.audience}, ${thread.status}, ${encodeUnknownJson(releasedThread)},
+        ${thread.createdAt}, ${thread.updatedAt}, ${thread.closedAt}
+      )
+    `
+
+    return Option.getOrThrow(yield* persistence.getThread(thread.id))
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+
+  const persisted = await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+
+  expect(persisted).toEqual(thread)
+  expect('linkedDiscordSource' in persisted).toBe(false)
 })
 
 test('closes a task Thread while retaining it for history', async () => {
