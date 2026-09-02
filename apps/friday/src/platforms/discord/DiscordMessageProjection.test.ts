@@ -45,6 +45,7 @@ it.effect('repairs a pre-existing Discord thread starter projected as its parent
     assert.strictEqual(input.binding.channelId, 'discord:guild-1:channel-1')
     assert.strictEqual(input.binding.conversationId, 'discord:guild-1:channel-1:thread-1')
     assert.strictEqual(input.binding.sourceMessageId, 'thread-1')
+    assert.strictEqual(input.discordHistorySource, 'channel')
   }),
 )
 
@@ -69,6 +70,7 @@ it.effect('keeps an ordinary channel message in the parent channel', () =>
     )
 
     assert.strictEqual(input.binding.conversationId, 'discord:guild-1:channel-1:channel-1')
+    assert.strictEqual(input.discordHistorySource, 'channel')
   }),
 )
 
@@ -94,6 +96,7 @@ it.effect('preserves messages already projected inside a Discord thread', () =>
     )
 
     assert.strictEqual(input.binding.conversationId, 'discord:guild-1:channel-1:thread-1')
+    assert.strictEqual(input.discordHistorySource, 'thread')
     assert.strictEqual(fetched, false)
   }),
 )

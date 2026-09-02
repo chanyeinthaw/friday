@@ -1,51 +1,124 @@
 import type { ContextMessage, InputMessage, MessageAuthor } from '@friday/contracts/conversation'
+import * as Schema from 'effect/Schema'
 
-const metadataValue = (value: string | null): string =>
-  value === null || value === '' ? '-' : value
+export const PromptParticipant = Schema.Struct({
+  id: Schema.String,
+  platformUserId: Schema.String,
+  mention: Schema.NullOr(Schema.String),
+  username: Schema.NullOr(Schema.String),
+  displayName: Schema.NullOr(Schema.String),
+})
+export interface PromptParticipant extends Schema.Schema.Type<typeof PromptParticipant> {}
 
-const indentContinuationLines = (text: string): string => text.replaceAll('\n', '\n  ')
+export const PromptHistoricalMessage = Schema.Struct({
+  kind: Schema.Literal('historical'),
+  participantId: Schema.String,
+  platformMessageId: Schema.optionalKey(Schema.String),
+  content: Schema.String,
+})
+export interface PromptHistoricalMessage extends Schema.Schema.Type<
+  typeof PromptHistoricalMessage
+> {}
 
+export const PromptReplyTarget = Schema.Struct({
+  kind: Schema.Literal('reply-target'),
+  participantId: Schema.String,
+  platformMessageId: Schema.optionalKey(Schema.String),
+  content: Schema.String,
+})
+export interface PromptReplyTarget extends Schema.Schema.Type<typeof PromptReplyTarget> {}
+
+export const PromptTrigger = Schema.Struct({
+  kind: Schema.Literal('trigger'),
+  participantId: Schema.String,
+  platformMessageId: Schema.optionalKey(Schema.String),
+  replyTargetParticipantId: Schema.optionalKey(Schema.String),
+  content: Schema.String,
+})
+export interface PromptTrigger extends Schema.Schema.Type<typeof PromptTrigger> {}
+
+export const PromptMessageEnvelope = Schema.Struct({
+  kind: Schema.Literal('user-message'),
+  participants: Schema.Array(PromptParticipant),
+  historicalContext: Schema.Array(PromptHistoricalMessage),
+  replyTarget: Schema.optionalKey(PromptReplyTarget),
+  trigger: PromptTrigger,
+})
+export interface PromptMessageEnvelope extends Schema.Schema.Type<typeof PromptMessageEnvelope> {}
+
+export const PromptMessageEnvelopeJson = Schema.fromJsonString(PromptMessageEnvelope)
+
+const encodePromptMessageEnvelope = Schema.encodeSync(PromptMessageEnvelopeJson)
 const authorKey = (author: MessageAuthor): string => author.platformUserId
+const platformMessageId = (message: ContextMessage | InputMessage): string | undefined =>
+  message.platformMessageId === undefined ? undefined : String(message.platformMessageId)
 
 const renderAttributedConversation = (
   trigger: InputMessage & { readonly author: MessageAuthor },
   context: ReadonlyArray<ContextMessage>,
   replyTo: ContextMessage | undefined,
 ): string => {
-  const participants = new Map<string, { readonly alias: string; readonly author: MessageAuthor }>()
-  const aliasFor = (author: MessageAuthor): string => {
+  const participants = new Map<string, PromptParticipant>()
+  const participantFor = (author: MessageAuthor): PromptParticipant => {
     const key = authorKey(author)
     const existing = participants.get(key)
-    if (existing) return existing.alias
-    const alias = `p${participants.size + 1}`
-    participants.set(key, { alias, author })
-    return alias
+    if (existing !== undefined) return existing
+    const participant: PromptParticipant = {
+      id: `p${participants.size + 1}`,
+      platformUserId: String(author.platformUserId),
+      mention: author.mention,
+      username: author.username,
+      displayName: author.displayName,
+    }
+    participants.set(key, participant)
+    return participant
   }
-  if (replyTo !== undefined) aliasFor(replyTo.author)
-  for (const message of context) aliasFor(message.author)
-  const triggerAlias = aliasFor(trigger.author)
-  const roster = Array.from(
-    participants.values(),
-    ({ alias, author }) =>
-      `${alias} = ${metadataValue(author.mention)} | ${metadataValue(author.username)} | ${metadataValue(author.displayName)}`,
-  ).join('\n')
-  const replyTranscript =
-    replyTo === undefined
-      ? []
-      : [
-          `${aliasFor(replyTo.author)} [reply target]: ${indentContinuationLines(replyTo.content.text)}`,
-        ]
-  const transcript = context.map(
-    (message) =>
-      `${aliasFor(message.author)} [context]: ${indentContinuationLines(message.content.text)}`,
-  )
-  const triggerLabel =
-    replyTo === undefined ? '[trigger]' : `[trigger] (replying to ${aliasFor(replyTo.author)})`
-  return `Participants:\n${roster}\n\n${[
-    ...replyTranscript,
-    ...transcript,
-    `${triggerAlias} ${triggerLabel}: ${indentContinuationLines(trigger.content.text)}`,
-  ].join('\n')}`
+
+  const replyTargetParticipant = replyTo === undefined ? undefined : participantFor(replyTo.author)
+  const replyToId = replyTo?.platformMessageId
+  const deduplicatedContext =
+    replyToId === undefined
+      ? context
+      : context.filter((message) => message.platformMessageId !== replyToId)
+  const historicalContext = deduplicatedContext.map((message): PromptHistoricalMessage => {
+    const messageId = platformMessageId(message)
+    return {
+      kind: 'historical',
+      participantId: participantFor(message.author).id,
+      ...(messageId === undefined ? {} : { platformMessageId: messageId }),
+      content: message.content.text,
+    }
+  })
+  const triggerParticipant = participantFor(trigger.author)
+  const triggerMessageId = platformMessageId(trigger)
+  const replyTargetMessageId = replyTo === undefined ? undefined : platformMessageId(replyTo)
+  const replyTarget: PromptReplyTarget | undefined =
+    replyTo === undefined || replyTargetParticipant === undefined
+      ? undefined
+      : {
+          kind: 'reply-target',
+          participantId: replyTargetParticipant.id,
+          ...(replyTargetMessageId === undefined
+            ? {}
+            : { platformMessageId: replyTargetMessageId }),
+          content: replyTo.content.text,
+        }
+  const envelope: PromptMessageEnvelope = {
+    kind: 'user-message',
+    participants: Array.from(participants.values()),
+    historicalContext,
+    ...(replyTarget === undefined ? {} : { replyTarget }),
+    trigger: {
+      kind: 'trigger',
+      participantId: triggerParticipant.id,
+      ...(triggerMessageId === undefined ? {} : { platformMessageId: triggerMessageId }),
+      ...(replyTargetParticipant === undefined
+        ? {}
+        : { replyTargetParticipantId: replyTargetParticipant.id }),
+      content: trigger.content.text,
+    },
+  }
+  return encodePromptMessageEnvelope(envelope)
 }
 
 /** Attributes one triggering channel message while leaving internal messages unchanged. */

@@ -5,8 +5,10 @@ import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import {
   AgentThread,
   ChannelThread,
+  InputMessage,
   ModelSelection,
   SubagentProfileName,
+  TurnId,
   type Thread,
 } from '@friday/contracts/conversation'
 import type { CreateAgentSessionOptions } from '@earendil-works/pi-coding-agent'
@@ -23,12 +25,16 @@ import {
   type SystemPromptTemplatesContract,
 } from '../../system-prompt/SystemPromptTemplates.ts'
 import type { PiTaskOperations } from '../../tasks/PiTaskTool.ts'
+import { PromptMessageEnvelopeJson } from './PromptMessage.ts'
 import { makePiThreadRuntime, type PiAgentSessionContract } from './PiThreadRuntime.ts'
 
 const decodeChannelThread = Schema.decodeSync(ChannelThread)
+const decodeInputMessage = Schema.decodeSync(InputMessage)
 const decodeModel = Schema.decodeSync(ModelSelection)
 const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 const decodeAgentThread = Schema.decodeSync(AgentThread)
+const decodeTurnId = Schema.decodeSync(TurnId)
+const decodePromptMessageEnvelope = Schema.decodeSync(PromptMessageEnvelopeJson)
 
 const channelThread = decodeChannelThread({
   id: 'thread-prompt-channel',
@@ -282,6 +288,106 @@ test('failed prompt rendering leaves the current prompt and session untouched', 
         expect(loader?.getSystemPrompt()).toBe('working prompt')
       }),
     ).pipe(Effect.provide(BunCrypto.layer)),
+  )
+})
+
+test('channel prompt instructions match the delivered user-message envelope', async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let systemPrompt = ''
+      const delivered: Array<string> = []
+      const templates = yield* SystemPromptTemplates
+      const scope = yield* Scope.make()
+      const runtime = yield* makePiThreadRuntime({
+        thread: channelThread,
+        systemPromptTemplates: templates,
+        modelRuntime: {
+          getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
+          getAuth: async () => ({ type: 'api_key', key: 'test' }),
+        } as never,
+        createSession: async (options) => {
+          systemPrompt = options.resourceLoader?.getSystemPrompt() ?? ''
+          return {
+            session: {
+              ...session(),
+              prompt: async (text) => {
+                delivered.push(text)
+              },
+            },
+          }
+        },
+      }).pipe(Effect.provideService(Scope.Scope, scope))
+
+      yield* runtime.prompt({
+        turnId: decodeTurnId('turn-prompt-contract'),
+        mode: 'turn',
+        message: decodeInputMessage({
+          source: 'user',
+          author: {
+            platformUserId: 'user-1',
+            mention: '<@user-1>',
+            username: 'chan',
+            displayName: 'Chan',
+          },
+          context: [
+            {
+              author: {
+                platformUserId: 'user-2',
+                mention: '<@user-2>',
+                username: 'alice',
+                displayName: 'Alice',
+              },
+              content: { text: 'Earlier context.', images: [] },
+            },
+          ],
+          replyTo: {
+            author: {
+              platformUserId: 'user-3',
+              mention: '<@user-3>',
+              username: 'carol',
+              displayName: 'Carol',
+            },
+            content: { text: 'Reply target.', images: [] },
+          },
+          content: { text: 'Current trigger.', images: [] },
+        }),
+      })
+
+      expect(systemPrompt).toContain('Effect Schema JSON envelope')
+      expect(systemPrompt).toContain('`participants`')
+      expect(systemPrompt).toContain('`historicalContext`')
+      expect(systemPrompt).toContain('optional `replyTarget`')
+      expect(systemPrompt).toContain('exactly one `trigger`')
+      expect(systemPrompt).toContain('refer to people through `participantId`')
+      expect(systemPrompt).toContain("Use a participant's non-null `mention` value verbatim")
+      expect(systemPrompt).toContain('may still arrive as raw text rather than JSON')
+      expect(systemPrompt).not.toContain(
+        'Participant metadata is rendered as `alias = native mention | username | display name`',
+      )
+
+      expect(delivered).toHaveLength(1)
+      const envelope = decodePromptMessageEnvelope(delivered[0] ?? '')
+      expect(envelope.participants.map(({ platformUserId }) => platformUserId)).toEqual([
+        'user-3',
+        'user-2',
+        'user-1',
+      ])
+      expect(envelope.historicalContext).toEqual([
+        { kind: 'historical', participantId: 'p2', content: 'Earlier context.' },
+      ])
+      expect(envelope.replyTarget).toEqual({
+        kind: 'reply-target',
+        participantId: 'p1',
+        content: 'Reply target.',
+      })
+      expect(envelope.trigger).toEqual({
+        kind: 'trigger',
+        participantId: 'p3',
+        replyTargetParticipantId: 'p1',
+        content: 'Current trigger.',
+      })
+      yield* Scope.close(scope, Exit.void)
+    }).pipe(Effect.provide(SystemPromptTemplatesLive), Effect.provide(BunCrypto.layer)),
   )
 })
 

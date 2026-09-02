@@ -33,25 +33,28 @@ export interface DiscordInitialContextAdapter extends Pick<
 > {
   readonly fetchMessages: (
     threadId: string,
-    options: { readonly limit: number },
+    options: {
+      readonly limit: number
+      readonly cursor: string
+      readonly direction: 'backward'
+    },
   ) => Promise<{ readonly messages: ReadonlyArray<DiscordHistoryMessage> }>
 }
 
 const boundedContext = (
   messages: ReadonlyArray<DiscordHistoryMessage>,
-  triggerId: string,
   afterMessageId?: string,
 ) => {
   const afterIndex =
     afterMessageId === undefined
       ? -1
       : messages.findIndex((message) => message.id === afterMessageId)
-  const triggerIndex = messages.findIndex((message) => message.id === triggerId)
-  const candidates = messages.slice(afterIndex + 1, triggerIndex < 0 ? undefined : triggerIndex)
+  if (afterMessageId !== undefined && afterIndex < 0) return []
+  const candidates = messages.slice(afterIndex + 1)
   const context = []
   let characters = 0
   for (const message of candidates.toReversed()) {
-    if (message.id === triggerId || message.author.isBot || message.author.isMe) {
+    if (message.author.isBot || message.author.isMe) {
       continue
     }
     const projected = projectChatSdkContextMessage('discord', message)
@@ -75,22 +78,22 @@ export const loadDiscordInitialContext = Effect.fn('loadDiscordInitialContext')(
     try: () => discord.decodeThreadId(String(input.binding.conversationId)),
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
   })
-  const isNewThreadFromTrigger =
-    cursor.created && location.threadId === String(input.message.platformMessageId ?? '')
   const historySource =
-    isDiscordThread(location) && !isNewThreadFromTrigger
+    input.discordHistorySource === 'thread' && isDiscordThread(location)
       ? String(input.binding.conversationId)
       : discordChannelConversationId(discord, location)
+  const triggerId = String(input.message.platformMessageId ?? '')
   const result = yield* Effect.tryPromise({
-    try: () => discord.fetchMessages(historySource, { limit: recentMessageCount }),
+    try: () =>
+      discord.fetchMessages(historySource, {
+        limit: recentMessageCount,
+        cursor: triggerId,
+        direction: 'backward',
+      }),
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
   })
   return {
     ...input,
-    initialContext: boundedContext(
-      result.messages,
-      String(input.message.platformMessageId ?? ''),
-      cursor.afterMessageId,
-    ),
+    initialContext: boundedContext(result.messages, cursor.afterMessageId),
   }
 })

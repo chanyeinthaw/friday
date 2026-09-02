@@ -24,6 +24,7 @@ import {
   type PiAgentSessionContract,
   type PiProjectionState,
 } from './PiThreadRuntime.ts'
+import { PromptMessageEnvelopeJson } from './PromptMessage.ts'
 import type { ThreadRuntimeEvent } from '../../conversation/ThreadRuntime.ts'
 
 const decodeActivityId = Schema.decodeSync(ActivityId)
@@ -155,13 +156,30 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
       message: { source: 'user', content: { text: 'steer', images: [] } },
     })
     const delivered = yield* Fiber.join(events)
-    assert.deepStrictEqual(prompts, [
-      {
-        text: 'Participants:\np1 = <@user-1> | chan | Chan\n\np1 [trigger]: start',
-        behavior: undefined,
-      },
-      { text: 'steer', behavior: 'steer' },
-    ])
+    assert.lengthOf(prompts, 2)
+    assert.deepStrictEqual(
+      prompts.map(({ behavior }) => behavior),
+      [undefined, 'steer'],
+    )
+    const firstPrompt = prompts[0]
+    assert.isDefined(firstPrompt)
+    if (firstPrompt !== undefined) {
+      assert.deepStrictEqual(Schema.decodeSync(PromptMessageEnvelopeJson)(firstPrompt.text), {
+        kind: 'user-message',
+        participants: [
+          {
+            id: 'p1',
+            platformUserId: 'user-1',
+            mention: '<@user-1>',
+            username: 'chan',
+            displayName: 'Chan',
+          },
+        ],
+        historicalContext: [],
+        trigger: { kind: 'trigger', participantId: 'p1', content: 'start' },
+      })
+    }
+    assert.strictEqual(prompts[1]?.text, 'steer')
     assert.deepStrictEqual(
       Array.from(delivered, (event) => event.type),
       ['turn-started', 'turn-completed'],
