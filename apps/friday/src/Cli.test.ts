@@ -46,7 +46,13 @@ import { InvocationMode } from './config/AppConfig.ts'
 import { reloadFailed, reloadSucceeded } from './config/ConfigReload.ts'
 import { DiscordUserId } from './config/DiscordAdmins.ts'
 import { ControlSocketError } from './control/ControlSocket.ts'
-import { PlatformConnectionId, ThreadId } from '@friday/contracts/conversation'
+import {
+  ModelId,
+  PlatformConnectionId,
+  ProviderId,
+  SubagentProfileName,
+  ThreadId,
+} from '@friday/contracts/conversation'
 import { RepositoryUrl } from './repositories/RepositoryWorktrees.ts'
 import { WorkspaceCleanupProposalId } from './workspaces/WorkspaceCleanup.ts'
 
@@ -56,6 +62,9 @@ const isControlSocketError = Schema.is(ControlSocketError)
 const decodeRepositoryUrl = Schema.decodeSync(RepositoryUrl)
 const decodeCleanupProposalId = Schema.decodeSync(WorkspaceCleanupProposalId)
 const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
+const decodeProviderId = Schema.decodeSync(ProviderId)
+const decodeModelId = Schema.decodeSync(ModelId)
+const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 const decodeThreadId = Schema.decodeSync(ThreadId)
 const decodeDiscordUserId = Schema.decodeSync(DiscordUserId)
 const decodeGuildId = Schema.decodeSync(DiscordGuildId)
@@ -72,6 +81,17 @@ const decodeBotTokenEnv = Schema.decodeSync(BotTokenEnvName)
 const strictRunnerStubs = {
   start: Effect.die('start must not run'),
   reloadConfig: Effect.die('unreachable'),
+  listConfiguredModels: () => Effect.die('unreachable'),
+  getConfiguredModel: () => Effect.die('unreachable'),
+  setConfiguredModel: () => Effect.die('unreachable'),
+  listSubagentProfiles: () => Effect.die('unreachable'),
+  getSubagentProfile: () => Effect.die('unreachable'),
+  addSubagentProfile: () => Effect.die('unreachable'),
+  updateSubagentProfile: () => Effect.die('unreachable'),
+  removeSubagentProfile: () => Effect.die('unreachable'),
+  listPiModels: () => Effect.die('unreachable'),
+  getPiModel: () => Effect.die('unreachable'),
+  reloadPiModels: () => Effect.die('unreachable'),
   ensureWorktree: () => Effect.die('unreachable'),
   listWorktrees: () => Effect.die('unreachable'),
   setDiscordActivityDescription: () => Effect.die('unreachable'),
@@ -117,6 +137,7 @@ const recorder = <O>(outcome: O) => {
 
 /** The most recent printed line, for output assertions after one command. */
 const decodeLine = Schema.decodeUnknownSync(Schema.String)
+const decodeJsonNull = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Null))
 const lastLine = Effect.map(TestConsole.logLines, (lines) =>
   decodeLine(lines[lines.length - 1] ?? ''),
 )
@@ -905,13 +926,13 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['wat'],
         prefix: 'friday',
         head: 'wat',
-        known: 'start, config, worktree, workspace',
+        known: 'start, config, model, worktree, workspace',
       },
       {
         arguments_: ['config', 'wat'],
         prefix: 'friday config',
         head: 'wat',
-        known: 'reload, admin, discord',
+        known: 'reload, model, profile, admin, discord',
       },
       {
         arguments_: ['config', 'admin', 'wat'],
@@ -989,7 +1010,7 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config'],
         prefix: 'friday config',
-        known: 'reload, admin, discord',
+        known: 'reload, model, profile, admin, discord',
       },
       {
         arguments_: ['config', 'admin'],
@@ -1109,7 +1130,7 @@ it.effect('names known subcommands and removals in validation errors', () =>
 
     const unknownTop = yield* parseFridayCli(['wat']).pipe(Effect.flip)
     assert.match(unknownTop.message, /Unknown 'friday' subcommand 'wat'/)
-    assert.match(unknownTop.message, /Known subcommands: start, config, worktree, workspace/)
+    assert.match(unknownTop.message, /Known subcommands: start, config, model, worktree, workspace/)
   }),
 )
 
@@ -1124,6 +1145,220 @@ it.effect('parses an approved workspace cleanup proposal', () =>
       },
     )
   }),
+)
+
+it.effect('parses model configuration and Pi catalog commands', () =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(yield* parseFridayCli(['config', 'model', 'get', 'primary', '--json']), {
+      type: 'config-model-get',
+      name: 'primary',
+      json: true,
+    })
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'model',
+        'set',
+        'utility',
+        '--provider',
+        'test-provider',
+        '--model-id',
+        'test-model',
+        '--thinking',
+        'high',
+      ]),
+      {
+        type: 'config-model-set',
+        selection: {
+          name: 'utility',
+          provider: decodeProviderId('test-provider'),
+          modelId: decodeModelId('test-model'),
+          thinkingLevel: 'high',
+        },
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'profile', 'update', 'primary', '--thinking', 'max']),
+      {
+        type: 'config-profile-update',
+        patch: { name: decodeProfileName('primary'), thinkingLevel: 'max' },
+      },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['model', 'list', '--provider', 'openai', '--available', '--json']),
+      { type: 'model-list', provider: 'openai', available: true, json: true },
+    )
+    assert.deepStrictEqual(yield* parseFridayCli(['model', 'get', 'openai', 'gpt-test']), {
+      type: 'model-get',
+      provider: 'openai',
+      modelId: 'gpt-test',
+      json: false,
+    })
+    assert.deepStrictEqual(yield* parseFridayCli(['model', 'reload']), { type: 'model-reload' })
+    assert.match(renderCliHelp(['config', 'model']), /set <primary\|utility>/)
+    assert.match(renderCliHelp(['model']), /reload/)
+  }),
+)
+
+it.effect('prints JSON null for missing profile and catalog model lookups', () =>
+  Effect.gen(function* () {
+    yield* runFridayCli(['config', 'profile', 'get', 'missing', '--json'], {
+      ...strictRunnerStubs,
+      getSubagentProfile: () => Effect.succeed(Option.none()),
+    })
+    assert.strictEqual(yield* decodeJsonNull(yield* lastLine), null)
+
+    yield* runFridayCli(['model', 'get', 'provider', 'missing', '--json'], {
+      ...strictRunnerStubs,
+      getPiModel: () => Effect.succeed(undefined),
+    })
+    assert.strictEqual(yield* decodeJsonNull(yield* lastLine), null)
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('requests reload only for committed model and profile mutations', () =>
+  Effect.gen(function* () {
+    const modelArguments = [
+      'config',
+      'model',
+      'set',
+      'primary',
+      '--provider',
+      'provider',
+      '--model-id',
+      'model',
+      '--thinking',
+      'medium',
+    ]
+    const profileArguments = [
+      'config',
+      'profile',
+      'add',
+      'worker',
+      '--description',
+      'Worker profile',
+      '--provider',
+      'provider',
+      '--model-id',
+      'model',
+      '--thinking',
+      'medium',
+    ]
+    const cases = [
+      {
+        arguments_: modelArguments,
+        operation: 'setConfiguredModel' as const,
+        outcomes: ['unchanged', 'updated'] as const,
+      },
+      {
+        arguments_: profileArguments,
+        operation: 'addSubagentProfile' as const,
+        outcomes: ['exists', 'added'] as const,
+      },
+      {
+        arguments_: ['config', 'profile', 'update', 'worker', '--thinking', 'high'],
+        operation: 'updateSubagentProfile' as const,
+        outcomes: ['unchanged', 'updated'] as const,
+      },
+      {
+        arguments_: ['config', 'profile', 'remove', 'worker', '--yes'],
+        operation: 'removeSubagentProfile' as const,
+        outcomes: ['missing', 'removed'] as const,
+      },
+    ]
+    for (const testCase of cases) {
+      for (const [index, outcome] of testCase.outcomes.entries()) {
+        let reloads = 0
+        yield* runFridayCli(testCase.arguments_, {
+          ...strictRunnerStubs,
+          [testCase.operation]: () => Effect.succeed(outcome),
+          reloadConfig: Effect.sync(() => {
+            reloads += 1
+            return reloadSucceeded(2)
+          }),
+        })
+        assert.strictEqual(reloads, index, `${testCase.operation} ${outcome}`)
+      }
+    }
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('keeps the committed write when the running process rejects reload', () =>
+  Effect.gen(function* () {
+    let storedModelId = 'before'
+    const error = yield* runFridayCli(
+      [
+        'config',
+        'model',
+        'set',
+        'primary',
+        '--provider',
+        'provider',
+        '--model-id',
+        'after',
+        '--thinking',
+        'medium',
+      ],
+      {
+        ...strictRunnerStubs,
+        setConfiguredModel: (selection) =>
+          Effect.sync(() => {
+            storedModelId = selection.modelId
+            return 'updated' as const
+          }),
+        reloadConfig: Effect.succeed(reloadFailed('invalid stored configuration')),
+      },
+    ).pipe(Effect.flip)
+    assert(isConfigReloadRejectedError(error))
+    assert.strictEqual(storedModelId, 'after')
+    assert.match(yield* lastLine, /Friday primary model updated/)
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('classifies only absence errnos as a stopped process after a committed write', () =>
+  Effect.gen(function* () {
+    const arguments_ = [
+      'config',
+      'model',
+      'set',
+      'primary',
+      '--provider',
+      'provider',
+      '--model-id',
+      'model',
+      '--thinking',
+      'medium',
+    ]
+    for (const errno of ['ENOENT', 'ECONNREFUSED']) {
+      yield* runFridayCli(arguments_, {
+        ...strictRunnerStubs,
+        setConfiguredModel: () => Effect.succeed('updated' as const),
+        reloadConfig: Effect.fail(
+          new ControlSocketError({
+            operation: 'connect',
+            path: '/tmp/missing',
+            detail: 'connect failed',
+            errno,
+          }),
+        ),
+      })
+      assert.match(yield* lastLine, /next start will load the stored change/)
+    }
+
+    const permissionError = new ControlSocketError({
+      operation: 'connect',
+      path: '/tmp/forbidden',
+      detail: 'connect failed',
+      errno: 'EACCES',
+    })
+    const failure = yield* runFridayCli(arguments_, {
+      ...strictRunnerStubs,
+      setConfiguredModel: () => Effect.succeed('updated' as const),
+      reloadConfig: Effect.fail(permissionError),
+    }).pipe(Effect.flip)
+    assert.strictEqual(failure, permissionError)
+    assert.match(yield* lastLine, /Friday primary model updated/)
+  }).pipe(Effect.provide(TestConsole.layer)),
 )
 
 it.effect('parses the config reload command', () =>
