@@ -50,6 +50,12 @@ import {
   type ConfigReloadOutcome as ConfigReloadOutcomeType,
 } from './config/ConfigReload.ts'
 import {
+  DiscordLink,
+  DiscordLinkId,
+  type DiscordLink as DiscordLinkType,
+  type DiscordLinkMutationOutcome,
+} from './config/DiscordLinks.ts'
+import {
   DiscordUserId,
   type DiscordAdminAddOutcome,
   type DiscordAdminRemoveOutcome,
@@ -347,6 +353,25 @@ export type FridayCliAction =
       readonly channelId: typeof DiscordGuildChannelId.Type
     }
   | {
+      readonly type: 'config-discord-link-set'
+      readonly link: DiscordLinkType
+    }
+  | {
+      readonly type: 'config-discord-link-get'
+      readonly linkId: DiscordLinkId
+      readonly json: boolean
+    }
+  | { readonly type: 'config-discord-link-list'; readonly json: boolean }
+  | {
+      readonly type: 'config-discord-link-enable' | 'config-discord-link-disable'
+      readonly linkId: DiscordLinkId
+    }
+  | {
+      readonly type: 'config-discord-link-remove'
+      readonly linkId: DiscordLinkId
+      readonly yes: boolean
+    }
+  | {
       readonly type:
         | 'config-discord-activity-description-set'
         | 'config-discord-activity-description-reset'
@@ -405,6 +430,8 @@ const decodeDiscordUserId = Schema.decodeUnknownEffect(DiscordUserId)
 const decodeDiscordGuildId = Schema.decodeUnknownEffect(DiscordGuildId)
 const decodeDiscordGuildChannelId = Schema.decodeUnknownEffect(DiscordGuildChannelId)
 const decodeDiscordSnowflake = Schema.decodeUnknownEffect(DiscordSnowflake)
+const decodeDiscordLinkId = Schema.decodeUnknownEffect(DiscordLinkId)
+const decodeDiscordLink = Schema.decodeUnknownEffect(DiscordLink)
 
 /**
  * Parses a permission policy argument: `all`, `allow=<id>[,<id>...]`, or
@@ -1237,6 +1264,85 @@ const parseConfigDiscordGuildChannelSet = Effect.fn('Cli.parseConfigDiscordGuild
   },
 )
 
+const parseDiscordLinkSet = Effect.fn('Cli.parseDiscordLinkSet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 9) return yield* discordArgumentsError(all)
+  const [
+    id,
+    sourceConnection,
+    sourceGuild,
+    sourceConversation,
+    sourceKind,
+    destinationConnection,
+    destinationGuild,
+    destinationConversation,
+    destinationKind,
+  ] = tokens
+  const link = yield* decodeDiscordLink({
+    id,
+    enabled: true,
+    source: {
+      connectionId: sourceConnection,
+      guildId: sourceGuild,
+      conversationId: sourceConversation,
+      kind: sourceKind,
+    },
+    destination: {
+      connectionId: destinationConnection,
+      guildId: destinationGuild,
+      conversationId: destinationConversation,
+      kind: destinationKind,
+    },
+  }).pipe(Effect.mapError(() => discordArgumentsError(all)))
+  return { type: 'config-discord-link-set' as const, link }
+})
+
+const parseDiscordLinkGet = Effect.fn('Cli.parseDiscordLinkGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const id = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeDiscordLinkId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const json = yield* parseTrailingJson(tokens.slice(1), all)
+  return { type: 'config-discord-link-get' as const, linkId: id, json }
+})
+const parseDiscordLinkList = Effect.fn('Cli.parseDiscordLinkList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  return { type: 'config-discord-link-list' as const, json: yield* parseTrailingJson(tokens, all) }
+})
+const parseDiscordLinkToggle = (enabled: boolean) =>
+  Effect.fn('Cli.parseDiscordLinkToggle')(function* (
+    tokens: ReadonlyArray<string>,
+    all: ReadonlyArray<string>,
+  ) {
+    if (tokens.length !== 1) return yield* discordArgumentsError(all)
+    const linkId = yield* decodeDiscordLinkId(tokens[0]).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    return {
+      type: enabled
+        ? ('config-discord-link-enable' as const)
+        : ('config-discord-link-disable' as const),
+      linkId,
+    }
+  })
+const parseDiscordLinkRemove = Effect.fn('Cli.parseDiscordLinkRemove')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 2 || tokens[1] !== '--yes') return yield* discordArgumentsError(all)
+  const linkId = yield* decodeDiscordLinkId(tokens[0]).pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  return { type: 'config-discord-link-remove' as const, linkId, yes: true }
+})
+
 const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
   tokens: ReadonlyArray<string>,
   all: ReadonlyArray<string>,
@@ -1561,6 +1667,51 @@ export const cliCommandSpec: CliBranchSpec = {
                   removed: 'config discord guild users set',
                   replacement:
                     'friday config discord guild set-users <connection-id> <guild-id> <policy>',
+                },
+              ],
+            },
+            {
+              name: 'link',
+              summary: 'Manage exact Discord conversation links (applies on configuration reload).',
+              children: [
+                {
+                  name: 'set',
+                  summary: 'Create or fully replace one exact source-to-destination link.',
+                  arguments: [
+                    '<id> <source-connection> <source-guild> <source-conversation> <channel|thread>',
+                    '<destination-connection> <destination-guild> <destination-channel> channel',
+                  ],
+                  parse: parseDiscordLinkSet,
+                },
+                {
+                  name: 'get',
+                  summary: 'Show one Discord link.',
+                  arguments: ['<id> [--json]'],
+                  parse: parseDiscordLinkGet,
+                },
+                {
+                  name: 'list',
+                  summary: 'List Discord links.',
+                  arguments: ['[--json]'],
+                  parse: parseDiscordLinkList,
+                },
+                {
+                  name: 'enable',
+                  summary: 'Enable a Discord link.',
+                  arguments: ['<id>'],
+                  parse: parseDiscordLinkToggle(true),
+                },
+                {
+                  name: 'disable',
+                  summary: 'Disable a Discord link.',
+                  arguments: ['<id>'],
+                  parse: parseDiscordLinkToggle(false),
+                },
+                {
+                  name: 'remove',
+                  summary: 'Remove a Discord link.',
+                  arguments: ['<id> --yes'],
+                  parse: parseDiscordLinkRemove,
                 },
               ],
             },
@@ -1939,9 +2090,9 @@ export interface DiscordConfigMutationResult<A> {
 }
 
 /**
- * Runs a durable guild/channel write before requesting a live snapshot reload.
- * Unchanged outcomes skip reload, while reload failures remain separate from
- * the already-committed write.
+ * Runs a durable Discord configuration write before requesting a live snapshot
+ * reload. Unchanged outcomes skip reload, while reload failures remain separate
+ * from the already-committed write.
  */
 export const applyDiscordConfigMutation = <A, E>(
   write: Effect.Effect<A, E>,
@@ -2066,6 +2217,14 @@ export const formatDiscordGuildChannelReset = (
   outcome === 'removed'
     ? `Channel ${channelId} overrides removed; guild defaults apply.`
     : `No overrides are configured for channel ${channelId}.`
+
+export const renderDiscordLink = (link: DiscordLinkType): string =>
+  `${link.id}  ${link.enabled ? 'enabled' : 'disabled'}  ${link.source.connectionId}:${link.source.guildId}:${link.source.conversationId} (${link.source.kind}) -> ${link.destination.connectionId}:${link.destination.guildId}:${link.destination.conversationId} (${link.destination.kind})`
+
+export const renderDiscordLinkList = (links: ReadonlyArray<DiscordLinkType>): string =>
+  links.length === 0
+    ? 'No Discord links are configured.'
+    : ['Discord links:', ...links.map((link) => `  ${renderDiscordLink(link)}`)].join('\n')
 
 const activityDescriptionNote =
   'The running Friday publishes this live; the change takes effect within about a second, without a reload or restart.'
@@ -2202,6 +2361,20 @@ export type FridayCliOperations<
     ReadonlyArray<ManagedWorktreeListEntry>,
     WorktreeError
   >
+  readonly setDiscordLink: (link: DiscordLinkType) => Effect.Effect<'updated', GuildError>
+  readonly getDiscordLink: (
+    id: DiscordLinkId,
+  ) => Effect.Effect<DiscordLinkType | undefined, GuildError>
+  readonly listDiscordLinks: () => Effect.Effect<ReadonlyArray<DiscordLinkType>, GuildError>
+  readonly enableDiscordLink: (
+    id: DiscordLinkId,
+  ) => Effect.Effect<DiscordLinkMutationOutcome, GuildError>
+  readonly disableDiscordLink: (
+    id: DiscordLinkId,
+  ) => Effect.Effect<DiscordLinkMutationOutcome, GuildError>
+  readonly removeDiscordLink: (
+    id: DiscordLinkId,
+  ) => Effect.Effect<'removed' | 'missing', GuildError>
   readonly setDiscordActivityDescription: (
     action: Extract<
       FridayCliAction,
@@ -2573,6 +2746,64 @@ export const runFridayCli = <
         yield* Console.log(
           formatDiscordConfigMutation(result, (outcome) =>
             formatDiscordGuildChannelReset(action.channelId, outcome),
+          ),
+        )
+        return
+      }
+      case 'config-discord-link-set': {
+        const result = yield* applyDiscordConfigMutation(
+          options.setDiscordLink(action.link),
+          (outcome) => outcome === 'updated',
+          options.reloadConfig,
+        )
+        yield* Console.log(
+          formatDiscordConfigMutation(result, () => `Discord link ${action.link.id} stored.`),
+        )
+        return
+      }
+      case 'config-discord-link-get': {
+        const link = yield* options.getDiscordLink(action.linkId)
+        yield* Console.log(
+          link === undefined
+            ? `Discord link ${action.linkId} is not configured.`
+            : action.json
+              ? JSON.stringify(link)
+              : renderDiscordLink(link),
+        )
+        return
+      }
+      case 'config-discord-link-list': {
+        const links = yield* options.listDiscordLinks()
+        yield* Console.log(action.json ? JSON.stringify(links) : renderDiscordLinkList(links))
+        return
+      }
+      case 'config-discord-link-enable':
+      case 'config-discord-link-disable': {
+        const enabled = action.type === 'config-discord-link-enable'
+        const operation = enabled ? options.enableDiscordLink : options.disableDiscordLink
+        const result = yield* applyDiscordConfigMutation(
+          operation(action.linkId),
+          (outcome) => outcome === 'updated',
+          options.reloadConfig,
+        )
+        yield* Console.log(
+          formatDiscordConfigMutation(
+            result,
+            (outcome) => `Discord link ${action.linkId}: ${outcome}.`,
+          ),
+        )
+        return
+      }
+      case 'config-discord-link-remove': {
+        const result = yield* applyDiscordConfigMutation(
+          options.removeDiscordLink(action.linkId),
+          (outcome) => outcome === 'removed',
+          options.reloadConfig,
+        )
+        yield* Console.log(
+          formatDiscordConfigMutation(
+            result,
+            (outcome) => `Discord link ${action.linkId}: ${outcome}.`,
           ),
         )
         return

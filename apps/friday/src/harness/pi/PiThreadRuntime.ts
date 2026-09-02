@@ -47,6 +47,15 @@ import {
 } from '../../system-prompt/SystemPromptTemplates.ts'
 import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
 import type { PlatformRegistryContract } from '../../platforms/PlatformRegistry.ts'
+import {
+  LinkedChannelUpdateError,
+  makePiLinkedChannelUpdateTool,
+} from '../../platforms/discord/PiLinkedChannelUpdateTool.ts'
+import type { DiscordCapabilityRegistryContract } from '../../platforms/discord/DiscordLinkedRuntime.ts'
+import {
+  externalUpdatesDenied,
+  type CurrentTurnAuthorization,
+} from '../../conversation/ThreadRuntime.ts'
 import { renderPromptMessage } from './PromptMessage.ts'
 import { makePiTaskTool, type PiTaskOperations } from '../../tasks/PiTaskTool.ts'
 
@@ -115,11 +124,15 @@ export interface MakePiThreadRuntimeOptions {
   ) => Promise<{ readonly session: PiAgentSessionContract }>
   readonly sessionFactory?: (
     thread: Thread,
+    currentTurnAuthorization: () => CurrentTurnAuthorization,
   ) => Effect.Effect<PiAgentSessionContract, PiThreadRuntimeError>
+  readonly beforeLinkedChannelPost?: Effect.Effect<void>
   readonly systemPromptTemplates?: SystemPromptTemplatesContract
   readonly availableAgentModels?: () => AppConfig['models']['subagents']
   readonly tasks?: PiTaskOperations
   readonly platforms?: Pick<PlatformRegistryContract, 'searchMessages'>
+  readonly discordCapabilities?: Pick<DiscordCapabilityRegistryContract, 'get'>
+  readonly configuration?: () => AppConfig
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso)
@@ -324,9 +337,11 @@ const renderSystemPrompt = (
 
 const makeSession = Effect.fn('makePiAgentSession')(function* (
   options: MakePiThreadRuntimeOptions,
-  taskContext: { activeTurnId: TurnId | null },
+  taskContext: PiTaskContext,
 ) {
   const modelRuntime = options.modelRuntime
+  const effectContext = yield* Effect.context()
+  const runPromise = Effect.runPromiseWith(effectContext)
   if (!modelRuntime) {
     return yield* new PiThreadRuntimeError({
       operation: 'create-session',
@@ -399,7 +414,7 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
           thread: options.thread,
           tasks: options.tasks,
           activeTurnId: () => taskContext.activeTurnId,
-          runPromise: Effect.runPromise,
+          runPromise,
         })
       : undefined
   const messagesTool =
@@ -407,7 +422,37 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
       ? makePiMessagesTool({
           thread: options.thread,
           platforms: options.platforms,
-          runPromise: Effect.runPromise,
+          runPromise,
+        })
+      : undefined
+  const linkedChannelUpdateTool =
+    options.thread.audience === 'user' &&
+    options.thread.linkedDiscordSource !== undefined &&
+    options.discordCapabilities &&
+    options.configuration
+      ? makePiLinkedChannelUpdateTool({
+          thread: options.thread,
+          registry: options.discordCapabilities,
+          configuration: options.configuration,
+          currentTurnAuthorization: () => taskContext.currentTurnAuthorization,
+          withOutboundAuthorization: (post) =>
+            (options.beforeLinkedChannelPost ?? Effect.void).pipe(
+              Effect.andThen(
+                taskContext.authorizationLock.withPermit(
+                  Effect.gen(function* () {
+                    if (taskContext.currentTurnAuthorization.externalUpdateRequests !== 'allowed') {
+                      return yield* new LinkedChannelUpdateError({
+                        operation: 'authorize',
+                        detail:
+                          'The current turn did not originate from an authorizing destination participant input.',
+                      })
+                    }
+                    return yield* post
+                  }),
+                ),
+              ),
+            ),
+          runPromise,
         })
       : undefined
   const sessionOptions: CreateAgentSessionOptions = {
@@ -416,7 +461,7 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
     model,
     thinkingLevel: options.thread.thinkingLevel,
   }
-  const customTools = [taskTool, messagesTool].filter(
+  const customTools = [taskTool, messagesTool, linkedChannelUpdateTool].filter(
     (tool): tool is NonNullable<typeof tool> => tool !== undefined,
   )
   if (customTools.length > 0) sessionOptions.customTools = customTools
@@ -462,15 +507,24 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
 
 interface PiTaskContext {
   activeTurnId: TurnId | null
+  currentTurnAuthorization: CurrentTurnAuthorization
+  readonly authorizationLock: Semaphore.Semaphore
 }
 
 export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   options: MakePiThreadRuntimeOptions,
 ) {
-  const taskContext: PiTaskContext = { activeTurnId: null }
+  const taskContext: PiTaskContext = {
+    activeTurnId: null,
+    currentTurnAuthorization: externalUpdatesDenied,
+    authorizationLock: yield* Semaphore.make(1),
+  }
   const created = options.sessionFactory
     ? {
-        session: yield* options.sessionFactory(options.thread),
+        session: yield* options.sessionFactory(
+          options.thread,
+          () => taskContext.currentTurnAuthorization,
+        ),
         refreshSystemPrompt: Effect.succeed(Effect.void),
       }
     : yield* makeSession(options, taskContext)
@@ -507,15 +561,22 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   const runPromise = Effect.runPromiseWith(effectContext)
   const emit = (event: ThreadRuntimeEvent) => Queue.offer(eventsQueue, event).pipe(Effect.asVoid)
   const sendSteering = (request: PromptRequest) =>
-    Effect.tryPromise({
-      try: () =>
-        session.prompt(renderPromptMessage(request.message), { streamingBehavior: 'steer' }),
-      catch: (cause) =>
-        new PiThreadRuntimeError({
-          operation: 'steer',
-          detail: errorDetail(cause),
-          cause,
+    Effect.gen(function* () {
+      yield* taskContext.authorizationLock.withPermit(
+        Effect.sync(() => {
+          taskContext.currentTurnAuthorization = request.authorization ?? externalUpdatesDenied
         }),
+      )
+      yield* Effect.tryPromise({
+        try: () =>
+          session.prompt(renderPromptMessage(request.message), { streamingBehavior: 'steer' }),
+        catch: (cause) =>
+          new PiThreadRuntimeError({
+            operation: 'steer',
+            detail: errorDetail(cause),
+            cause,
+          }),
+      })
     })
   const drainSteering = Effect.gen(function* () {
     while (true) {
@@ -663,67 +724,84 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
 
     state.activeTurnId = request.turnId
     taskContext.activeTurnId = request.turnId
+    yield* taskContext.authorizationLock.withPermit(
+      Effect.sync(() => {
+        taskContext.currentTurnAuthorization = request.authorization ?? externalUpdatesDenied
+      }),
+    )
     state.nextSequence = 0
     state.finalAgentMessage = ''
     state.terminalFailure = null
     state.activeTools.clear()
-    yield* emit({
-      type: 'turn-started',
-      turnId: request.turnId,
-      harnessTurnId: null,
-      startedAt: yield* nowIso,
-    })
-    const result = yield* Effect.tryPromise({
-      try: () => session.prompt(text),
-      catch: (cause) =>
-        new PiThreadRuntimeError({
-          operation: 'prompt',
-          detail: errorDetail(cause),
-          cause,
-        }),
-    }).pipe(Effect.exit)
-    const completedAt = yield* nowIso
-    if (result._tag === 'Failure') {
+    return yield* Effect.gen(function* () {
       yield* emit({
-        type: 'turn-failed',
+        type: 'turn-started',
         turnId: request.turnId,
-        errorMessage: 'Pi prompt failed.',
-        completedAt,
+        harnessTurnId: null,
+        startedAt: yield* nowIso,
       })
-      state.activeTurnId = null
-      taskContext.activeTurnId = null
-      return yield* result
-    }
-    const failure: PiProjectionState['terminalFailure'] = yield* Effect.sync(
-      () => state.terminalFailure,
+      const result = yield* Effect.tryPromise({
+        try: () => session.prompt(text),
+        catch: (cause) =>
+          new PiThreadRuntimeError({
+            operation: 'prompt',
+            detail: errorDetail(cause),
+            cause,
+          }),
+      }).pipe(Effect.exit)
+      const completedAt = yield* nowIso
+      if (result._tag === 'Failure') {
+        yield* emit({
+          type: 'turn-failed',
+          turnId: request.turnId,
+          errorMessage: 'Pi prompt failed.',
+          completedAt,
+        })
+        return yield* result
+      }
+      const failure: PiProjectionState['terminalFailure'] = yield* Effect.sync(
+        () => state.terminalFailure,
+      )
+      if (failure?.interrupted) {
+        yield* emit({
+          type: 'turn-interrupted',
+          turnId: request.turnId,
+          agentMessage: state.finalAgentMessage || null,
+          usage: tokenUsage(session),
+          completedAt,
+        })
+      } else if (failure) {
+        yield* emit({
+          type: 'turn-failed',
+          turnId: request.turnId,
+          errorMessage: failure.message,
+          completedAt,
+        })
+      } else {
+        yield* emit({
+          type: 'turn-completed',
+          turnId: request.turnId,
+          agentMessage: state.finalAgentMessage,
+          usage: tokenUsage(session),
+          completedAt,
+        })
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          state.activeTurnId = null
+          taskContext.activeTurnId = null
+        }).pipe(
+          Effect.andThen(
+            taskContext.authorizationLock.withPermit(
+              Effect.sync(() => {
+                taskContext.currentTurnAuthorization = externalUpdatesDenied
+              }),
+            ),
+          ),
+        ),
+      ),
     )
-    if (failure?.interrupted) {
-      yield* emit({
-        type: 'turn-interrupted',
-        turnId: request.turnId,
-        agentMessage: state.finalAgentMessage || null,
-        usage: tokenUsage(session),
-        completedAt,
-      })
-    } else if (failure) {
-      yield* emit({
-        type: 'turn-failed',
-        turnId: request.turnId,
-        errorMessage: failure.message,
-        completedAt,
-      })
-    } else {
-      yield* emit({
-        type: 'turn-completed',
-        turnId: request.turnId,
-        agentMessage: state.finalAgentMessage,
-        usage: tokenUsage(session),
-        completedAt,
-      })
-    }
-    state.activeTurnId = null
-    taskContext.activeTurnId = null
-    return undefined
   })
 
   const cancel = Effect.fn('PiThreadRuntime.cancel')(function* (turnId: TurnId) {

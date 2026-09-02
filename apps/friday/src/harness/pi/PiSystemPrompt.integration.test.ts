@@ -53,6 +53,25 @@ const channelThread = decodeChannelThread({
   closedAt: null,
 })
 
+const linkedChannelThread = decodeChannelThread({
+  ...channelThread,
+  id: 'thread-prompt-linked-channel',
+  linkedDiscordSource: {
+    linkId: 'support-link',
+    sourceConnectionId: 'discord-source',
+    sourceGuildId: '11111111111111111',
+    sourceConversationId: '22222222222222222',
+    sourceParentConversationId: '99999999999999999',
+    sourceMessageId: '55555555555555555',
+    sourceKind: 'thread',
+    sourceAuthorId: '66666666666666666',
+    destinationConnectionId: 'discord-ops',
+    destinationGuildId: '33333333333333333',
+    destinationConversationId: '44444444444444444',
+    destinationKind: 'channel',
+  },
+})
+
 const agentThread = (role: 'subagent' | 'bootstrap') =>
   decodeAgentThread({
     id: `thread-prompt-${role}`,
@@ -94,6 +113,19 @@ const session = (): PiAgentSessionContract => ({
   }),
 })
 
+const toolConfiguration: AppConfig = {
+  installationId: 'install',
+  models: {
+    primary: { ...channelThread.model, thinkingLevel: channelThread.thinkingLevel },
+    utility: { ...channelThread.model, thinkingLevel: channelThread.thinkingLevel },
+    subagents: [],
+  },
+  platforms: { discord: [], slack: [] },
+  discordLinks: [],
+  agent: { recentMessageCount: 20 },
+  admin: { discordUserIds: [] },
+}
+
 const tasks: PiTaskOperations = {
   start: () => Effect.die('not exercised'),
   bootstrap: () => Effect.die('not exercised'),
@@ -118,6 +150,8 @@ const open = (thread: Thread, captured: Array<CreateAgentSessionOptions>) =>
         },
       ],
       tasks,
+      discordCapabilities: { get: () => Effect.die('not exercised') },
+      configuration: () => toolConfiguration,
       modelRuntime: {
         getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
         getAuth: async () => ({ type: 'api_key', key: 'test' }),
@@ -298,6 +332,13 @@ test('sets role prompts and appends the model hint to normal subagents', async (
       expect(channelPrompt ?? '').toContain('`primary`: General delegated work.')
       expect(channelPrompt ?? '').toContain('Model: `anthropic/claude-sonnet`')
       expect(channelOptions[0]?.customTools?.map((tool) => tool.name)).toEqual(['task'])
+
+      const linkedOptions: Array<CreateAgentSessionOptions> = []
+      yield* open(linkedChannelThread, linkedOptions)
+      expect(linkedOptions[0]?.customTools?.map((tool) => tool.name)).toEqual([
+        'task',
+        'linked_channel_update',
+      ])
 
       const bootstrapOptions: Array<CreateAgentSessionOptions> = []
       yield* open(agentThread('bootstrap'), bootstrapOptions)

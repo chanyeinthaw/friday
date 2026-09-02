@@ -23,6 +23,11 @@ import * as Schema from 'effect/Schema'
 import { Friday } from '../Friday.ts'
 import { ChannelProgress } from './ChannelProgress.ts'
 import type { TerminalTurn } from './ThreadCoordinator.ts'
+import {
+  externalUpdatesAllowed,
+  externalUpdatesDenied,
+  type CurrentTurnAuthorization,
+} from './ThreadRuntime.ts'
 import { ThreadPersistence, type ThreadPersistenceError } from './ThreadPersistence.ts'
 import type { ThreadRuntimeError } from './ThreadRuntimes.ts'
 import { PlatformNotFoundError, PlatformOperationError } from '../platforms/PlatformRegistry.ts'
@@ -43,6 +48,8 @@ export type ChannelTurnError =
 export interface AcceptChannelTurnRequest {
   readonly thread: ChannelThread
   readonly message: InputMessage
+  /** Defaults to participant-authorized platform input. Synthetic callers must deny explicitly. */
+  readonly authorization?: CurrentTurnAuthorization
 }
 
 export interface ChannelTurnsContract {
@@ -107,7 +114,14 @@ export const ChannelTurnsLive = Layer.effect(
               updatedAt: timestamp,
               completedAt: timestamp,
             })
-            yield* coordinator.steer(latestTurn.value.id, steering)
+            yield* coordinator.steer(
+              latestTurn.value.id,
+              steering,
+              request.authorization ??
+                (request.message.source === 'user'
+                  ? externalUpdatesAllowed
+                  : externalUpdatesDenied),
+            )
             yield* Effect.logInfo('turn.steered').pipe(
               Effect.annotateLogs({
                 threadId: request.thread.id,
@@ -140,7 +154,11 @@ export const ChannelTurnsLive = Layer.effect(
             errorMessage: null,
             usage: null,
           })
-          const handle = yield* coordinator.prompt(turn)
+          const handle = yield* coordinator.prompt(
+            turn,
+            request.authorization ??
+              (request.message.source === 'user' ? externalUpdatesAllowed : externalUpdatesDenied),
+          )
           yield* Effect.logInfo('turn.started').pipe(
             Effect.annotateLogs({
               threadId: request.thread.id,

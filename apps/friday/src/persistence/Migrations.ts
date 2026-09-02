@@ -237,6 +237,46 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
   `
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS discord_links (
+      link_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      source_connection_id TEXT NOT NULL,
+      source_guild_id TEXT NOT NULL,
+      source_conversation_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL CHECK (source_kind IN ('channel', 'thread')),
+      destination_connection_id TEXT NOT NULL,
+      destination_guild_id TEXT NOT NULL,
+      destination_conversation_id TEXT NOT NULL,
+      destination_kind TEXT NOT NULL CHECK (destination_kind = 'channel'),
+      updated_at TEXT NOT NULL,
+      UNIQUE (source_connection_id, source_guild_id, source_conversation_id),
+      FOREIGN KEY (source_connection_id) REFERENCES discord_connections(connection_id) ON DELETE CASCADE,
+      FOREIGN KEY (destination_connection_id) REFERENCES discord_connections(connection_id) ON DELETE CASCADE
+    )
+  `
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS discord_link_handoffs (
+      source_connection_id TEXT NOT NULL,
+      source_message_id TEXT NOT NULL,
+      link_id TEXT NOT NULL,
+      source_guild_id TEXT NOT NULL,
+      source_conversation_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL CHECK (source_kind IN ('channel', 'thread')),
+      destination_connection_id TEXT NOT NULL,
+      destination_guild_id TEXT NOT NULL,
+      destination_conversation_id TEXT NOT NULL,
+      destination_kind TEXT NOT NULL CHECK (destination_kind = 'channel'),
+      status TEXT NOT NULL CHECK (status IN ('accepted', 'thread-created', 'dispatched', 'failed')),
+      destination_thread_id TEXT,
+      error_stage TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (source_connection_id, source_message_id)
+    )
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS platform_access_policies (
       connection_id TEXT NOT NULL,
       subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace')),
