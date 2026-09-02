@@ -220,6 +220,36 @@ it.effect('fails with a typed timeout when Friday never responds', () =>
   }),
 )
 
+it.effect('classifies a post-send disconnect as an indeterminate request failure', () =>
+  Effect.gen(function* () {
+    const path = yield* makePath
+    yield* startRawServer(path, (socket) => {
+      socket.once('data', () => socket.destroy())
+    })
+    const error = yield* Effect.flip(
+      sendControlRequest(path, { op: 'config.reload' }, { timeoutMs: 5000 }),
+    )
+    assert(isControlSocketError(error))
+    assert.strictEqual(error.operation, 'request')
+    assert.match(error.detail, /after the request was sent/)
+  }),
+)
+
+it.effect('classifies a malformed response as an indeterminate request failure', () =>
+  Effect.gen(function* () {
+    const path = yield* makePath
+    yield* startRawServer(path, (socket) => {
+      socket.once('data', () => socket.end('not-json\n'))
+    })
+    const error = yield* Effect.flip(
+      sendControlRequest(path, { op: 'config.reload' }, { timeoutMs: 5000 }),
+    )
+    assert(isControlSocketError(error))
+    assert.strictEqual(error.operation, 'request')
+    assert.strictEqual(error.detail, 'Friday returned an invalid control socket response.')
+  }),
+)
+
 it.effect('fails with a typed error when Friday streams an oversized response', () =>
   Effect.gen(function* () {
     const path = yield* makePath

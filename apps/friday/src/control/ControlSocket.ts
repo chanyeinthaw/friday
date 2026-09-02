@@ -80,6 +80,11 @@ const isErrno = (cause: unknown, code: string): boolean => errnoCode(cause) === 
 export const isControlSocketNotRunning = (error: ControlSocketError): boolean =>
   error.operation === 'connect' && (error.errno === 'ENOENT' || error.errno === 'ECONNREFUSED')
 
+/** Whether a control request failed because no Friday process is listening. */
+export const isControlSocketUnavailable = (error: ControlSocketError): boolean =>
+  error.operation === 'connect' &&
+  (isErrno(error.cause, 'ENOENT') || isErrno(error.cause, 'ECONNREFUSED'))
+
 /** One request per connection: a JSON line in, a JSON line out. */
 const serveConnection = (
   connection: net.Socket,
@@ -571,6 +576,8 @@ export const sendControlRequest = Effect.fn('sendControlRequest')(function* (
     let buffered = ''
     let bufferedBytes = 0
     let settled = false
+    let connected = false
+    let requestSent = false
     let deadline: ReturnType<typeof setTimeout> | undefined
     const settle = (effect: Effect.Effect<string, ControlSocketError>) => {
       if (settled) return
@@ -596,7 +603,9 @@ export const sendControlRequest = Effect.fn('sendControlRequest')(function* (
       fail('response-timeout', 'Friday did not respond before the control request deadline.')
     }, timeoutMs)
     client.once('connect', () => {
+      connected = true
       client.write(encodeControlRequest(request))
+      requestSent = true
     })
     client.on('data', (chunk: Buffer) => {
       bufferedBytes += chunk.length
@@ -614,10 +623,21 @@ export const sendControlRequest = Effect.fn('sendControlRequest')(function* (
       settle(Effect.succeed(buffered.slice(0, newline)))
     })
     client.once('error', (cause: Error) => {
-      fail('connect', 'Could not connect to the running Friday control socket.', cause)
+      fail(
+        connected ? 'request' : 'connect',
+        connected
+          ? 'The control request failed after connecting to Friday.'
+          : 'Could not connect to the running Friday control socket.',
+        cause,
+      )
     })
     client.once('close', () => {
-      fail('request', 'Friday closed the connection without a response.')
+      fail(
+        'request',
+        requestSent
+          ? 'Friday closed the connection after the request was sent, without a response.'
+          : 'Friday closed the connection without a response.',
+      )
     })
     return Effect.void
   })

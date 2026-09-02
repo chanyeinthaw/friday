@@ -2,12 +2,14 @@ import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Option from 'effect/Option'
+import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 import * as TestConsole from 'effect/testing/TestConsole'
 
 import {
   ConfigReloadRejectedError,
   FridayCliError,
+  applyDiscordConfigMutation,
   FRIDAY_VERSION,
   formatDiscordAdminAdd,
   formatDiscordAdminRemove,
@@ -78,9 +80,16 @@ const decodeBotTokenEnv = Schema.decodeSync(BotTokenEnvName)
  * exactly the one operation a command is expected to reach, so any extra
  * dispatch fails the test.
  */
+const fridayNotRunning = new ControlSocketError({
+  operation: 'connect',
+  path: '/tmp/friday.sock',
+  detail: 'Could not connect to the running Friday control socket.',
+  cause: { code: 'ENOENT' },
+})
+
 const strictRunnerStubs = {
   start: Effect.die('start must not run'),
-  reloadConfig: Effect.die('unreachable'),
+  reloadConfig: Effect.fail(fridayNotRunning),
   listConfiguredModels: () => Effect.die('unreachable'),
   getConfiguredModel: () => Effect.die('unreachable'),
   setConfiguredModel: () => Effect.die('unreachable'),
@@ -1523,14 +1532,93 @@ it.effect('runs the reload operation and reports rejections as typed errors', ()
   }),
 )
 
-it.effect('formats guild outcomes and states the reload requirement', () =>
+it.effect('reloads only after a successful durable Discord config mutation', () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([])
+    const result = yield* applyDiscordConfigMutation(
+      Ref.update(events, (current) => [...current, 'write']).pipe(Effect.as('updated' as const)),
+      (outcome) => outcome === 'updated',
+      Ref.update(events, (current) => [...current, 'reload']).pipe(Effect.as(reloadSucceeded(12))),
+    )
+
+    assert.deepStrictEqual(yield* Ref.get(events), ['write', 'reload'])
+    assert.deepStrictEqual(result, {
+      outcome: 'updated',
+      application: { _tag: 'reloaded', version: 12 },
+    })
+  }),
+)
+
+it.effect('keeps a successful Discord config write when Friday is not running', () =>
+  Effect.gen(function* () {
+    const result = yield* applyDiscordConfigMutation(
+      Effect.succeed('updated' as const),
+      (outcome) => outcome === 'updated',
+      Effect.fail(fridayNotRunning),
+    )
+
+    assert.deepStrictEqual(result, {
+      outcome: 'updated',
+      application: { _tag: 'next-startup' },
+    })
+  }),
+)
+
+it.effect(
+  'reports confirmed reload, rejection, and indeterminate transport after a saved write',
+  () =>
+    Effect.gen(function* () {
+      yield* runFridayCli(
+        ['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'],
+        {
+          ...strictRunnerStubs,
+          enableDiscordGuild: () => Effect.succeed('enabled'),
+          reloadConfig: Effect.succeed(reloadSucceeded(12)),
+        },
+      )
+      assert.match(yield* lastLine, /Saved; Friday reloaded configuration version 12\./)
+
+      yield* runFridayCli(
+        ['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'],
+        {
+          ...strictRunnerStubs,
+          enableDiscordGuild: () => Effect.succeed('enabled'),
+          reloadConfig: Effect.succeed(reloadFailed('Stored Friday configuration is invalid.')),
+        },
+      )
+      assert.match(
+        yield* lastLine,
+        /Saved, but the running Friday rejected the reload: Stored Friday configuration is invalid\./,
+      )
+
+      yield* runFridayCli(
+        ['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'],
+        {
+          ...strictRunnerStubs,
+          enableDiscordGuild: () => Effect.succeed('enabled'),
+          reloadConfig: Effect.fail(
+            new ControlSocketError({
+              operation: 'response-timeout',
+              path: '/tmp/friday.sock',
+              detail: 'Friday did not respond before the control request deadline.',
+            }),
+          ),
+        },
+      )
+      assert.match(
+        yield* lastLine,
+        /Saved, but live application could not be confirmed: Friday control socket response-timeout failed at \/tmp\/friday\.sock: Friday did not respond/,
+      )
+    }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('formats guild mutation outcomes without stale manual reload guidance', () =>
   Effect.sync(() => {
     const guildId = decodeGuildId('111111111111111111')
     const channelId = decodeChannelId('222222222222222222')
-    const note = 'The running Friday picks this up on its next configuration reload.'
     assert.strictEqual(
       formatDiscordGuildEnable(guildId, 'enabled'),
-      `Guild 111111111111111111 enabled. ${note}`,
+      'Guild 111111111111111111 enabled.',
     )
     assert.strictEqual(
       formatDiscordGuildEnable(guildId, 'already-enabled'),
@@ -1538,7 +1626,7 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
     )
     assert.strictEqual(
       formatDiscordGuildDisable(guildId, 'disabled'),
-      `Guild 111111111111111111 disabled. ${note}`,
+      'Guild 111111111111111111 disabled.',
     )
     assert.strictEqual(
       formatDiscordGuildDisable(guildId, 'already-disabled'),
@@ -1550,7 +1638,7 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
     )
     assert.strictEqual(
       formatDiscordGuildRemove(guildId, 'removed'),
-      `Guild 111111111111111111 removed together with its channel overrides. ${note}`,
+      'Guild 111111111111111111 removed together with its channel overrides.',
     )
     assert.strictEqual(
       formatDiscordGuildRemove(guildId, 'missing'),
@@ -1558,7 +1646,7 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
     )
     assert.strictEqual(
       formatDiscordGuildInvocation(guildId, decodeMode('all-messages'), 'updated'),
-      `Guild-wide invocation default for 111111111111111111 set to all-messages. ${note}`,
+      'Guild-wide invocation default for 111111111111111111 set to all-messages.',
     )
     assert.strictEqual(
       formatDiscordGuildInvocation(guildId, decodeMode('mention-only'), 'missing'),
@@ -1566,7 +1654,7 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
     )
     assert.strictEqual(
       formatDiscordGuildUsers(guildId, { mode: 'allow', ids: ['333333333333333333'] }, 'updated'),
-      `Guild-wide user permission default for 111111111111111111 set to allow=333333333333333333. ${note}`,
+      'Guild-wide user permission default for 111111111111111111 set to allow=333333333333333333.',
     )
     assert.strictEqual(
       formatDiscordGuildUsers(guildId, { mode: 'all', ids: [] }, 'missing'),
@@ -1574,7 +1662,7 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
     )
     assert.strictEqual(
       formatDiscordGuildChannels(guildId, { mode: 'deny', ids: ['444444444444444444'] }, 'updated'),
-      `Guild channel scope for 111111111111111111 set to deny=444444444444444444. ${note}`,
+      'Guild channel scope for 111111111111111111 set to deny=444444444444444444.',
     )
     assert.strictEqual(
       formatDiscordGuildChannels(guildId, { mode: 'all', ids: [] }, 'missing'),
@@ -1582,7 +1670,7 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
     )
     assert.strictEqual(
       formatDiscordGuildChannelSet(channelId, 'updated'),
-      `Channel 222222222222222222 overrides updated. ${note}`,
+      'Channel 222222222222222222 overrides updated.',
     )
     assert.strictEqual(
       formatDiscordGuildChannelSet(channelId, 'missing-guild'),
@@ -1590,7 +1678,7 @@ it.effect('formats guild outcomes and states the reload requirement', () =>
     )
     assert.strictEqual(
       formatDiscordGuildChannelReset(channelId, 'removed'),
-      `Channel 222222222222222222 overrides removed; guild defaults apply. ${note}`,
+      'Channel 222222222222222222 overrides removed; guild defaults apply.',
     )
     assert.strictEqual(
       formatDiscordGuildChannelReset(channelId, 'missing'),
@@ -1792,14 +1880,83 @@ it.effect('restart and reload guidance tracks whether anything changed', () =>
     assert.match(lastUnchanged, /already enabled/)
     assert(!lastUnchanged.includes('Restart Friday'))
 
-    // Guild configuration changes apply on the next reload instead.
+    // Guild configuration writes remain successful when Friday is offline.
     const enabled = recorder('enabled' as const)
     yield* runFridayCli(['config', 'discord', 'guild', 'enable', 'discord', '111111111111111111'], {
       ...strictRunnerStubs,
       enableDiscordGuild: enabled.operation,
     })
     const enabledLines = yield* lastLine
-    assert.match(enabledLines, /next configuration reload/)
+    assert.match(
+      enabledLines,
+      /Saved\. Friday is not running; the change will apply on next startup\./,
+    )
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('skips reload for unchanged guild setter outcomes', () =>
+  Effect.gen(function* () {
+    const commands = [
+      {
+        arguments_: [
+          'config',
+          'discord',
+          'guild',
+          'set-invocation',
+          'discord',
+          '111111111111111111',
+          'mention-only',
+        ],
+        override: { setDiscordGuildInvocation: () => Effect.succeed('unchanged' as const) },
+      },
+      {
+        arguments_: [
+          'config',
+          'discord',
+          'guild',
+          'set-users',
+          'discord',
+          '111111111111111111',
+          'all',
+        ],
+        override: { setDiscordGuildUsers: () => Effect.succeed('unchanged' as const) },
+      },
+      {
+        arguments_: [
+          'config',
+          'discord',
+          'guild',
+          'set-channels',
+          'discord',
+          '111111111111111111',
+          'all',
+        ],
+        override: { setDiscordGuildChannels: () => Effect.succeed('unchanged' as const) },
+      },
+      {
+        arguments_: [
+          'config',
+          'discord',
+          'guild',
+          'channel',
+          'set',
+          'discord',
+          '111111111111111111',
+          '222222222222222222',
+          '--reply-in-thread',
+        ],
+        override: { setDiscordGuildChannel: () => Effect.succeed('unchanged' as const) },
+      },
+    ] as const
+
+    for (const command of commands) {
+      yield* runFridayCli(command.arguments_, {
+        ...strictRunnerStubs,
+        ...command.override,
+        reloadConfig: Effect.die('unchanged setters must not reload'),
+      })
+      assert(!(yield* lastLine).includes('Saved'))
+    }
   }).pipe(Effect.provide(TestConsole.layer)),
 )
 

@@ -40,7 +40,11 @@ import {
   type DiscordConnectionRemoveOutcome,
   type DiscordConnectionUpdateOutcome,
 } from './config/DiscordConnections.ts'
-import { ControlSocketError, isControlSocketNotRunning } from './control/ControlSocket.ts'
+import {
+  ControlSocketError,
+  isControlSocketNotRunning,
+  isControlSocketUnavailable,
+} from './control/ControlSocket.ts'
 import {
   formatConfigReloadOutcome,
   type ConfigReloadOutcome as ConfigReloadOutcomeType,
@@ -1479,7 +1483,8 @@ export const cliCommandSpec: CliBranchSpec = {
             },
             {
               name: 'guild',
-              summary: 'Manage guild configuration (applies on the next configuration reload).',
+              summary:
+                'Manage guild policy; resident Discord connections pick up changes after reload.',
               children: [
                 {
                   name: 'enable',
@@ -1922,22 +1927,83 @@ export const renderDiscordGuildList = (guilds: ReadonlyArray<DiscordGuildConfig>
         )
         .join('\n')
 
-const reloadNote = 'The running Friday picks this up on its next configuration reload.'
+export type DiscordConfigApplicationOutcome =
+  | { readonly _tag: 'reloaded'; readonly version: number }
+  | { readonly _tag: 'next-startup' }
+  | { readonly _tag: 'rejected'; readonly detail: string }
+  | { readonly _tag: 'unconfirmed'; readonly detail: string }
+
+export interface DiscordConfigMutationResult<A> {
+  readonly outcome: A
+  readonly application?: DiscordConfigApplicationOutcome
+}
+
+/**
+ * Runs a durable guild/channel write before requesting a live snapshot reload.
+ * Unchanged outcomes skip reload, while reload failures remain separate from
+ * the already-committed write.
+ */
+export const applyDiscordConfigMutation = <A, E>(
+  write: Effect.Effect<A, E>,
+  changed: (outcome: A) => boolean,
+  reload: Effect.Effect<ConfigReloadOutcomeType, ControlSocketError>,
+): Effect.Effect<DiscordConfigMutationResult<A>, E> =>
+  Effect.gen(function* () {
+    const outcome = yield* write
+    if (!changed(outcome)) return { outcome }
+    const reloadAttempt = yield* reload.pipe(
+      Effect.map((response) => ({ _tag: 'response' as const, response })),
+      Effect.catch((error) => Effect.succeed({ _tag: 'transport-error' as const, error })),
+    )
+    if (reloadAttempt._tag === 'transport-error') {
+      return {
+        outcome,
+        application: isControlSocketUnavailable(reloadAttempt.error)
+          ? { _tag: 'next-startup' }
+          : { _tag: 'unconfirmed', detail: reloadAttempt.error.message },
+      }
+    }
+    return {
+      outcome,
+      application: reloadAttempt.response.ok
+        ? { _tag: 'reloaded', version: reloadAttempt.response.version }
+        : { _tag: 'rejected', detail: reloadAttempt.response.detail },
+    }
+  })
+
+const formatDiscordConfigApplication = (
+  application: DiscordConfigApplicationOutcome | undefined,
+): string => {
+  if (application === undefined) return ''
+  if (application._tag === 'reloaded') {
+    return ` Saved; Friday reloaded configuration version ${application.version}.`
+  }
+  if (application._tag === 'next-startup') {
+    return ' Saved. Friday is not running; the change will apply on next startup.'
+  }
+  if (application._tag === 'rejected') {
+    return ` Saved, but the running Friday rejected the reload: ${application.detail}`
+  }
+  return ` Saved, but live application could not be confirmed: ${application.detail}`
+}
+
+const formatDiscordConfigMutation = <A>(
+  result: DiscordConfigMutationResult<A>,
+  format: (outcome: A) => string,
+): string => `${format(result.outcome)}${formatDiscordConfigApplication(result.application)}`
 
 export const formatDiscordGuildEnable = (
   guildId: typeof DiscordGuildId.Type,
   outcome: DiscordGuildEnableOutcome,
 ): string =>
-  outcome === 'enabled'
-    ? `Guild ${guildId} enabled. ${reloadNote}`
-    : `Guild ${guildId} is already enabled.`
+  outcome === 'enabled' ? `Guild ${guildId} enabled.` : `Guild ${guildId} is already enabled.`
 
 export const formatDiscordGuildDisable = (
   guildId: typeof DiscordGuildId.Type,
   outcome: DiscordGuildDisableOutcome,
 ): string =>
   outcome === 'disabled'
-    ? `Guild ${guildId} disabled. ${reloadNote}`
+    ? `Guild ${guildId} disabled.`
     : outcome === 'already-disabled'
       ? `Guild ${guildId} is already disabled.`
       : `Guild ${guildId} is not configured.`
@@ -1947,7 +2013,7 @@ export const formatDiscordGuildRemove = (
   outcome: DiscordGuildRemoveOutcome,
 ): string =>
   outcome === 'removed'
-    ? `Guild ${guildId} removed together with its channel overrides. ${reloadNote}`
+    ? `Guild ${guildId} removed together with its channel overrides.`
     : `Guild ${guildId} is not configured.`
 
 export const formatDiscordGuildInvocation = (
@@ -1956,8 +2022,10 @@ export const formatDiscordGuildInvocation = (
   outcome: DiscordGuildUpdateOutcome,
 ): string =>
   outcome === 'updated'
-    ? `Guild-wide invocation default for ${guildId} set to ${mode}. ${reloadNote}`
-    : `Guild ${guildId} is not configured. Enable it first.`
+    ? `Guild-wide invocation default for ${guildId} set to ${mode}.`
+    : outcome === 'unchanged'
+      ? `Guild-wide invocation default for ${guildId} is already ${mode}.`
+      : `Guild ${guildId} is not configured. Enable it first.`
 
 export const formatDiscordGuildUsers = (
   guildId: typeof DiscordGuildId.Type,
@@ -1965,8 +2033,10 @@ export const formatDiscordGuildUsers = (
   outcome: DiscordGuildUpdateOutcome,
 ): string =>
   outcome === 'updated'
-    ? `Guild-wide user permission default for ${guildId} set to ${renderGuildPolicy(policy)}. ${reloadNote}`
-    : `Guild ${guildId} is not configured. Enable it first.`
+    ? `Guild-wide user permission default for ${guildId} set to ${renderGuildPolicy(policy)}.`
+    : outcome === 'unchanged'
+      ? `Guild-wide user permission default for ${guildId} is already ${renderGuildPolicy(policy)}.`
+      : `Guild ${guildId} is not configured. Enable it first.`
 
 export const formatDiscordGuildChannels = (
   guildId: typeof DiscordGuildId.Type,
@@ -1974,23 +2044,27 @@ export const formatDiscordGuildChannels = (
   outcome: DiscordGuildUpdateOutcome,
 ): string =>
   outcome === 'updated'
-    ? `Guild channel scope for ${guildId} set to ${renderGuildPolicy(policy)}. ${reloadNote}`
-    : `Guild ${guildId} is not configured. Enable it first.`
+    ? `Guild channel scope for ${guildId} set to ${renderGuildPolicy(policy)}.`
+    : outcome === 'unchanged'
+      ? `Guild channel scope for ${guildId} is already ${renderGuildPolicy(policy)}.`
+      : `Guild ${guildId} is not configured. Enable it first.`
 
 export const formatDiscordGuildChannelSet = (
   channelId: typeof DiscordGuildChannelId.Type,
   outcome: DiscordGuildChannelUpdateOutcome,
 ): string =>
   outcome === 'updated'
-    ? `Channel ${channelId} overrides updated. ${reloadNote}`
-    : `The guild owning channel ${channelId} is not configured. Enable it first.`
+    ? `Channel ${channelId} overrides updated.`
+    : outcome === 'unchanged'
+      ? `Channel ${channelId} overrides are unchanged.`
+      : `The guild owning channel ${channelId} is not configured. Enable it first.`
 
 export const formatDiscordGuildChannelReset = (
   channelId: typeof DiscordGuildChannelId.Type,
   outcome: DiscordGuildChannelResetOutcome,
 ): string =>
   outcome === 'removed'
-    ? `Channel ${channelId} overrides removed; guild defaults apply. ${reloadNote}`
+    ? `Channel ${channelId} overrides removed; guild defaults apply.`
     : `No overrides are configured for channel ${channelId}.`
 
 const activityDescriptionNote =
@@ -2009,14 +2083,13 @@ export type FridayCliOperations<
   CleanupError,
   ActivityDescriptionError,
   GuildError,
-  ReloadError,
   AdminError,
   ConnectionError,
   ModelConfigError,
   ModelCatalogError,
 > = {
   readonly start: Effect.Effect<never, E>
-  readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ReloadError>
+  readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ControlSocketError>
   readonly listConfiguredModels: () => Effect.Effect<
     ReadonlyArray<ConfiguredModelSelection>,
     ModelConfigError
@@ -2156,7 +2229,6 @@ export const runFridayCli = <
   CleanupError,
   ActivityDescriptionError,
   GuildError,
-  ReloadError,
   AdminError,
   ConnectionError,
   ModelConfigError,
@@ -2169,7 +2241,6 @@ export const runFridayCli = <
     CleanupError,
     ActivityDescriptionError,
     GuildError,
-    ReloadError,
     AdminError,
     ConnectionError,
     ModelConfigError,
@@ -2184,7 +2255,7 @@ export const runFridayCli = <
   | CleanupError
   | ActivityDescriptionError
   | GuildError
-  | ReloadError
+  | ControlSocketError
   | AdminError
   | ConnectionError
   | ModelConfigError
@@ -2393,18 +2464,42 @@ export const runFridayCli = <
         return
       }
       case 'config-discord-guild-enable': {
-        const outcome = yield* options.enableDiscordGuild(action.connectionId, action.guildId)
-        yield* Console.log(formatDiscordGuildEnable(action.guildId, outcome))
+        const result = yield* applyDiscordConfigMutation(
+          options.enableDiscordGuild(action.connectionId, action.guildId),
+          (outcome) => outcome === 'enabled',
+          options.reloadConfig,
+        )
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildEnable(action.guildId, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-guild-disable': {
-        const outcome = yield* options.disableDiscordGuild(action.connectionId, action.guildId)
-        yield* Console.log(formatDiscordGuildDisable(action.guildId, outcome))
+        const result = yield* applyDiscordConfigMutation(
+          options.disableDiscordGuild(action.connectionId, action.guildId),
+          (outcome) => outcome === 'disabled',
+          options.reloadConfig,
+        )
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildDisable(action.guildId, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-guild-remove': {
-        const outcome = yield* options.removeDiscordGuild(action.connectionId, action.guildId)
-        yield* Console.log(formatDiscordGuildRemove(action.guildId, outcome))
+        const result = yield* applyDiscordConfigMutation(
+          options.removeDiscordGuild(action.connectionId, action.guildId),
+          (outcome) => outcome === 'removed',
+          options.reloadConfig,
+        )
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildRemove(action.guildId, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-guild-list': {
@@ -2413,49 +2508,73 @@ export const runFridayCli = <
         return
       }
       case 'config-discord-guild-set-invocation': {
-        const outcome = yield* options.setDiscordGuildInvocation(
-          action.connectionId,
-          action.guildId,
-          action.mode,
+        const result = yield* applyDiscordConfigMutation(
+          options.setDiscordGuildInvocation(action.connectionId, action.guildId, action.mode),
+          (outcome) => outcome === 'updated',
+          options.reloadConfig,
         )
-        yield* Console.log(formatDiscordGuildInvocation(action.guildId, action.mode, outcome))
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildInvocation(action.guildId, action.mode, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-guild-set-users': {
-        const outcome = yield* options.setDiscordGuildUsers(
-          action.connectionId,
-          action.guildId,
-          action.policy,
+        const result = yield* applyDiscordConfigMutation(
+          options.setDiscordGuildUsers(action.connectionId, action.guildId, action.policy),
+          (outcome) => outcome === 'updated',
+          options.reloadConfig,
         )
-        yield* Console.log(formatDiscordGuildUsers(action.guildId, action.policy, outcome))
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildUsers(action.guildId, action.policy, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-guild-set-channels': {
-        const outcome = yield* options.setDiscordGuildChannels(
-          action.connectionId,
-          action.guildId,
-          action.policy,
+        const result = yield* applyDiscordConfigMutation(
+          options.setDiscordGuildChannels(action.connectionId, action.guildId, action.policy),
+          (outcome) => outcome === 'updated',
+          options.reloadConfig,
         )
-        yield* Console.log(formatDiscordGuildChannels(action.guildId, action.policy, outcome))
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildChannels(action.guildId, action.policy, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-guild-channel-set': {
-        const outcome = yield* options.setDiscordGuildChannel(
-          action.connectionId,
-          action.guildId,
-          action.channelId,
-          action.patch,
+        const result = yield* applyDiscordConfigMutation(
+          options.setDiscordGuildChannel(
+            action.connectionId,
+            action.guildId,
+            action.channelId,
+            action.patch,
+          ),
+          (outcome) => outcome === 'updated',
+          options.reloadConfig,
         )
-        yield* Console.log(formatDiscordGuildChannelSet(action.channelId, outcome))
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildChannelSet(action.channelId, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-guild-channel-reset': {
-        const outcome = yield* options.resetDiscordGuildChannel(
-          action.connectionId,
-          action.guildId,
-          action.channelId,
+        const result = yield* applyDiscordConfigMutation(
+          options.resetDiscordGuildChannel(action.connectionId, action.guildId, action.channelId),
+          (outcome) => outcome === 'removed',
+          options.reloadConfig,
         )
-        yield* Console.log(formatDiscordGuildChannelReset(action.channelId, outcome))
+        yield* Console.log(
+          formatDiscordConfigMutation(result, (outcome) =>
+            formatDiscordGuildChannelReset(action.channelId, outcome),
+          ),
+        )
         return
       }
       case 'config-discord-activity-description-set':
