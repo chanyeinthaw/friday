@@ -82,9 +82,16 @@ determines where the first reply to a channel message goes.
 ## CLI
 
 Guild configuration is stored in SQLite and managed through direct CLI
-administration — the commands work while Friday is not running, and a running
-Friday applies the changes on its next configuration reload
-(`friday config reload` or `/friday reload`).
+administration. The commands work while Friday is not running. After an actual
+guild or channel write, the CLI asks a running Friday process to reload through
+its local control socket. Repeated identical setter commands report `unchanged`
+and do not write or reload. A successful response reports the new snapshot
+version without claiming that the specific mutation was applied live. Guild and
+channel policy takes effect live only when that Discord connection is already
+resident; connection topology remains pinned to startup. If Friday is offline,
+the durable change applies on its next startup. A structured reload rejection is
+reported separately from timeouts, malformed or oversized responses, and
+post-send disconnects, where live application cannot be confirmed.
 
 ```
 friday config discord connection add <connection-id> --name <name>
@@ -136,10 +143,11 @@ Guild, channel, and user IDs are validated as Discord snowflakes. Permission
 policies are `all`, `allow=<id>[,<id>...]`, or `deny=<id>[,<id>...]`.
 `guild set-users` replaces the guild-wide user permission default and
 `guild set-channels` replaces the guild-wide channel scope; both affect every
-channel without its own override. `channel set` upserts the per-channel
-overrides row and only touches the flags given, so a channel can carry a single
-override — it never changes which channels admit Friday; `channel reset`
-removes the row entirely.
+channel without its own override. Policy subject IDs are compared as normalized
+sets, so order and duplicate input do not cause a write. `channel set` upserts
+the per-channel overrides row and only touches the flags given, so a channel can
+carry a single override. It never changes which channels admit Friday. `channel
+reset` removes the row entirely.
 
 ## CLI help
 

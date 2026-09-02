@@ -114,11 +114,21 @@ loads it. Active turns and existing resolved runtimes are not interrupted.
 See [model-configuration.md](./model-configuration.md) for the boundary between
 Friday selections and Pi's model catalog.
 
-Other CLI configuration commands that write SQLite (`config discord guild ...`)
-take effect on the next reload. The exception is
+After an actual SQLite mutation from `config discord guild ...`, the CLI also
+requests `config.reload` through this socket. Identical setter commands return
+`unchanged` and skip both the write and reload. The write transaction always
+commits before reload handling starts. A successful response reports that Friday
+reloaded the new snapshot version. It does not claim that a particular mutation
+was applied live. Guild and channel policy takes effect live only for Discord
+connections already resident in the process; connection topology remains pinned
+to startup. If no Friday process is listening (`ENOENT` or `ECONNREFUSED`), the
+saved change applies on next startup. A structured `{ ok: false }` response means
+the running process rejected the reload. Timeouts, malformed or oversized
+responses, and disconnects after sending leave live application unconfirmed;
+the CLI preserves the transport detail. The exception is
 `config discord activity-description set/reset`, which the running process
-picks up live through its watch loop within about a second — no reload and no
-restart needed.
+picks up live through its watch loop within about a second, with no reload or
+restart.
 
 ## Harness reload
 
