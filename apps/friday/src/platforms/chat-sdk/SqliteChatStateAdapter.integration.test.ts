@@ -122,10 +122,14 @@ test('stores a bounded FIFO queue and discards expired entries', async () => {
 
 test('atomically deduplicates unexpired cache entries and accepts them after expiry', async () => {
   await withAdapter(async (adapter) => {
-    expect(await adapter.setIfNotExists('dedupe:discord:message-1', true, 25)).toBe(true)
-    expect(await adapter.setIfNotExists('dedupe:discord:message-1', true, 25)).toBe(false)
-    await Bun.sleep(35)
-    expect(await adapter.setIfNotExists('dedupe:discord:message-1', true, 25)).toBe(true)
-    expect(await adapter.get<boolean>('dedupe:discord:message-1')).toBe(true)
+    const key = 'dedupe:discord:message-1'
+    const attempts = await Promise.all(
+      Array.from({ length: 8 }, () => adapter.setIfNotExists(key, true, 60_000)),
+    )
+    expect(attempts.filter(Boolean)).toHaveLength(1)
+
+    await adapter.set(key, false, 0)
+    expect(await adapter.setIfNotExists(key, true, 60_000)).toBe(true)
+    expect(await adapter.get<boolean>(key)).toBe(true)
   })
 })
