@@ -318,20 +318,22 @@ export const DiscordConnectionsLive = Layer.effect(
         Effect.gen(function* () {
           const platform = yield* platformOf(connectionId)
           if (platform !== 'discord') return 'missing' as const
-          return yield* sql.withTransaction(
-            Effect.gen(function* () {
-              yield* sql`
-                DELETE FROM discord_connections WHERE connection_id = ${connectionId}
-              `
-              const deleted = yield* sql<Record<string, unknown>>`
-                DELETE FROM platform_connections
-                WHERE connection_id = ${connectionId} AND platform = 'discord'
-                RETURNING connection_id
-              `
-              if (deleted[0] === undefined) return 'missing' as const
-              return 'removed' as const
-            }),
-          )
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`
+                  DELETE FROM discord_connections WHERE connection_id = ${connectionId}
+                `
+                const deleted = yield* sql<Record<string, unknown>>`
+                  DELETE FROM platform_connections
+                  WHERE connection_id = ${connectionId} AND platform = 'discord'
+                  RETURNING connection_id
+                `
+                if (deleted[0] === undefined) return 'missing' as const
+                return 'removed' as const
+              }),
+            )
+            .pipe(Effect.mapError(writeError(connectionId)))
         }).pipe(Effect.mapError(writeError(connectionId))),
 
       updateConnection: (update) =>
