@@ -29,13 +29,10 @@ Work three at a time in batch order. Verify each batch with
 - `DiscordGuilds.ts` `disableGuild` update + exists fallback
 - `HarnessReload.ts` `reloadConversationHarness` thread lookup
 
-## Inventory (6 remaining, GEN-037–GEN-042; B12 done)
+## Inventory (3 remaining, GEN-040–GEN-042; B13 done)
 
 | ID      | Pri | File                                                        | Function / range                    | Rationale                                             | Risk   | Tests                                                       | Semantic boundary                                |
 | ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------- | ------ | ----------------------------------------------------------- | ------------------------------------------------ |
-| GEN-037 | 37  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `desiredDescription` L303-320       | Per-channel fallback plus packing limit               | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | fallback vs truncation                           |
-| GEN-038 | 38  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `publishLatest` L321-356            | Retry loop plus last-write guard plus transient check | high   | `platforms/discord/DiscordAgentActivity.test.ts`            | attempt loop vs lastDescription update           |
-| GEN-039 | 39  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `cleanupOwnedDescription` L357-375  | Owned guard plus clearing patch                       | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | owned check vs clear exactly-once                |
 | GEN-040 | 40  | `apps/friday/src/platforms/DiscordActivityDescriptions.ts`  | `watch` refresh L155-175            | Change detection plus callback plus swallowed failure | low    | `platforms/DiscordActivityDescriptions.integration.test.ts` | previous compare vs callback, polling untouched  |
 | GEN-041 | 41  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | watch callback L407-414             | Enabled guard plus conditional cleanup plus offer     | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | toggle guard vs cleanup vs signal                |
 | GEN-042 | 42  | `apps/friday/src/harness/pi/PiThreadRuntime.ts`             | subscribe compaction chain L599-612 | Drain plus projection plus logged failure             | medium | `harness/pi/PiThreadRuntime.test.ts`                        | drain precedes projection, never fails subscribe |
@@ -49,7 +46,7 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 `ControlSocket` promise-based lock protocol, `WorkspaceCleanup` already-gen
 `apply`/`propose`, `contracts/*` (no Effect chains).
 
-## Batches (B12 done; 2 remaining)
+## Batches (B13 done; 1 remaining)
 
 - B01 (done): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
 - B02 (done): GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
@@ -63,11 +60,11 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B10 (done): GEN-029 (high), GEN-028 (low), GEN-030 (low). GEN-029 retired as already-compliant (outer Effect.fn generator; inner mapError/fork/catchCause/ensuring/onError only), no churn; GEN-028 title sidecar and GEN-030 send linearized.
 - B11 (done): GEN-031 steer linearized; GEN-032 retired as already-compliant (the Effect.fn generator already linearizes the sequence read, upsert, and turn projection, with only pure guards remaining); GEN-033 registry read linearized. No test or coverage-only changes.
 - B12 (done): GEN-034 `channelName`, GEN-035 `currentApplication`, and GEN-036 `patchDescription` retired as already-compliant. Each `Effect.fn` body already linearizes its business decisions and dependent effects; the remaining pipes are error mapping or intentional error swallowing. No production code churn; no test or coverage-only changes.
-- B13 (next): GEN-037 (low), GEN-038 (high), GEN-039 (low). High isolated with lows.
-- B14: GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
+- B13 (done): GEN-037 `desiredDescription`, GEN-038 `publishLatest`, and GEN-039 `cleanupOwnedDescription` retired as already-compliant. Their business decisions and dependent effects already run inside `Effect.gen`; semaphore provisioning, fallback/error mapping, retry delays, and logging remain in their intentional forms. No production code churn; no test or coverage-only changes.
+- B14 (next): GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
 
-First next batch is B13: GEN-037 `desiredDescription`, GEN-038 `publishLatest`,
-GEN-039 `cleanupOwnedDescription`.
+First next batch is B14: GEN-040 `watch` refresh, GEN-041 the activity-description
+watch callback, and GEN-042 the compaction subscription chain.
 
 ## Limitations
 
