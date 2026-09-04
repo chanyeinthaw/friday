@@ -269,34 +269,32 @@ export const worktreeRegistryPath = (home: string = FRIDAY_HOME): string =>
 export const readWorktreeRegistry = (
   home: string = FRIDAY_HOME,
 ): Effect.Effect<WorktreeRegistry | null, RepositoryWorktreeError> =>
-  Effect.tryPromise({
-    try: () =>
-      readFile(worktreeRegistryPath(home), 'utf8').catch((cause: NodeJS.ErrnoException) => {
-        if (cause.code === 'ENOENT') return null
-        throw cause
-      }),
-    catch: (cause) =>
-      new RepositoryWorktreeError({
-        operation: 'inspect',
-        detail: 'Could not read the managed worktree registry.',
-        cause,
-      }),
-  }).pipe(
-    Effect.flatMap((text) =>
-      text === null
-        ? Effect.succeed(null)
-        : decodeRegistry(text).pipe(
-            Effect.mapError(
-              (cause) =>
-                new RepositoryWorktreeError({
-                  operation: 'inspect',
-                  detail: `The managed worktree registry '${worktreeRegistryPath(home)}' is invalid.`,
-                  cause,
-                }),
-            ),
-          ),
-    ),
-  )
+  Effect.gen(function* () {
+    const text = yield* Effect.tryPromise({
+      try: () =>
+        readFile(worktreeRegistryPath(home), 'utf8').catch((cause: NodeJS.ErrnoException) => {
+          if (cause.code === 'ENOENT') return null
+          throw cause
+        }),
+      catch: (cause) =>
+        new RepositoryWorktreeError({
+          operation: 'inspect',
+          detail: 'Could not read the managed worktree registry.',
+          cause,
+        }),
+    })
+    if (text === null) return null
+    return yield* decodeRegistry(text).pipe(
+      Effect.mapError(
+        (cause) =>
+          new RepositoryWorktreeError({
+            operation: 'inspect',
+            detail: `The managed worktree registry '${worktreeRegistryPath(home)}' is invalid.`,
+            cause,
+          }),
+      ),
+    )
+  })
 
 /** Returns whether the exact path is owned by Friday's managed-worktree registry. */
 export const isManagedWorktree = Effect.fn('RepositoryWorktrees.isManaged')(function* (

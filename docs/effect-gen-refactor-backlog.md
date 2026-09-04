@@ -29,13 +29,10 @@ Work three at a time in batch order. Verify each batch with
 - `DiscordGuilds.ts` `disableGuild` update + exists fallback
 - `HarnessReload.ts` `reloadConversationHarness` thread lookup
 
-## Inventory (12 remaining, GEN-031–GEN-042; B10 done)
+## Inventory (9 remaining, GEN-034–GEN-042; B11 done)
 
 | ID      | Pri | File                                                        | Function / range                    | Rationale                                             | Risk   | Tests                                                       | Semantic boundary                                |
 | ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------- | ------ | ----------------------------------------------------------- | ------------------------------------------------ |
-| GEN-031 | 31  | `apps/friday/src/tasks/Tasks.ts`                            | `steer` orchestration L734-819      | Owned/latest guards plus active-vs-idle branch        | high   | `tasks/Tasks.integration.test.ts`                           | steer-active vs continuation-idle                |
-| GEN-032 | 32  | `apps/friday/src/persistence/SqliteThreadPersistence.ts`    | `putActivitySnapshot` L319-388      | Sequence read plus upsert plus turn projection        | medium | `persistence/SqliteThreadPersistence.integration.test.ts`   | sequence vs upsert vs projection atomic          |
-| GEN-033 | 33  | `apps/friday/src/repositories/RepositoryWorktrees.ts`       | `readWorktreeRegistry` L269-302     | Missing-vs-invalid registry distinction               | low    | `repositories/RepositoryWorktrees.test.ts`                  | ENOENT-null vs invalid error                     |
 | GEN-034 | 34  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `channelName` L203-235              | Cache guard plus fetch plus decode plus store         | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | cache hit vs fetch vs decode                     |
 | GEN-035 | 35  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `currentApplication` L236-264       | Fetch plus ok-guard plus decode                       | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | HTTP-ok guard vs decode                          |
 | GEN-036 | 36  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `patchDescription` L265-302         | Ownership guards plus PATCH plus 429 handling         | medium | `platforms/discord/DiscordAgentActivity.test.ts`            | ownership vs PATCH vs rate-limit                 |
@@ -55,7 +52,7 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 `ControlSocket` promise-based lock protocol, `WorkspaceCleanup` already-gen
 `apply`/`propose`, `contracts/*` (no Effect chains).
 
-## Batches (B10 done; 4 remaining)
+## Batches (B11 done; 3 remaining)
 
 - B01 (done): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
 - B02 (done): GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
@@ -67,13 +64,13 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B08 (done): GEN-022, GEN-023, GEN-024. Retired as already-compliant (outer Effect.gen; inner map/mapError only), no code churn.
 - B09 (done): GEN-025, GEN-026, GEN-027. Retired as already-compliant (outer/inner Effect.gen; remaining pipes are mapError/catchCause/ensuring/onError/fork only), no code churn.
 - B10 (done): GEN-029 (high), GEN-028 (low), GEN-030 (low). GEN-029 retired as already-compliant (outer Effect.fn generator; inner mapError/fork/catchCause/ensuring/onError only), no churn; GEN-028 title sidecar and GEN-030 send linearized.
-- B11 (next): GEN-031 (high), GEN-032 (medium), GEN-033 (low). High isolated.
+- B11 (done): GEN-031 steer linearized; GEN-032 retired as already-compliant (the Effect.fn generator already linearizes the sequence read, upsert, and turn projection, with only pure guards remaining); GEN-033 registry read linearized. No test or coverage-only changes.
 - B12: GEN-034, GEN-035, GEN-036. Coupled activity fetch chain.
 - B13: GEN-037 (low), GEN-038 (high), GEN-039 (low). High isolated with lows.
 - B14: GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
 
-First next batch is B11: GEN-031 `steer` orchestration, GEN-032
-`putActivitySnapshot`, GEN-033 `readWorktreeRegistry`.
+First next batch is B12: GEN-034 `channelName`, GEN-035 `currentApplication`,
+GEN-036 `patchDescription`.
 
 ## Limitations
 

@@ -734,13 +734,10 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       request.taskId,
     )
     const latest = yield* options.persistence.getLatestTurn(thread.id)
-    const turn = yield* Option.match(latest, {
-      onNone: () =>
-        Effect.fail(
-          taskError('task-not-active', `Task '${request.taskId}' has no Turns.`, 'steer'),
-        ),
-      onSome: Effect.succeed,
-    })
+    if (Option.isNone(latest)) {
+      return yield* taskError('task-not-active', `Task '${request.taskId}' has no Turns.`, 'steer')
+    }
+    const turn = latest.value
     const coordinator = yield* options.friday
       .openThread(thread)
       .pipe(
