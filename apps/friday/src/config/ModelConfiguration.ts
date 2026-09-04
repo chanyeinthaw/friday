@@ -273,16 +273,14 @@ export const ModelConfigurationLive = Layer.effect(
           )
           .pipe(Effect.mapError(error('update-profile', patch.name))),
       removeProfile: (name) =>
-        name === 'primary'
-          ? Effect.succeed('protected')
-          : sql<
-              Record<string, unknown>
-            >`DELETE FROM subagent_profiles WHERE name = ${name} RETURNING name`.pipe(
-              Effect.map((rows): SubagentProfileRemoveOutcome =>
-                rows[0] === undefined ? 'missing' : 'removed',
-              ),
-              Effect.mapError(error('remove-profile', name)),
-            ),
+        Effect.gen(function* () {
+          if (name === 'primary') return 'protected' as const
+          const rows = yield* sql<
+            Record<string, unknown>
+          >`DELETE FROM subagent_profiles WHERE name = ${name} RETURNING name`
+          if (rows[0] === undefined) return 'missing' as const
+          return 'removed' as const
+        }).pipe(Effect.mapError(error('remove-profile', name))),
     })
   }),
 )
