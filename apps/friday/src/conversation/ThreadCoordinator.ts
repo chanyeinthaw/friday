@@ -163,32 +163,26 @@ export const makeThreadCoordinator = Effect.fn('makeThreadCoordinator')(function
 
         const deliver = runtime.prompt(request).pipe(
           Effect.catch((cause) =>
-            DateTime.now.pipe(
-              Effect.map(DateTime.formatIso),
-              Effect.flatMap((completedAt) => {
-                const terminal: TerminalTurn = {
-                  status: 'failed',
+            Effect.gen(function* () {
+              const completedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso))
+              const terminal: TerminalTurn = {
+                status: 'failed',
+                turnId: turn.id,
+                errorMessage: String(cause),
+              }
+              yield* persistence
+                .failTurn({
                   turnId: turn.id,
-                  errorMessage: String(cause),
-                }
-                return persistence
-                  .failTurn({
-                    turnId: turn.id,
-                    errorMessage: terminal.errorMessage,
-                    completedAt,
-                  })
-                  .pipe(
-                    Effect.tapError((persistenceError) => Deferred.fail(signal, persistenceError)),
-                    Effect.andThen(
-                      Effect.sync(() => {
-                        terminalSignals.delete(turn.id)
-                      }),
-                    ),
-                    Effect.andThen(Deferred.succeed(signal, terminal)),
-                    Effect.andThen(Effect.logError('Thread prompt delivery failed', cause)),
-                  )
-              }),
-            ),
+                  errorMessage: terminal.errorMessage,
+                  completedAt,
+                })
+                .pipe(
+                  Effect.tapError((persistenceError) => Deferred.fail(signal, persistenceError)),
+                )
+              terminalSignals.delete(turn.id)
+              yield* Deferred.succeed(signal, terminal)
+              yield* Effect.logError('Thread prompt delivery failed', cause)
+            }),
           ),
         )
         yield* deliver.pipe(Effect.forkIn(coordinatorScope))

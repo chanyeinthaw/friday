@@ -654,36 +654,28 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
 
   const bootstrap = Effect.fn('Tasks.bootstrap')(function* (request: BootstrapTaskRequest) {
     const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
-    const resolvedWorkingDirectory = yield* options.fileSystem
-      .realPath(parent.workingDirectory)
-      .pipe(
-        Effect.flatMap((path) =>
-          options.fileSystem
-            .stat(path)
-            .pipe(
-              Effect.flatMap((info) =>
-                info.type === 'Directory'
-                  ? Effect.succeed(path)
-                  : Effect.fail(
-                      taskError(
-                        'invalid-working-directory',
-                        `Channel workspace '${parent.workingDirectory}' is not a directory.`,
-                        'bootstrap',
-                      ),
-                    ),
-              ),
-            ),
+    const { path: resolvedWorkingDirectory, info } = yield* Effect.gen(function* () {
+      const path = yield* options.fileSystem.realPath(parent.workingDirectory)
+      const info = yield* options.fileSystem.stat(path)
+      return { path, info }
+    }).pipe(
+      Effect.mapError(() =>
+        taskError(
+          'invalid-working-directory',
+          `Channel workspace '${parent.workingDirectory}' cannot be used for bootstrap work.`,
+          'bootstrap',
         ),
-        Effect.mapError((cause) =>
-          cause instanceof TaskError
-            ? cause
-            : taskError(
-                'invalid-working-directory',
-                `Channel workspace '${parent.workingDirectory}' cannot be used for bootstrap work.`,
-                'bootstrap',
-              ),
+      ),
+    )
+    if (info.type !== 'Directory') {
+      return yield* Effect.fail(
+        taskError(
+          'invalid-working-directory',
+          `Channel workspace '${parent.workingDirectory}' is not a directory.`,
+          'bootstrap',
         ),
       )
+    }
     const workingDirectory = yield* decodeWorkingDirectory(resolvedWorkingDirectory).pipe(
       Effect.mapError((cause) =>
         taskError(
