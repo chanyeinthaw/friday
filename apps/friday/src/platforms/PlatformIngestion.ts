@@ -131,25 +131,25 @@ export const PlatformIngestionLive = Layer.effect(
               if (found.audience !== 'user') return yield* Effect.die('Expected channel Thread')
               if (created) {
                 const currentModels = config.current().models
-                yield* textGeneration
-                  .generateThreadTitle({
+                yield* Effect.gen(function* () {
+                  const title = yield* textGeneration.generateThreadTitle({
                     message: input.message.content.text,
                     workingDirectory: found.workingDirectory,
                     model: currentModels.utility,
                     thinkingLevel: currentModels.utility.thinkingLevel,
                   })
-                  .pipe(
-                    Effect.flatMap((title) => conversationTitles.generated(found, title)),
-                    Effect.matchEffect({
-                      onFailure: (cause) =>
-                        Effect.logWarning('conversation.title.failed').pipe(
-                          Effect.annotateLogs({ threadId: found.id, cause: String(cause) }),
-                        ),
-                      onSuccess: () => Effect.void,
-                    }),
-                    Effect.forkDetach,
-                    Effect.asVoid,
-                  )
+                  yield* conversationTitles.generated(found, title)
+                }).pipe(
+                  Effect.matchEffect({
+                    onFailure: (cause) =>
+                      Effect.logWarning('conversation.title.failed').pipe(
+                        Effect.annotateLogs({ threadId: found.id, cause: String(cause) }),
+                      ),
+                    onSuccess: () => Effect.void,
+                  }),
+                  Effect.forkDetach,
+                  Effect.asVoid,
+                )
               }
               const message =
                 enrichedInput.initialContext !== undefined &&
