@@ -48,6 +48,7 @@ import {
 import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
 import type { PlatformRegistryContract } from '../../platforms/PlatformRegistry.ts'
 import { renderPromptMessage } from './PromptMessage.ts'
+import { refreshSharedModelRuntime } from './PiModelRefresh.ts'
 import { makePiTaskTool, type PiTaskOperations } from '../../tasks/PiTaskTool.ts'
 
 const PiResumeCursor = Schema.Struct({
@@ -333,6 +334,10 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
       detail: 'Pi ModelRuntime is required when no custom session factory is provided.',
     })
   }
+  yield* refreshSharedModelRuntime(
+    modelRuntime,
+    (input) => new PiThreadRuntimeError({ operation: 'resolve-model', ...input }),
+  )
   const model = modelRuntime.getModel(options.thread.model.provider, options.thread.model.modelId)
   if (!model) {
     return yield* new PiThreadRuntimeError({

@@ -2,6 +2,7 @@ import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-ag
 import * as Effect from 'effect/Effect'
 
 import { PiModelRuntime } from './Live.ts'
+import { refreshSharedModelRuntime } from './PiModelRefresh.ts'
 import { TextGeneration, TextGenerationError } from '../TextGeneration.ts'
 
 const titlePrompt = (message: string): string =>
@@ -26,6 +27,10 @@ export const makePiTextGeneration = Effect.fn('makePiTextGeneration')(function* 
 
   return TextGeneration.of({
     generateThreadTitle: Effect.fn('PiTextGeneration.generateThreadTitle')(function* (input) {
+      yield* refreshSharedModelRuntime(
+        modelRuntime,
+        (failure) => new TextGenerationError({ operation: 'thread-title', ...failure }),
+      )
       const model = modelRuntime.getModel(input.model.provider, input.model.modelId)
       const auth = yield* Effect.tryPromise({
         try: () => modelRuntime.getAuth(input.model.provider),

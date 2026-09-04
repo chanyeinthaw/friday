@@ -127,6 +127,7 @@ const open = (thread: Thread, captured: Array<CreateAgentSessionOptions>) =>
       modelRuntime: {
         getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
         getAuth: async () => ({ type: 'api_key', key: 'test' }),
+        refresh: async () => ({ aborted: false, errors: new Map() }),
       } as never,
       createSession: async (options) => {
         captured.push(options)
@@ -164,6 +165,7 @@ test('harness reload rerenders the channel prompt with current profile configura
           modelRuntime: {
             getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
             getAuth: async () => ({ type: 'api_key', key: 'test' }),
+            refresh: async () => ({ aborted: false, errors: new Map() }),
           } as never,
           createSession: async (options) => {
             loader = options.resourceLoader
@@ -211,6 +213,7 @@ test('failed Pi reload restores the prompt that was active before reload', async
           modelRuntime: {
             getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
             getAuth: async () => ({ type: 'api_key', key: 'test' }),
+            refresh: async () => ({ aborted: false, errors: new Map() }),
           } as never,
           createSession: async (options) => {
             loader = options.resourceLoader
@@ -263,6 +266,7 @@ test('failed prompt rendering leaves the current prompt and session untouched', 
           modelRuntime: {
             getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
             getAuth: async () => ({ type: 'api_key', key: 'test' }),
+            refresh: async () => ({ aborted: false, errors: new Map() }),
           } as never,
           createSession: async (options) => {
             loader = options.resourceLoader
@@ -304,6 +308,7 @@ test('channel prompt instructions match the delivered user-message envelope', as
         modelRuntime: {
           getModel: () => ({ provider: 'opencode-go', id: 'deepseek-v4-flash' }),
           getAuth: async () => ({ type: 'api_key', key: 'test' }),
+          refresh: async () => ({ aborted: false, errors: new Map() }),
         } as never,
         createSession: async (options) => {
           systemPrompt = options.resourceLoader?.getSystemPrompt() ?? ''
