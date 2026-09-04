@@ -524,26 +524,17 @@ export const DiscordGuildsLive = Layer.effect(
         ),
 
       disableGuild: (connectionId, guildId) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            sql<Record<string, unknown>>`
-          UPDATE discord_guilds SET enabled = 0
-          WHERE connection_id = ${connectionId} AND guild_id = ${guildId} AND enabled = 1
-          RETURNING guild_id
-        `.pipe(
-              Effect.mapError(writeError(connectionId)),
-              Effect.flatMap((rows) =>
-                rows[0] !== undefined
-                  ? Effect.succeed<DiscordGuildDisableOutcome>('disabled')
-                  : guildExists(connectionId, guildId).pipe(
-                      Effect.map((exists): DiscordGuildDisableOutcome =>
-                        exists ? 'already-disabled' : 'missing',
-                      ),
-                    ),
-              ),
-            ),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          const rows = yield* sql<Record<string, unknown>>`
+            UPDATE discord_guilds SET enabled = 0
+            WHERE connection_id = ${connectionId} AND guild_id = ${guildId} AND enabled = 1
+            RETURNING guild_id
+          `.pipe(Effect.mapError(writeError(connectionId)))
+          if (rows[0] !== undefined) return 'disabled' as const
+          const exists = yield* guildExists(connectionId, guildId)
+          return exists ? ('already-disabled' as const) : ('missing' as const)
+        }),
 
       removeGuild: (connectionId, guildId) =>
         requireDiscordConnection(connectionId).pipe(

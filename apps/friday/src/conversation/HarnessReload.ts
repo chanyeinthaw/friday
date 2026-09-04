@@ -29,18 +29,13 @@ export interface HarnessReloadOperations {
 export const reloadConversationHarness =
   (operations: HarnessReloadOperations) =>
   (lookup: PlatformThreadLookup): Effect.Effect<HarnessReloadOutcome> =>
-    operations.findThread(lookup).pipe(
-      Effect.flatMap(
-        Option.match({
-          onNone: () =>
-            Effect.succeed(
-              harnessReloadRefused(
-                'unknown-thread',
-                'No Friday thread is bound to this conversation; run the command inside a Friday thread.',
-              ),
-            ),
-          onSome: (thread) => operations.reloadRuntime(thread.id),
-        }),
-      ),
-      Effect.catch((cause) => Effect.succeed(harnessReloadFailed(cause.message))),
-    )
+    Effect.gen(function* () {
+      const found = yield* operations.findThread(lookup)
+      if (Option.isNone(found)) {
+        return harnessReloadRefused(
+          'unknown-thread',
+          'No Friday thread is bound to this conversation; run the command inside a Friday thread.',
+        )
+      }
+      return yield* operations.reloadRuntime(found.value.id)
+    }).pipe(Effect.catch((cause) => Effect.succeed(harnessReloadFailed(cause.message))))
