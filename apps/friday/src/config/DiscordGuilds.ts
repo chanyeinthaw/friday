@@ -498,26 +498,23 @@ export const DiscordGuildsLive = Layer.effect(
         }),
 
       enableGuild: (connectionId, guildId) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            Effect.gen(function* () {
-              // Re-enable a disabled configuration before considering a fresh insert.
-              const reEnabled = yield* sql<Record<string, unknown>>`
-                UPDATE discord_guilds SET enabled = 1
-                WHERE connection_id = ${connectionId} AND guild_id = ${guildId} AND enabled = 0
-                RETURNING guild_id
-              `.pipe(Effect.mapError(writeError(connectionId)))
-              if (reEnabled[0] !== undefined) return 'enabled' as const
-              const inserted = yield* sql<Record<string, unknown>>`
-                INSERT INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
-                VALUES (${connectionId}, ${guildId}, 1, 'mention-only', NULL)
-                ON CONFLICT (connection_id, guild_id) DO NOTHING
-                RETURNING guild_id
-              `.pipe(Effect.mapError(writeError(connectionId)))
-              return inserted[0] === undefined ? ('already-enabled' as const) : ('enabled' as const)
-            }),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          // Re-enable a disabled configuration before considering a fresh insert.
+          const reEnabled = yield* sql<Record<string, unknown>>`
+            UPDATE discord_guilds SET enabled = 1
+            WHERE connection_id = ${connectionId} AND guild_id = ${guildId} AND enabled = 0
+            RETURNING guild_id
+          `.pipe(Effect.mapError(writeError(connectionId)))
+          if (reEnabled[0] !== undefined) return 'enabled' as const
+          const inserted = yield* sql<Record<string, unknown>>`
+            INSERT INTO discord_guilds (connection_id, guild_id, enabled, invocation_mode, users_mode)
+            VALUES (${connectionId}, ${guildId}, 1, 'mention-only', NULL)
+            ON CONFLICT (connection_id, guild_id) DO NOTHING
+            RETURNING guild_id
+          `.pipe(Effect.mapError(writeError(connectionId)))
+          return inserted[0] === undefined ? ('already-enabled' as const) : ('enabled' as const)
+        }),
 
       disableGuild: (connectionId, guildId) =>
         Effect.gen(function* () {
