@@ -306,15 +306,11 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     turnId: TurnType['id'],
     update: (turn: TurnType) => TurnType,
   ) =>
-    getTurn(turnId).pipe(
-      Effect.flatMap(
-        Option.match({
-          onNone: () => Effect.void,
-          onSome: (turn) => updateTurn(update(turn)),
-        }),
-      ),
-      Effect.mapError(toPersistenceError(operation)),
-    )
+    Effect.gen(function* () {
+      const existing = yield* getTurn(turnId)
+      if (Option.isNone(existing)) return
+      yield* updateTurn(update(existing.value))
+    }).pipe(Effect.mapError(toPersistenceError(operation)))
 
   const putActivitySnapshot = Effect.fn('putActivitySnapshot')(function* (
     turnId: TurnType['id'],
@@ -394,35 +390,25 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     findPlatformThread: findActivePlatformThread,
     listAgentThreads: ({ parentThreadId }) => listAgentThreads(parentThreadId),
     closeThread: (update) =>
-      getThread(update.threadId).pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.void,
-            onSome: (thread) =>
-              updateThread({
-                ...thread,
-                status: 'closed',
-                updatedAt: update.closedAt,
-                closedAt: update.closedAt,
-              }),
-          }),
-        ),
-        Effect.mapError(toPersistenceError('ThreadPersistence.closeThread')),
-      ),
+      Effect.gen(function* () {
+        const existing = yield* getThread(update.threadId)
+        if (Option.isNone(existing)) return
+        yield* updateThread({
+          ...existing.value,
+          status: 'closed',
+          updatedAt: update.closedAt,
+          closedAt: update.closedAt,
+        })
+      }).pipe(Effect.mapError(toPersistenceError('ThreadPersistence.closeThread'))),
     setThreadHarnessSession: (update) =>
-      getThread(update.threadId).pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.void,
-            onSome: (thread) =>
-              updateThread({
-                ...thread,
-                harnessSession: update.harnessSession,
-              }),
-          }),
-        ),
-        Effect.mapError(toPersistenceError('ThreadPersistence.setThreadHarnessSession')),
-      ),
+      Effect.gen(function* () {
+        const existing = yield* getThread(update.threadId)
+        if (Option.isNone(existing)) return
+        yield* updateThread({
+          ...existing.value,
+          harnessSession: update.harnessSession,
+        })
+      }).pipe(Effect.mapError(toPersistenceError('ThreadPersistence.setThreadHarnessSession'))),
     createTurn: (turn) =>
       insertTurn(turn).pipe(Effect.mapError(toPersistenceError('ThreadPersistence.createTurn'))),
     getTurn,
