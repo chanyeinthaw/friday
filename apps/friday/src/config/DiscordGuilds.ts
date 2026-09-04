@@ -546,120 +546,117 @@ export const DiscordGuildsLive = Layer.effect(
         ),
 
       setGuildInvocation: (connectionId, guildId, mode) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            sql
-              .withTransaction(
-                Effect.gen(function* () {
-                  const rows = yield* sql<Record<string, unknown>>`
-                    SELECT invocation_mode
-                    FROM discord_guilds
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                    LIMIT 1
-                  `.pipe(Effect.mapError(readError(connectionId)))
-                  const current = (yield* decodeCurrentInvocationRows(rows).pipe(
-                    Effect.mapError(readError(connectionId)),
-                  ))[0]
-                  if (current === undefined) return 'missing' as const
-                  if (current.invocation_mode === mode) return 'unchanged' as const
-                  yield* sql`
-                    UPDATE discord_guilds SET invocation_mode = ${mode}
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                  `.pipe(Effect.mapError(writeError(connectionId)))
-                  return 'updated' as const
-                }),
-              )
-              .pipe(Effect.mapError(writeError(connectionId))),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const rows = yield* sql<Record<string, unknown>>`
+                  SELECT invocation_mode
+                  FROM discord_guilds
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                  LIMIT 1
+                `.pipe(Effect.mapError(readError(connectionId)))
+                const current = (yield* decodeCurrentInvocationRows(rows).pipe(
+                  Effect.mapError(readError(connectionId)),
+                ))[0]
+                if (current === undefined) return 'missing' as const
+                if (current.invocation_mode === mode) return 'unchanged' as const
+                yield* sql`
+                  UPDATE discord_guilds SET invocation_mode = ${mode}
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                `.pipe(Effect.mapError(writeError(connectionId)))
+                return 'updated' as const
+              }),
+            )
+            .pipe(Effect.mapError(writeError(connectionId)))
+        }),
 
       setGuildUsers: (connectionId, guildId, policy) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            sql
-              .withTransaction(
-                Effect.gen(function* () {
-                  const normalized = normalizePolicy(policy)
-                  const rows = yield* sql<Record<string, unknown>>`
-                    SELECT users_mode AS policy_mode
-                    FROM discord_guilds
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                    LIMIT 1
-                  `.pipe(Effect.mapError(readError(connectionId)))
-                  const current = (yield* decodeCurrentPolicyRows(rows).pipe(
-                    Effect.mapError(readError(connectionId)),
-                  ))[0]
-                  if (current === undefined) return 'missing' as const
-                  const subjectRows = yield* sql<Record<string, unknown>>`
-                    SELECT user_id AS subject_id
-                    FROM discord_guild_users
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                    ORDER BY user_id
-                  `.pipe(Effect.mapError(readError(connectionId)))
-                  const currentSubjects = (yield* decodeCurrentSubjectRows(subjectRows).pipe(
-                    Effect.mapError(readError(connectionId)),
-                  )).map((row) => row.subject_id)
-                  if (
-                    current.policy_mode === normalized.mode &&
-                    sameSubjects(currentSubjects, normalized.ids)
-                  ) {
-                    return 'unchanged' as const
-                  }
-                  yield* sql`
-                    UPDATE discord_guilds SET users_mode = ${normalized.mode}
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                  `.pipe(Effect.mapError(writeError(connectionId)))
-                  yield* replaceUserSubjects(connectionId, { guildId }, normalized)
-                  return 'updated' as const
-                }),
-              )
-              .pipe(Effect.mapError(writeError(connectionId))),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const normalized = normalizePolicy(policy)
+                const rows = yield* sql<Record<string, unknown>>`
+                  SELECT users_mode AS policy_mode
+                  FROM discord_guilds
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                  LIMIT 1
+                `.pipe(Effect.mapError(readError(connectionId)))
+                const current = (yield* decodeCurrentPolicyRows(rows).pipe(
+                  Effect.mapError(readError(connectionId)),
+                ))[0]
+                if (current === undefined) return 'missing' as const
+                const subjectRows = yield* sql<Record<string, unknown>>`
+                  SELECT user_id AS subject_id
+                  FROM discord_guild_users
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                  ORDER BY user_id
+                `.pipe(Effect.mapError(readError(connectionId)))
+                const currentSubjects = (yield* decodeCurrentSubjectRows(subjectRows).pipe(
+                  Effect.mapError(readError(connectionId)),
+                )).map((row) => row.subject_id)
+                if (
+                  current.policy_mode === normalized.mode &&
+                  sameSubjects(currentSubjects, normalized.ids)
+                ) {
+                  return 'unchanged' as const
+                }
+                yield* sql`
+                  UPDATE discord_guilds SET users_mode = ${normalized.mode}
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                `.pipe(Effect.mapError(writeError(connectionId)))
+                yield* replaceUserSubjects(connectionId, { guildId }, normalized)
+                return 'updated' as const
+              }),
+            )
+            .pipe(Effect.mapError(writeError(connectionId)))
+        }),
 
       setGuildChannelScope: (connectionId, guildId, policy) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            sql
-              .withTransaction(
-                Effect.gen(function* () {
-                  const normalized = normalizePolicy(policy)
-                  const rows = yield* sql<Record<string, unknown>>`
-                    SELECT channels_mode AS policy_mode
-                    FROM discord_guilds
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                    LIMIT 1
-                  `.pipe(Effect.mapError(readError(connectionId)))
-                  const current = (yield* decodeCurrentPolicyRows(rows).pipe(
-                    Effect.mapError(readError(connectionId)),
-                  ))[0]
-                  if (current === undefined) return 'missing' as const
-                  const subjectRows = yield* sql<Record<string, unknown>>`
-                    SELECT channel_id AS subject_id
-                    FROM discord_guild_channel_scope
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                    ORDER BY channel_id
-                  `.pipe(Effect.mapError(readError(connectionId)))
-                  const currentSubjects = (yield* decodeCurrentSubjectRows(subjectRows).pipe(
-                    Effect.mapError(readError(connectionId)),
-                  )).map((row) => row.subject_id)
-                  if (
-                    current.policy_mode === normalized.mode &&
-                    sameSubjects(currentSubjects, normalized.ids)
-                  ) {
-                    return 'unchanged' as const
-                  }
-                  yield* sql`
-                    UPDATE discord_guilds SET channels_mode = ${normalized.mode}
-                    WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-                  `.pipe(Effect.mapError(writeError(connectionId)))
-                  yield* replaceScopeSubjects(connectionId, guildId, normalized)
-                  return 'updated' as const
-                }),
-              )
-              .pipe(Effect.mapError(writeError(connectionId))),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const normalized = normalizePolicy(policy)
+                const rows = yield* sql<Record<string, unknown>>`
+                  SELECT channels_mode AS policy_mode
+                  FROM discord_guilds
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                  LIMIT 1
+                `.pipe(Effect.mapError(readError(connectionId)))
+                const current = (yield* decodeCurrentPolicyRows(rows).pipe(
+                  Effect.mapError(readError(connectionId)),
+                ))[0]
+                if (current === undefined) return 'missing' as const
+                const subjectRows = yield* sql<Record<string, unknown>>`
+                  SELECT channel_id AS subject_id
+                  FROM discord_guild_channel_scope
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                  ORDER BY channel_id
+                `.pipe(Effect.mapError(readError(connectionId)))
+                const currentSubjects = (yield* decodeCurrentSubjectRows(subjectRows).pipe(
+                  Effect.mapError(readError(connectionId)),
+                )).map((row) => row.subject_id)
+                if (
+                  current.policy_mode === normalized.mode &&
+                  sameSubjects(currentSubjects, normalized.ids)
+                ) {
+                  return 'unchanged' as const
+                }
+                yield* sql`
+                  UPDATE discord_guilds SET channels_mode = ${normalized.mode}
+                  WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+                `.pipe(Effect.mapError(writeError(connectionId)))
+                yield* replaceScopeSubjects(connectionId, guildId, normalized)
+                return 'updated' as const
+              }),
+            )
+            .pipe(Effect.mapError(writeError(connectionId)))
+        }),
 
       setChannel: (connectionId, guildId, channelId, patch) =>
         requireDiscordConnection(connectionId).pipe(

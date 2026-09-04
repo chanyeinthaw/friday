@@ -29,13 +29,10 @@ Work three at a time in batch order. Verify each batch with
 - `DiscordGuilds.ts` `disableGuild` update + exists fallback
 - `HarnessReload.ts` `reloadConversationHarness` thread lookup
 
-## Inventory (27 remaining, GEN-016–GEN-042; B05 done)
+## Inventory (24 remaining, GEN-019–GEN-042; B06 done)
 
 | ID      | Pri | File                                                        | Function / range                    | Rationale                                                  | Risk   | Tests                                                         | Semantic boundary                                |
 | ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------ | ------------------------------------------------------------- | ------------------------------------------------ |
-| GEN-016 | 16  | `apps/friday/src/config/DiscordGuilds.ts`                   | `setGuildInvocation` L555-582       | Require plus read/missing/unchanged guards plus update     | medium | `config/DiscordGuilds.integration.test.ts`                    | missing vs unchanged vs updated                  |
-| GEN-017 | 17  | `apps/friday/src/config/DiscordGuilds.ts`                   | `setGuildUsers` L583-626            | Normalized compare plus two-table write                    | medium | `config/DiscordGuilds.integration.test.ts`                    | normalization plus unchanged vs write atomic     |
-| GEN-018 | 18  | `apps/friday/src/config/DiscordGuilds.ts`                   | `setGuildChannelScope` L627-670     | Mirror of users, keep coupled                              | medium | `config/DiscordGuilds.integration.test.ts`                    | same boundary as users, scope table              |
 | GEN-019 | 19  | `apps/friday/src/config/DiscordGuilds.ts`                   | `removeGuild` L539-554              | Require plus delete plus outcome map                       | low    | `config/DiscordGuilds.integration.test.ts`                    | missing vs removed                               |
 | GEN-020 | 20  | `apps/friday/src/config/DiscordGuilds.ts`                   | `resetChannel` L680-697             | Require plus delete plus outcome map                       | low    | `config/DiscordGuilds.integration.test.ts`                    | missing vs removed                               |
 | GEN-021 | 21  | `apps/friday/src/config/DiscordGuilds.ts`                   | `setChannel` outer L671-679         | Require plus delegated transaction                         | low    | `config/DiscordGuilds.integration.test.ts`                    | require must precede transaction                 |
@@ -70,15 +67,15 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 `ControlSocket` promise-based lock protocol, `WorkspaceCleanup` already-gen
 `apply`/`propose`, `contracts/*` (no Effect chains).
 
-## Batches (B05 done; 9 remaining)
+## Batches (B06 done; 8 remaining)
 
 - B01 (done): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
 - B02 (done): GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
 - B03 (done): GEN-007, GEN-008, GEN-009. Coupled enable/disable plus guard, all low.
 - B04 (done): GEN-010, GEN-011, GEN-012. Coupled add/remove plus low companion.
 - B05 (done): GEN-013, GEN-014, GEN-015. Transactional unchanged-guard pattern.
-- B06 (next): GEN-016, GEN-017, GEN-018. Coupled guild policy trio, same file.
-- B07: GEN-019, GEN-020, GEN-021. Coupled guild singles, all low.
+- B06 (done): GEN-016, GEN-017, GEN-018. Coupled guild policy trio, same file.
+- B07 (next): GEN-019, GEN-020, GEN-021. Coupled guild singles, all low.
 - B08: GEN-022, GEN-023, GEN-024. Task setup and reads, no high risk.
 - B09: GEN-025, GEN-026, GEN-027. Task cancel plus coupled deliveries.
 - B10: GEN-029 (high), GEN-028 (low), GEN-030 (low). High isolated with lows.
@@ -87,8 +84,8 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B13: GEN-037 (low), GEN-038 (high), GEN-039 (low). High isolated with lows.
 - B14: GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
 
-First next batch is B06: GEN-016 `setGuildInvocation`, GEN-017
-`setGuildUsers`, GEN-018 `setGuildChannelScope`.
+First next batch is B07: GEN-019 `removeGuild`, GEN-020
+`resetChannel`, GEN-021 `setChannel` outer.
 
 ## Limitations
 
