@@ -29,13 +29,10 @@ Work three at a time in batch order. Verify each batch with
 - `DiscordGuilds.ts` `disableGuild` update + exists fallback
 - `HarnessReload.ts` `reloadConversationHarness` thread lookup
 
-## Inventory (42 candidates)
+## Inventory (39 remaining, GEN-004–GEN-042; B01 done)
 
 | ID      | Pri | File                                                        | Function / range                    | Rationale                                                  | Risk   | Tests                                                                                | Semantic boundary                                |
 | ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------ | ------------------------------------------------ |
-| GEN-001 | 1   | `apps/friday/src/tasks/Tasks.ts`                            | `requireChannelThread` L168-186     | Channel lookup plus audience guard reads as nested match   | low    | `tasks/Tasks.integration.test.ts`                                                    | missing vs non-channel must stay distinct        |
-| GEN-002 | 2   | `apps/friday/src/tasks/Tasks.ts`                            | `resolveProfile` L146-166           | Default-vs-named resolve plus missing-profile guard        | low    | `tasks/Tasks.integration.test.ts`, `tasks/TaskModels.test.ts`                        | default vs named resolution, typed error         |
-| GEN-003 | 3   | `apps/friday/src/config/ModelConfiguration.ts`              | `getModel` L202-210                 | List then find-or-fail lookup                              | low    | `config/ModelConfiguration.integration.test.ts`                                      | missing-model error vs found                     |
 | GEN-004 | 4   | `apps/friday/src/persistence/SqliteThreadPersistence.ts`    | `closeThread` L396-411              | Get plus none-swallowing guarded update                    | low    | `persistence/SqliteThreadPersistence.integration.test.ts`                            | missing swallow vs closed transition             |
 | GEN-005 | 5   | `apps/friday/src/persistence/SqliteThreadPersistence.ts`    | `setThreadHarnessSession` L412-425  | Same guard shape, coupled with close                       | low    | `persistence/SqliteThreadPersistence.integration.test.ts`                            | missing swallow vs session assignment            |
 | GEN-006 | 6   | `apps/friday/src/persistence/SqliteThreadPersistence.ts`    | `updateExistingTurn` L304-318       | Shared get-plus-conditional-update helper                  | low    | `persistence/SqliteThreadPersistence.integration.test.ts`                            | missing swallow vs turn rewrite                  |
@@ -85,10 +82,10 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 `ControlSocket` promise-based lock protocol, `WorkspaceCleanup` already-gen
 `apply`/`propose`, `contracts/*` (no Effect chains).
 
-## Batches (14 x 3)
+## Batches (B01 done; 13 remaining)
 
-- B01 (next): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
-- B02: GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
+- B01 (done): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
+- B02 (next): GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
 - B03: GEN-007, GEN-008, GEN-009. Coupled enable/disable plus guard, all low.
 - B04: GEN-010, GEN-011, GEN-012. Coupled add/remove plus low companion.
 - B05: GEN-013, GEN-014, GEN-015. Transactional unchanged-guard pattern.
@@ -102,8 +99,8 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B13: GEN-037 (low), GEN-038 (high), GEN-039 (low). High isolated with lows.
 - B14: GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
 
-First next batch is B01: GEN-001 `requireChannelThread`, GEN-002
-`resolveProfile`, GEN-003 `getModel`.
+First next batch is B02: GEN-004 `closeThread`, GEN-005
+`setThreadHarnessSession`, GEN-006 `updateExistingTurn`.
 
 ## Limitations
 

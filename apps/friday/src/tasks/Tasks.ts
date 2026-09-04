@@ -150,19 +150,16 @@ const resolveProfile = Effect.fn('Tasks.resolveProfile')(function* (
 ) {
   const resolved =
     requested === undefined ? yield* models.defaultProfile : yield* models.resolve(requested)
-  return yield* Option.match(resolved, {
-    onNone: () =>
-      Effect.fail(
-        taskError(
-          'model-not-configured',
-          requested === undefined
-            ? "No 'primary' subagent profile is configured."
-            : `Subagent profile '${requested}' is not configured.`,
-          operation,
-        ),
-      ),
-    onSome: Effect.succeed,
-  })
+  if (Option.isNone(resolved)) {
+    return yield* taskError(
+      'model-not-configured',
+      requested === undefined
+        ? "No 'primary' subagent profile is configured."
+        : `Subagent profile '${requested}' is not configured.`,
+      operation,
+    )
+  }
+  return resolved.value
 })
 
 const requireChannelThread = Effect.fn('Tasks.requireChannelThread')(function* (
@@ -170,18 +167,16 @@ const requireChannelThread = Effect.fn('Tasks.requireChannelThread')(function* (
   parentThreadId: StartTaskRequest['parentThreadId'],
 ) {
   const found = yield* persistence.getThread(parentThreadId)
-  return yield* Option.match(found, {
-    onNone: () =>
-      Effect.fail(
-        taskError('parent-not-found', `Parent Thread '${parentThreadId}' was not found.`),
-      ),
-    onSome: (thread) =>
-      thread.audience === 'user'
-        ? Effect.succeed(thread)
-        : Effect.fail(
-            taskError('parent-not-channel', `Thread '${parentThreadId}' is not a channel Thread.`),
-          ),
-  })
+  if (Option.isNone(found)) {
+    return yield* taskError('parent-not-found', `Parent Thread '${parentThreadId}' was not found.`)
+  }
+  if (found.value.audience !== 'user') {
+    return yield* taskError(
+      'parent-not-channel',
+      `Thread '${parentThreadId}' is not a channel Thread.`,
+    )
+  }
+  return found.value
 })
 
 const requireOwnedTask = Effect.fn('Tasks.requireOwnedTask')(function* (
