@@ -197,6 +197,20 @@ const normalizePolicy = (policy: AccessPolicy): AccessPolicy => ({
   ids: normalizeSubjects(policy.ids),
 })
 
+const channelUpdateIsUnchanged = (
+  current: typeof CurrentChannelRow.Type | undefined,
+  invocationMode: InvocationMode | null,
+  usersMode: AccessPolicy['mode'] | null,
+  replyMode: ReplyMode | null,
+  currentUsers: ReadonlyArray<string>,
+  normalizedUsers: AccessPolicy | undefined,
+): boolean =>
+  current !== undefined &&
+  current.invocation_mode === invocationMode &&
+  current.users_mode === usersMode &&
+  current.reply_mode === replyMode &&
+  (normalizedUsers === undefined || sameSubjects(currentUsers, normalizedUsers.ids))
+
 /**
  * Direct SQLite administration of Discord guild configuration. The store stays
  * independent of the running process, so the CLI can write while Friday is
@@ -378,6 +392,69 @@ export const DiscordGuildsLive = Layer.effect(
           { discard: true },
         )
       })
+
+    const updateChannel = Effect.fn('DiscordGuilds.updateChannel')(function* (
+      connectionId: PlatformConnectionId,
+      guildId: DiscordGuildId,
+      channelId: DiscordGuildChannelId,
+      patch: DiscordGuildChannelPatch,
+    ) {
+      if (!(yield* guildExists(connectionId, guildId))) return 'missing-guild' as const
+      const currentRows = yield* sql<Record<string, unknown>>`
+        SELECT invocation_mode, users_mode, reply_mode
+        FROM discord_guild_channels
+        WHERE connection_id = ${connectionId}
+          AND guild_id = ${guildId}
+          AND channel_id = ${channelId}
+        LIMIT 1
+      `.pipe(Effect.mapError(readError(connectionId)))
+      const current = (yield* decodeCurrentChannelRows(currentRows).pipe(
+        Effect.mapError(readError(connectionId)),
+      ))[0]
+      const normalizedUsers = patch.users === undefined ? undefined : normalizePolicy(patch.users)
+      const invocationMode = patch.invocationMode ?? current?.invocation_mode ?? null
+      const usersMode = normalizedUsers?.mode ?? current?.users_mode ?? null
+      const replyMode = patch.replyMode ?? current?.reply_mode ?? null
+      const currentUserRows =
+        normalizedUsers === undefined
+          ? []
+          : yield* sql<Record<string, unknown>>`
+              SELECT user_id AS subject_id
+              FROM discord_guild_channel_users
+              WHERE connection_id = ${connectionId}
+                AND guild_id = ${guildId}
+                AND channel_id = ${channelId}
+              ORDER BY user_id
+            `.pipe(Effect.mapError(readError(connectionId)))
+      const currentUsers = (yield* decodeCurrentSubjectRows(currentUserRows).pipe(
+        Effect.mapError(readError(connectionId)),
+      )).map((row) => row.subject_id)
+      if (
+        channelUpdateIsUnchanged(
+          current,
+          invocationMode,
+          usersMode,
+          replyMode,
+          currentUsers,
+          normalizedUsers,
+        )
+      ) {
+        return 'unchanged' as const
+      }
+      yield* sql`
+        INSERT INTO discord_guild_channels
+          (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
+        VALUES (${connectionId}, ${guildId}, ${channelId}, ${invocationMode}, ${usersMode}, ${replyMode})
+        ON CONFLICT (connection_id, guild_id, channel_id) DO UPDATE SET
+          invocation_mode = excluded.invocation_mode,
+          users_mode = excluded.users_mode,
+          reply_mode = excluded.reply_mode
+      `.pipe(Effect.mapError(writeError(connectionId)))
+      if (normalizedUsers !== undefined) {
+        yield* replaceUserSubjects(connectionId, { guildId, channelId }, normalizedUsers)
+      }
+      return 'updated' as const
+    })
 
     return DiscordGuilds.of({
       listGuilds: (connectionId) =>
@@ -604,68 +681,7 @@ export const DiscordGuildsLive = Layer.effect(
         requireDiscordConnection(connectionId).pipe(
           Effect.andThen(
             sql
-              .withTransaction(
-                Effect.gen(function* () {
-                  if (!(yield* guildExists(connectionId, guildId))) return 'missing-guild' as const
-                  const currentRows = yield* sql<Record<string, unknown>>`
-                  SELECT invocation_mode, users_mode, reply_mode
-                  FROM discord_guild_channels
-                  WHERE connection_id = ${connectionId}
-                    AND guild_id = ${guildId}
-                    AND channel_id = ${channelId}
-                  LIMIT 1
-                `.pipe(Effect.mapError(readError(connectionId)))
-                  const current = (yield* decodeCurrentChannelRows(currentRows).pipe(
-                    Effect.mapError(readError(connectionId)),
-                  ))[0]
-                  const normalizedUsers =
-                    patch.users === undefined ? undefined : normalizePolicy(patch.users)
-                  const invocationMode = patch.invocationMode ?? current?.invocation_mode ?? null
-                  const usersMode = normalizedUsers?.mode ?? current?.users_mode ?? null
-                  const replyMode = patch.replyMode ?? current?.reply_mode ?? null
-                  const currentUserRows =
-                    normalizedUsers === undefined
-                      ? []
-                      : yield* sql<Record<string, unknown>>`
-                          SELECT user_id AS subject_id
-                          FROM discord_guild_channel_users
-                          WHERE connection_id = ${connectionId}
-                            AND guild_id = ${guildId}
-                            AND channel_id = ${channelId}
-                          ORDER BY user_id
-                        `.pipe(Effect.mapError(readError(connectionId)))
-                  const currentUsers = (yield* decodeCurrentSubjectRows(currentUserRows).pipe(
-                    Effect.mapError(readError(connectionId)),
-                  )).map((row) => row.subject_id)
-                  if (
-                    current !== undefined &&
-                    current.invocation_mode === invocationMode &&
-                    current.users_mode === usersMode &&
-                    current.reply_mode === replyMode &&
-                    (normalizedUsers === undefined ||
-                      sameSubjects(currentUsers, normalizedUsers.ids))
-                  ) {
-                    return 'unchanged' as const
-                  }
-                  yield* sql`
-                  INSERT INTO discord_guild_channels
-                    (connection_id, guild_id, channel_id, invocation_mode, users_mode, reply_mode)
-                  VALUES (${connectionId}, ${guildId}, ${channelId}, ${invocationMode}, ${usersMode}, ${replyMode})
-                  ON CONFLICT (connection_id, guild_id, channel_id) DO UPDATE SET
-                    invocation_mode = excluded.invocation_mode,
-                    users_mode = excluded.users_mode,
-                    reply_mode = excluded.reply_mode
-                `.pipe(Effect.mapError(writeError(connectionId)))
-                  if (normalizedUsers !== undefined) {
-                    yield* replaceUserSubjects(
-                      connectionId,
-                      { guildId, channelId },
-                      normalizedUsers,
-                    )
-                  }
-                  return 'updated' as const
-                }),
-              )
+              .withTransaction(updateChannel(connectionId, guildId, channelId, patch))
               .pipe(Effect.mapError(writeError(connectionId))),
           ),
         ),

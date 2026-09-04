@@ -2111,6 +2111,58 @@ it.effect('dispatches guild commands to exactly one operation with decoded argum
   }).pipe(Effect.provide(TestConsole.layer)),
 )
 
+it.effect('routes every CLI action subset to its observable handler behavior', () =>
+  Effect.gen(function* () {
+    const configuredModels = recorder([])
+    yield* runFridayCli(['config', 'model', 'list'], {
+      ...strictRunnerStubs,
+      listConfiguredModels: configuredModels.operation,
+    })
+    assert.deepStrictEqual(configuredModels.calls, [[]])
+    assert.strictEqual(yield* lastLine, 'Friday model selections:')
+
+    const profiles = recorder([])
+    yield* runFridayCli(['config', 'profile', 'list'], {
+      ...strictRunnerStubs,
+      listSubagentProfiles: profiles.operation,
+    })
+    assert.deepStrictEqual(profiles.calls, [[]])
+    assert.match(yield* lastLine, /No subagent profiles/)
+
+    const catalogReload = recorder(7)
+    yield* runFridayCli(['model', 'reload'], {
+      ...strictRunnerStubs,
+      reloadPiModels: catalogReload.operation,
+    })
+    assert.deepStrictEqual(catalogReload.calls, [[]])
+    assert.match(yield* lastLine, /7 models/)
+
+    const connectionEnable = recorder('enabled' as const)
+    yield* runFridayCli(['config', 'discord', 'connection', 'enable', 'discord-main'], {
+      ...strictRunnerStubs,
+      enableDiscordConnection: connectionEnable.operation,
+    })
+    assert.deepStrictEqual(connectionEnable.calls, [[decodeConnectionId('discord-main')]])
+    assert.match(yield* lastLine, /discord-main enabled/)
+
+    const guilds = recorder([])
+    yield* runFridayCli(['config', 'discord', 'guild', 'list', 'discord-main'], {
+      ...strictRunnerStubs,
+      listDiscordGuilds: guilds.operation,
+    })
+    assert.deepStrictEqual(guilds.calls, [[decodeConnectionId('discord-main')]])
+    assert.match(yield* lastLine, /No guilds are configured/)
+
+    const worktrees = recorder([])
+    yield* runFridayCli(['worktree', 'list'], {
+      ...strictRunnerStubs,
+      listWorktrees: worktrees.operation,
+    })
+    assert.deepStrictEqual(worktrees.calls, [[]])
+    assert.match(yield* lastLine, /No repository worktrees/)
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
 it.effect('dispatches help and version to the console', () =>
   Effect.gen(function* () {
     yield* runFridayCli(['--version'], strictRunnerStubs)

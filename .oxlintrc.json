@@ -33,7 +33,16 @@
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
     "effect-local/no-inline-schema-compile": "error",
-    "effect-local/no-manual-effect-runtime-in-tests": "error"
+    "effect-local/no-manual-effect-runtime-in-tests": "error",
+    "complexity": ["error", 20]
   },
+  "overrides": [
+    {
+      "files": ["tools/**/*.ts"],
+      "rules": {
+        "complexity": "off"
+      }
+    }
+  ],
   "ignorePatterns": ["dist/**", "tools/oxlint/anti-slop/**", "tools/oxlint/effect/**"]
 }
