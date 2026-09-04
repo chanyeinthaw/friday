@@ -29,13 +29,10 @@ Work three at a time in batch order. Verify each batch with
 - `DiscordGuilds.ts` `disableGuild` update + exists fallback
 - `HarnessReload.ts` `reloadConversationHarness` thread lookup
 
-## Inventory (36 remaining, GEN-007–GEN-042; B02 done)
+## Inventory (33 remaining, GEN-010–GEN-042; B03 done)
 
 | ID      | Pri | File                                                        | Function / range                    | Rationale                                                  | Risk   | Tests                                                                                | Semantic boundary                                |
 | ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------ | ------------------------------------------------ |
-| GEN-007 | 7   | `apps/friday/src/config/DiscordConnections.ts`              | `enableConnection` L414-432         | Optimistic update plus fallback platform read              | low    | `config/DiscordConnections.test.ts`, `config/DiscordConnections.integration.test.ts` | enabled vs already-enabled vs missing            |
-| GEN-008 | 8   | `apps/friday/src/config/DiscordConnections.ts`              | `disableConnection` L433-452        | Mirror of enable, keep coupled                             | low    | `config/DiscordConnections.test.ts`, `config/DiscordConnections.integration.test.ts` | disabled vs already-disabled vs missing          |
-| GEN-009 | 9   | `apps/friday/src/config/DiscordGuilds.ts`                   | `requireDiscordConnection` L244-266 | Platform read plus three-way typed error                   | low    | `config/DiscordGuilds.integration.test.ts`                                           | discord vs unknown vs non-discord                |
 | GEN-010 | 10  | `apps/friday/src/config/DiscordConnections.ts`              | `addConnection` L282-320            | Existence gate plus owner check plus two inserts           | medium | `config/DiscordConnections.test.ts`, `config/DiscordConnections.integration.test.ts` | gate vs app-owner check vs inserts atomic        |
 | GEN-011 | 11  | `apps/friday/src/config/DiscordConnections.ts`              | `removeConnection` L321-347         | Platform gate plus ordered deletes plus outcome            | medium | `config/DiscordConnections.test.ts`, `config/DiscordConnections.integration.test.ts` | missing vs removed, delete order                 |
 | GEN-012 | 12  | `apps/friday/src/config/ModelConfiguration.ts`              | `removeProfile` L275-288            | Protected guard plus delete plus outcome                   | low    | `config/ModelConfiguration.integration.test.ts`                                      | protected vs missing vs removed                  |
@@ -79,12 +76,12 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 `ControlSocket` promise-based lock protocol, `WorkspaceCleanup` already-gen
 `apply`/`propose`, `contracts/*` (no Effect chains).
 
-## Batches (B02 done; 12 remaining)
+## Batches (B03 done; 11 remaining)
 
 - B01 (done): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
 - B02 (done): GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
-- B03 (next): GEN-007, GEN-008, GEN-009. Coupled enable/disable plus guard, all low.
-- B04: GEN-010, GEN-011, GEN-012. Coupled add/remove plus low companion.
+- B03 (done): GEN-007, GEN-008, GEN-009. Coupled enable/disable plus guard, all low.
+- B04 (next): GEN-010, GEN-011, GEN-012. Coupled add/remove plus low companion.
 - B05: GEN-013, GEN-014, GEN-015. Transactional unchanged-guard pattern.
 - B06: GEN-016, GEN-017, GEN-018. Coupled guild policy trio, same file.
 - B07: GEN-019, GEN-020, GEN-021. Coupled guild singles, all low.
@@ -96,8 +93,8 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B13: GEN-037 (low), GEN-038 (high), GEN-039 (low). High isolated with lows.
 - B14: GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
 
-First next batch is B03: GEN-007 `enableConnection`, GEN-008
-`disableConnection`, GEN-009 `requireDiscordConnection`.
+First next batch is B04: GEN-010 `addConnection`, GEN-011
+`removeConnection`, GEN-012 `removeProfile`.
 
 ## Limitations
 

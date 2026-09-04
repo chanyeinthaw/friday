@@ -242,27 +242,23 @@ export const DiscordGuildsLive = Layer.effect(
      * any write touches the guild tables.
      */
     const requireDiscordConnection = (connectionId: PlatformConnectionId) =>
-      sql<Record<string, unknown>>`
+      Effect.gen(function* () {
+        const rows = yield* sql<Record<string, unknown>>`
         SELECT platform
         FROM platform_connections
         WHERE connection_id = ${connectionId}
         LIMIT 1
-      `.pipe(
-        Effect.mapError(readError(connectionId)),
-        Effect.flatMap((rows) =>
-          Effect.gen(function* () {
-            const platform = (yield* decodeConnectionRows(rows).pipe(
-              Effect.mapError(readError(connectionId)),
-            ))[0]?.platform
-            if (platform === 'discord') return
-            return yield* new DiscordGuildError({
-              operation: platform === undefined ? 'unknown-connection' : 'non-discord-connection',
-              connectionId,
-              cause: platform === undefined ? undefined : new Error(`Platform: ${platform}`),
-            })
-          }),
-        ),
-      )
+      `.pipe(Effect.mapError(readError(connectionId)))
+        const platform = (yield* decodeConnectionRows(rows).pipe(
+          Effect.mapError(readError(connectionId)),
+        ))[0]?.platform
+        if (platform === 'discord') return
+        return yield* new DiscordGuildError({
+          operation: platform === undefined ? 'unknown-connection' : 'non-discord-connection',
+          connectionId,
+          cause: platform === undefined ? undefined : new Error(`Platform: ${platform}`),
+        })
+      })
 
     const guildExists = (connectionId: PlatformConnectionId, guildId: string) =>
       sql<Record<string, unknown>>`

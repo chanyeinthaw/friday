@@ -412,42 +412,32 @@ export const DiscordConnectionsLive = Layer.effect(
         }).pipe(Effect.mapError(writeError(update.connectionId))),
 
       enableConnection: (connectionId) =>
-        sql<Record<string, unknown>>`
+        Effect.gen(function* () {
+          const rows = yield* sql<Record<string, unknown>>`
           UPDATE platform_connections SET enabled = 1, updated_at = CURRENT_TIMESTAMP
           WHERE connection_id = ${connectionId} AND platform = 'discord' AND enabled = 0
           RETURNING connection_id
-        `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.flatMap((rows) =>
-            rows[0] !== undefined
-              ? Effect.succeed<DiscordConnectionEnableOutcome>('enabled')
-              : platformOf(connectionId).pipe(
-                  Effect.map((platform): DiscordConnectionEnableOutcome =>
-                    platform === 'discord' ? 'already-enabled' : 'missing',
-                  ),
-                  Effect.mapError(writeError(connectionId)),
-                ),
-          ),
-        ),
+        `.pipe(Effect.mapError(writeError(connectionId)))
+          if (rows[0] !== undefined) return 'enabled' as const
+          const platform = yield* platformOf(connectionId).pipe(
+            Effect.mapError(writeError(connectionId)),
+          )
+          return platform === 'discord' ? ('already-enabled' as const) : ('missing' as const)
+        }),
 
       disableConnection: (connectionId) =>
-        sql<Record<string, unknown>>`
+        Effect.gen(function* () {
+          const rows = yield* sql<Record<string, unknown>>`
           UPDATE platform_connections SET enabled = 0, updated_at = CURRENT_TIMESTAMP
           WHERE connection_id = ${connectionId} AND platform = 'discord' AND enabled = 1
           RETURNING connection_id
-        `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.flatMap((rows) =>
-            rows[0] !== undefined
-              ? Effect.succeed<DiscordConnectionDisableOutcome>('disabled')
-              : platformOf(connectionId).pipe(
-                  Effect.map((platform): DiscordConnectionDisableOutcome =>
-                    platform === 'discord' ? 'already-disabled' : 'missing',
-                  ),
-                  Effect.mapError(writeError(connectionId)),
-                ),
-          ),
-        ),
+        `.pipe(Effect.mapError(writeError(connectionId)))
+          if (rows[0] !== undefined) return 'disabled' as const
+          const platform = yield* platformOf(connectionId).pipe(
+            Effect.mapError(writeError(connectionId)),
+          )
+          return platform === 'discord' ? ('already-disabled' as const) : ('missing' as const)
+        }),
     })
   }),
 )
