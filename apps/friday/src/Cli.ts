@@ -832,6 +832,57 @@ interface ParsedDiscordConnectionUpdate {
   respondToGlobalMentions?: boolean
 }
 
+type DiscordConnectionUpdateField = Exclude<
+  keyof ParsedDiscordConnectionUpdate,
+  'type' | 'connectionId'
+>
+
+interface ParsedDiscordConnectionUpdateState {
+  readonly action: ParsedDiscordConnectionUpdate
+  readonly seen: Set<DiscordConnectionUpdateField>
+}
+
+const setDiscordConnectionUpdateField = Effect.fn('Cli.setDiscordConnectionUpdateField')(function* (
+  state: ParsedDiscordConnectionUpdateState,
+  field: DiscordConnectionUpdateField,
+  value: string | undefined,
+  all: ReadonlyArray<string>,
+) {
+  if (state.seen.has(field)) return yield* discordArgumentsError(all)
+  const raw = yield* connectionFlagValue(value, all)
+  if (field === 'name') {
+    state.action.name = yield* decodeConnectionName(raw).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  } else if (field === 'applicationId') {
+    state.action.applicationId = yield* decodeDiscordSnowflake(raw).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  } else if (field === 'publicKey') {
+    state.action.publicKey = yield* decodeDiscordPublicKey(raw).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  } else {
+    state.action.botTokenEnv = yield* decodeBotTokenEnvName(raw).pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+  }
+  state.seen.add(field)
+})
+
+const connectionUpdateField = (
+  flag: string | undefined,
+): DiscordConnectionUpdateField | undefined =>
+  flag === '--name'
+    ? 'name'
+    : flag === '--application-id'
+      ? 'applicationId'
+      : flag === '--public-key'
+        ? 'publicKey'
+        : flag === '--bot-token-env'
+          ? 'botTokenEnv'
+          : undefined
+
 const parseConfigDiscordConnectionUpdate = Effect.fn('Cli.parseConfigDiscordConnectionUpdate')(
   function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
     if (tokens.length < 1) return yield* missingUpdateFieldError(all)
@@ -839,88 +890,33 @@ const parseConfigDiscordConnectionUpdate = Effect.fn('Cli.parseConfigDiscordConn
       Effect.flatMap(decodePlatformConnectionId),
       Effect.mapError(() => discordArgumentsError(all)),
     )
-    let name: string | undefined
-    let applicationId: typeof DiscordSnowflake.Type | undefined
-    let publicKey: typeof DiscordPublicKey.Type | undefined
-    let botTokenEnv: typeof BotTokenEnvName.Type | undefined
-    let respondToGlobalMentions: boolean | undefined
+    const state: ParsedDiscordConnectionUpdateState = {
+      action: { type: 'config-discord-connection-update', connectionId },
+      seen: new Set(),
+    }
     let index = 1
     while (index < tokens.length) {
       const flag = tokens[index]
-      if (flag === '--respond-to-global-mentions') {
-        if (respondToGlobalMentions !== undefined) return yield* discordArgumentsError(all)
-        respondToGlobalMentions = true
+      const respondToGlobalMentions =
+        flag === '--respond-to-global-mentions'
+          ? true
+          : flag === '--no-respond-to-global-mentions'
+            ? false
+            : undefined
+      if (respondToGlobalMentions !== undefined) {
+        if (state.seen.has('respondToGlobalMentions')) return yield* discordArgumentsError(all)
+        state.action.respondToGlobalMentions = respondToGlobalMentions
+        state.seen.add('respondToGlobalMentions')
         index += 1
         continue
       }
-      if (flag === '--no-respond-to-global-mentions') {
-        if (respondToGlobalMentions !== undefined) return yield* discordArgumentsError(all)
-        respondToGlobalMentions = false
-        index += 1
-        continue
-      }
-      const value = tokens[index + 1]
-      if (flag === '--name') {
-        if (name !== undefined) return yield* discordArgumentsError(all)
-        name = yield* connectionFlagValue(value, all).pipe(
-          Effect.flatMap(decodeConnectionName),
-          Effect.mapError(() => discordArgumentsError(all)),
-        )
-        index += 2
-        continue
-      }
-      if (flag === '--application-id') {
-        if (applicationId !== undefined) return yield* discordArgumentsError(all)
-        applicationId = yield* connectionFlagValue(value, all).pipe(
-          Effect.flatMap(decodeDiscordSnowflake),
-          Effect.mapError(() => discordArgumentsError(all)),
-        )
-        index += 2
-        continue
-      }
-      if (flag === '--public-key') {
-        if (publicKey !== undefined) return yield* discordArgumentsError(all)
-        publicKey = yield* connectionFlagValue(value, all).pipe(
-          Effect.flatMap(decodeDiscordPublicKey),
-          Effect.mapError(() => discordArgumentsError(all)),
-        )
-        index += 2
-        continue
-      }
-      if (flag === '--bot-token-env') {
-        if (botTokenEnv !== undefined) return yield* discordArgumentsError(all)
-        botTokenEnv = yield* connectionFlagValue(value, all).pipe(
-          Effect.flatMap(decodeBotTokenEnvName),
-          Effect.mapError(() => discordArgumentsError(all)),
-        )
-        index += 2
-        continue
-      }
-      return yield* discordArgumentsError(all)
+      const field = connectionUpdateField(flag)
+      if (field === undefined) return yield* discordArgumentsError(all)
+      yield* setDiscordConnectionUpdateField(state, field, tokens[index + 1], all)
+      index += 2
     }
-    if (
-      name === undefined &&
-      applicationId === undefined &&
-      publicKey === undefined &&
-      botTokenEnv === undefined &&
-      respondToGlobalMentions === undefined
-    ) {
-      return yield* missingUpdateFieldError(all)
-    }
-    // Mutable assembly shape: exactOptionalPropertyTypes allows assigning a
-    // property only when the flag was present on the command line.
-    const action: ParsedDiscordConnectionUpdate = {
-      type: 'config-discord-connection-update',
-      connectionId,
-    }
-    if (name !== undefined) action.name = name
-    if (applicationId !== undefined) action.applicationId = applicationId
-    if (publicKey !== undefined) action.publicKey = publicKey
-    if (botTokenEnv !== undefined) action.botTokenEnv = botTokenEnv
-    if (respondToGlobalMentions !== undefined) {
-      action.respondToGlobalMentions = respondToGlobalMentions
-    }
-    return action
+    if (state.seen.size === 0) return yield* missingUpdateFieldError(all)
+    return state.action
   },
 )
 
@@ -2223,6 +2219,52 @@ export type FridayCliOperations<
   >
 }
 
+type CliActionGroup = 'configuration' | 'catalog' | 'guild' | 'runtime'
+
+/** An exhaustive action-to-handler assignment keeps each command dispatcher small. */
+const cliActionGroups = {
+  help: 'configuration',
+  version: 'configuration',
+  'config-reload': 'configuration',
+  'config-model-list': 'configuration',
+  'config-model-get': 'configuration',
+  'config-model-set': 'configuration',
+  'config-profile-list': 'configuration',
+  'config-profile-get': 'configuration',
+  'config-profile-add': 'configuration',
+  'config-profile-update': 'configuration',
+  'config-profile-remove': 'configuration',
+  'model-list': 'catalog',
+  'model-get': 'catalog',
+  'model-reload': 'catalog',
+  'config-admin-discord-add': 'catalog',
+  'config-admin-discord-remove': 'catalog',
+  'config-admin-discord-list': 'catalog',
+  'config-discord-connection-list': 'catalog',
+  'config-discord-connection-add': 'catalog',
+  'config-discord-connection-update': 'catalog',
+  'config-discord-connection-remove': 'catalog',
+  'config-discord-connection-enable': 'catalog',
+  'config-discord-connection-disable': 'catalog',
+  'config-discord-connection-get': 'catalog',
+  'config-discord-guild-enable': 'guild',
+  'config-discord-guild-disable': 'guild',
+  'config-discord-guild-remove': 'guild',
+  'config-discord-guild-list': 'guild',
+  'config-discord-guild-set-invocation': 'guild',
+  'config-discord-guild-set-users': 'guild',
+  'config-discord-guild-set-channels': 'guild',
+  'config-discord-guild-channel-set': 'guild',
+  'config-discord-guild-channel-reset': 'guild',
+  'config-discord-activity-description-set': 'runtime',
+  'config-discord-activity-description-reset': 'runtime',
+  'workspace-cleanup-apply': 'runtime',
+  'workspace-cleanup-list': 'runtime',
+  'worktree-ensure': 'runtime',
+  'worktree-list': 'runtime',
+  start: 'runtime',
+} satisfies Record<FridayCliAction['type'], CliActionGroup>
+
 export const runFridayCli = <
   E,
   WorktreeError,
@@ -2288,333 +2330,418 @@ export const runFridayCli = <
       }
       yield* Console.log(formatConfigReloadOutcome(result.value))
     })
-    switch (action.type) {
-      case 'help':
-        yield* Console.log(renderCliHelp(action.topic))
-        return
-      case 'version':
-        yield* Console.log(FRIDAY_VERSION)
-        return
-      case 'config-reload': {
-        const outcome = yield* options.reloadConfig
-        if (!outcome.ok) {
-          return yield* new ConfigReloadRejectedError({ detail: outcome.detail })
+    const runConfigurationAction = Effect.fn('Cli.runConfigurationAction')(function* (
+      selected: FridayCliAction,
+    ) {
+      if (selected.type.startsWith('config-profile-')) {
+        return yield* runProfileAction(selected)
+      }
+      switch (selected.type) {
+        case 'help':
+          yield* Console.log(renderCliHelp(selected.topic))
+          return
+        case 'version':
+          yield* Console.log(FRIDAY_VERSION)
+          return
+        case 'config-reload': {
+          const outcome = yield* options.reloadConfig
+          if (!outcome.ok) {
+            return yield* new ConfigReloadRejectedError({ detail: outcome.detail })
+          }
+          yield* Console.log(formatConfigReloadOutcome(outcome))
+          return
         }
-        yield* Console.log(formatConfigReloadOutcome(outcome))
-        return
-      }
-      case 'config-model-list': {
-        const models = yield* options.listConfiguredModels()
-        yield* Console.log(action.json ? JSON.stringify(models) : renderConfiguredModels(models))
-        return
-      }
-      case 'config-model-get': {
-        const model = yield* options.getConfiguredModel(action.name)
-        yield* Console.log(action.json ? JSON.stringify(model) : renderConfiguredModels([model]))
-        return
-      }
-      case 'config-model-set': {
-        const outcome = yield* options.setConfiguredModel(action.selection)
-        yield* Console.log(
-          outcome === 'updated'
-            ? `Friday ${action.selection.name} model updated.`
-            : `Friday ${action.selection.name} model already has the requested selection.`,
-        )
-        if (outcome === 'updated') yield* reloadAfterCommit()
-        return
-      }
-      case 'config-profile-list': {
-        const profiles = yield* options.listSubagentProfiles()
-        yield* Console.log(
-          action.json ? JSON.stringify(profiles) : renderSubagentProfiles(profiles),
-        )
-        return
-      }
-      case 'config-profile-get': {
-        const profile = yield* options.getSubagentProfile(action.name)
-        yield* Console.log(
-          Option.match(profile, {
-            onNone: () =>
-              action.json ? 'null' : `Subagent profile ${action.name} is not configured.`,
-            onSome: (value) =>
-              action.json ? JSON.stringify(value) : renderSubagentProfiles([value]),
-          }),
-        )
-        return
-      }
-      case 'config-profile-add': {
-        const outcome = yield* options.addSubagentProfile(action.profile)
-        yield* Console.log(
-          outcome === 'added'
-            ? `Subagent profile ${action.profile.name} added.`
-            : `Subagent profile ${action.profile.name} already exists.`,
-        )
-        if (outcome === 'added') yield* reloadAfterCommit()
-        return
-      }
-      case 'config-profile-update': {
-        const outcome = yield* options.updateSubagentProfile(action.patch)
-        yield* Console.log(
-          outcome === 'updated'
-            ? `Subagent profile ${action.patch.name} updated.`
-            : outcome === 'unchanged'
-              ? `Subagent profile ${action.patch.name} already has the requested configuration.`
-              : `Subagent profile ${action.patch.name} is not configured.`,
-        )
-        if (outcome === 'updated') yield* reloadAfterCommit()
-        return
-      }
-      case 'config-profile-remove': {
-        const outcome = yield* options.removeSubagentProfile(action.name)
-        yield* Console.log(
-          outcome === 'removed'
-            ? `Subagent profile ${action.name} removed.`
-            : outcome === 'protected'
-              ? 'The subagent profile named primary is protected from removal; update it instead.'
-              : `Subagent profile ${action.name} is not configured.`,
-        )
-        if (outcome === 'removed') yield* reloadAfterCommit()
-        return
-      }
-      case 'model-list': {
-        const listOptions: PiModelListOptions = {
-          availableOnly: action.available,
+        case 'config-model-list': {
+          const models = yield* options.listConfiguredModels()
+          yield* Console.log(
+            selected.json ? JSON.stringify(models) : renderConfiguredModels(models),
+          )
+          return
         }
-        if (action.provider !== undefined) listOptions.provider = action.provider
-        const models = yield* options.listPiModels(listOptions)
-        yield* Console.log(action.json ? JSON.stringify(models) : renderPiModels(models))
-        return
+        case 'config-model-get': {
+          const model = yield* options.getConfiguredModel(selected.name)
+          yield* Console.log(
+            selected.json ? JSON.stringify(model) : renderConfiguredModels([model]),
+          )
+          return
+        }
+        case 'config-model-set': {
+          const outcome = yield* options.setConfiguredModel(selected.selection)
+          yield* Console.log(
+            outcome === 'updated'
+              ? `Friday ${selected.selection.name} model updated.`
+              : `Friday ${selected.selection.name} model already has the requested selection.`,
+          )
+          if (outcome === 'updated') yield* reloadAfterCommit()
+          return
+        }
+        default:
+          return yield* Effect.die(
+            `Unexpected ${selected.type} action in the configuration CLI handler.`,
+          )
       }
-      case 'model-get': {
-        const model = yield* options.getPiModel(action.provider, action.modelId)
-        yield* Console.log(
-          model === undefined
-            ? action.json
-              ? 'null'
-              : `Pi catalog model ${action.provider}/${action.modelId} was not found.`
-            : action.json
-              ? JSON.stringify(model)
-              : renderPiModel(model),
-        )
-        return
+    })
+    const runProfileAction = Effect.fn('Cli.runProfileAction')(function* (
+      selected: FridayCliAction,
+    ) {
+      switch (selected.type) {
+        case 'config-profile-list': {
+          const profiles = yield* options.listSubagentProfiles()
+          yield* Console.log(
+            selected.json ? JSON.stringify(profiles) : renderSubagentProfiles(profiles),
+          )
+          return
+        }
+        case 'config-profile-get': {
+          const profile = yield* options.getSubagentProfile(selected.name)
+          yield* Console.log(
+            Option.match(profile, {
+              onNone: () =>
+                selected.json ? 'null' : `Subagent profile ${selected.name} is not configured.`,
+              onSome: (value) =>
+                selected.json ? JSON.stringify(value) : renderSubagentProfiles([value]),
+            }),
+          )
+          return
+        }
+        case 'config-profile-add': {
+          const outcome = yield* options.addSubagentProfile(selected.profile)
+          yield* Console.log(
+            outcome === 'added'
+              ? `Subagent profile ${selected.profile.name} added.`
+              : `Subagent profile ${selected.profile.name} already exists.`,
+          )
+          if (outcome === 'added') yield* reloadAfterCommit()
+          return
+        }
+        case 'config-profile-update': {
+          const outcome = yield* options.updateSubagentProfile(selected.patch)
+          yield* Console.log(
+            outcome === 'updated'
+              ? `Subagent profile ${selected.patch.name} updated.`
+              : outcome === 'unchanged'
+                ? `Subagent profile ${selected.patch.name} already has the requested configuration.`
+                : `Subagent profile ${selected.patch.name} is not configured.`,
+          )
+          if (outcome === 'updated') yield* reloadAfterCommit()
+          return
+        }
+        case 'config-profile-remove': {
+          const outcome = yield* options.removeSubagentProfile(selected.name)
+          yield* Console.log(
+            outcome === 'removed'
+              ? `Subagent profile ${selected.name} removed.`
+              : outcome === 'protected'
+                ? 'The subagent profile named primary is protected from removal; update it instead.'
+                : `Subagent profile ${selected.name} is not configured.`,
+          )
+          if (outcome === 'removed') yield* reloadAfterCommit()
+          return
+        }
+        default:
+          return yield* Effect.die(`Unexpected ${selected.type} action in the profile CLI handler.`)
       }
-      case 'model-reload': {
-        const count = yield* options.reloadPiModels()
-        yield* Console.log(
-          `Pi model catalog and authentication state reloaded locally (${count} models, no network access).`,
-        )
-        return
+    })
+    const runCatalogAction = Effect.fn('Cli.runCatalogAction')(function* (
+      selected: FridayCliAction,
+    ) {
+      if (selected.type.startsWith('config-discord-connection-')) {
+        return yield* runConnectionAction(selected)
       }
-      case 'config-admin-discord-add': {
-        const outcome = yield* options.addDiscordAdmin(action.userId)
-        yield* Console.log(formatDiscordAdminAdd(action.userId, outcome))
-        return
+      switch (selected.type) {
+        case 'model-list': {
+          const listOptions: PiModelListOptions = {
+            availableOnly: selected.available,
+          }
+          if (selected.provider !== undefined) listOptions.provider = selected.provider
+          const models = yield* options.listPiModels(listOptions)
+          yield* Console.log(selected.json ? JSON.stringify(models) : renderPiModels(models))
+          return
+        }
+        case 'model-get': {
+          const model = yield* options.getPiModel(selected.provider, selected.modelId)
+          yield* Console.log(
+            model === undefined
+              ? selected.json
+                ? 'null'
+                : `Pi catalog model ${selected.provider}/${selected.modelId} was not found.`
+              : selected.json
+                ? JSON.stringify(model)
+                : renderPiModel(model),
+          )
+          return
+        }
+        case 'model-reload': {
+          const count = yield* options.reloadPiModels()
+          yield* Console.log(
+            `Pi model catalog and authentication state reloaded locally (${count} models, no network access).`,
+          )
+          return
+        }
+        case 'config-admin-discord-add': {
+          const outcome = yield* options.addDiscordAdmin(selected.userId)
+          yield* Console.log(formatDiscordAdminAdd(selected.userId, outcome))
+          return
+        }
+        case 'config-admin-discord-remove': {
+          const outcome = yield* options.removeDiscordAdmin(selected.userId)
+          yield* Console.log(formatDiscordAdminRemove(selected.userId, outcome))
+          return
+        }
+        case 'config-admin-discord-list': {
+          const userIds = yield* options.listDiscordAdmins()
+          yield* Console.log(
+            selected.json ? JSON.stringify(userIds) : renderDiscordAdminList(userIds),
+          )
+          return
+        }
+        default:
+          return yield* Effect.die(`Unexpected ${selected.type} action in the catalog CLI handler.`)
       }
-      case 'config-admin-discord-remove': {
-        const outcome = yield* options.removeDiscordAdmin(action.userId)
-        yield* Console.log(formatDiscordAdminRemove(action.userId, outcome))
-        return
+    })
+    const runConnectionAction = Effect.fn('Cli.runConnectionAction')(function* (
+      selected: FridayCliAction,
+    ) {
+      switch (selected.type) {
+        case 'config-discord-connection-add': {
+          const outcome = yield* options.addDiscordConnection(selected)
+          yield* Console.log(formatDiscordConnectionAdd(selected.connectionId, outcome))
+          return
+        }
+        case 'config-discord-connection-update': {
+          const outcome = yield* options.updateDiscordConnection(selected)
+          yield* Console.log(formatDiscordConnectionUpdate(selected.connectionId, outcome))
+          return
+        }
+        case 'config-discord-connection-remove': {
+          const outcome = yield* options.removeDiscordConnection(selected.connectionId)
+          yield* Console.log(formatDiscordConnectionRemove(selected.connectionId, outcome))
+          return
+        }
+        case 'config-discord-connection-enable': {
+          const outcome = yield* options.enableDiscordConnection(selected.connectionId)
+          yield* Console.log(formatDiscordConnectionEnable(selected.connectionId, outcome))
+          return
+        }
+        case 'config-discord-connection-disable': {
+          const outcome = yield* options.disableDiscordConnection(selected.connectionId)
+          yield* Console.log(formatDiscordConnectionDisable(selected.connectionId, outcome))
+          return
+        }
+        case 'config-discord-connection-get': {
+          const detail = yield* options.getDiscordConnection(selected.connectionId)
+          yield* Console.log(
+            Option.match(detail, {
+              onNone: () => `Discord connection ${selected.connectionId} is not configured.`,
+              onSome: (connection) =>
+                selected.json
+                  ? JSON.stringify(connection)
+                  : renderDiscordConnectionDetail(connection),
+            }),
+          )
+          return
+        }
+        case 'config-discord-connection-list': {
+          const connections = yield* options.listDiscordConnections()
+          yield* Console.log(
+            selected.json ? JSON.stringify(connections) : renderDiscordConnectionList(connections),
+          )
+          return
+        }
+        default:
+          return yield* Effect.die(
+            `Unexpected ${selected.type} action in the connection CLI handler.`,
+          )
       }
-      case 'config-admin-discord-list': {
-        const userIds = yield* options.listDiscordAdmins()
-        yield* Console.log(action.json ? JSON.stringify(userIds) : renderDiscordAdminList(userIds))
-        return
+    })
+    const runGuildAction = Effect.fn('Cli.runGuildAction')(function* (selected: FridayCliAction) {
+      switch (selected.type) {
+        case 'config-discord-guild-enable': {
+          const result = yield* applyDiscordConfigMutation(
+            options.enableDiscordGuild(selected.connectionId, selected.guildId),
+            (outcome) => outcome === 'enabled',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildEnable(selected.guildId, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-discord-guild-disable': {
+          const result = yield* applyDiscordConfigMutation(
+            options.disableDiscordGuild(selected.connectionId, selected.guildId),
+            (outcome) => outcome === 'disabled',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildDisable(selected.guildId, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-discord-guild-remove': {
+          const result = yield* applyDiscordConfigMutation(
+            options.removeDiscordGuild(selected.connectionId, selected.guildId),
+            (outcome) => outcome === 'removed',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildRemove(selected.guildId, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-discord-guild-list': {
+          const guilds = yield* options.listDiscordGuilds(selected.connectionId)
+          yield* Console.log(
+            selected.json ? JSON.stringify(guilds) : renderDiscordGuildList(guilds),
+          )
+          return
+        }
+        case 'config-discord-guild-set-invocation': {
+          const result = yield* applyDiscordConfigMutation(
+            options.setDiscordGuildInvocation(
+              selected.connectionId,
+              selected.guildId,
+              selected.mode,
+            ),
+            (outcome) => outcome === 'updated',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildInvocation(selected.guildId, selected.mode, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-discord-guild-set-users': {
+          const result = yield* applyDiscordConfigMutation(
+            options.setDiscordGuildUsers(selected.connectionId, selected.guildId, selected.policy),
+            (outcome) => outcome === 'updated',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildUsers(selected.guildId, selected.policy, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-discord-guild-set-channels': {
+          const result = yield* applyDiscordConfigMutation(
+            options.setDiscordGuildChannels(
+              selected.connectionId,
+              selected.guildId,
+              selected.policy,
+            ),
+            (outcome) => outcome === 'updated',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildChannels(selected.guildId, selected.policy, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-discord-guild-channel-set': {
+          const result = yield* applyDiscordConfigMutation(
+            options.setDiscordGuildChannel(
+              selected.connectionId,
+              selected.guildId,
+              selected.channelId,
+              selected.patch,
+            ),
+            (outcome) => outcome === 'updated',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildChannelSet(selected.channelId, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-discord-guild-channel-reset': {
+          const result = yield* applyDiscordConfigMutation(
+            options.resetDiscordGuildChannel(
+              selected.connectionId,
+              selected.guildId,
+              selected.channelId,
+            ),
+            (outcome) => outcome === 'removed',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatDiscordGuildChannelReset(selected.channelId, outcome),
+            ),
+          )
+          return
+        }
+        default:
+          return yield* Effect.die(`Unexpected ${selected.type} action in the guild CLI handler.`)
       }
-      case 'config-discord-connection-add': {
-        const outcome = yield* options.addDiscordConnection(action)
-        yield* Console.log(formatDiscordConnectionAdd(action.connectionId, outcome))
-        return
+    })
+    const runRuntimeAction = Effect.fn('Cli.runRuntimeAction')(function* (
+      selected: FridayCliAction,
+    ) {
+      switch (selected.type) {
+        case 'config-discord-activity-description-set':
+        case 'config-discord-activity-description-reset': {
+          const enabled = selected.type === 'config-discord-activity-description-set'
+          yield* options.setDiscordActivityDescription(selected, enabled)
+          yield* Console.log(
+            enabled
+              ? `Discord activity description for ${selected.connectionId} enabled. ${activityDescriptionNote}`
+              : `Discord activity description for ${selected.connectionId} disabled. Friday-owned text will be cleared. ${activityDescriptionNote}`,
+          )
+          return
+        }
+        case 'workspace-cleanup-apply': {
+          const result = yield* options.applyWorkspaceCleanup(selected, process.cwd())
+          yield* Console.log(selected.json ? JSON.stringify(result) : renderCleanup(result))
+          return
+        }
+        case 'workspace-cleanup-list': {
+          const proposals = yield* options.listWorkspaceCleanupProposals()
+          yield* Console.log(
+            selected.json ? JSON.stringify(proposals) : renderWorkspaceCleanupList(proposals),
+          )
+          return
+        }
+        case 'worktree-ensure': {
+          const result = yield* options.ensureWorktree(selected)
+          yield* Console.log(selected.json ? JSON.stringify(result) : renderWorktree(result))
+          return
+        }
+        case 'worktree-list': {
+          const worktrees = yield* options.listWorktrees()
+          yield* Console.log(
+            selected.json ? JSON.stringify(worktrees) : renderWorktreeList(worktrees),
+          )
+          return
+        }
+        case 'start':
+          return yield* options.start
+        default:
+          return yield* Effect.die(`Unexpected ${selected.type} action in the runtime CLI handler.`)
       }
-      case 'config-discord-connection-update': {
-        const outcome = yield* options.updateDiscordConnection(action)
-        yield* Console.log(formatDiscordConnectionUpdate(action.connectionId, outcome))
-        return
-      }
-      case 'config-discord-connection-remove': {
-        const outcome = yield* options.removeDiscordConnection(action.connectionId)
-        yield* Console.log(formatDiscordConnectionRemove(action.connectionId, outcome))
-        return
-      }
-      case 'config-discord-connection-enable': {
-        const outcome = yield* options.enableDiscordConnection(action.connectionId)
-        yield* Console.log(formatDiscordConnectionEnable(action.connectionId, outcome))
-        return
-      }
-      case 'config-discord-connection-disable': {
-        const outcome = yield* options.disableDiscordConnection(action.connectionId)
-        yield* Console.log(formatDiscordConnectionDisable(action.connectionId, outcome))
-        return
-      }
-      case 'config-discord-connection-get': {
-        const detail = yield* options.getDiscordConnection(action.connectionId)
-        yield* Console.log(
-          Option.match(detail, {
-            onNone: () => `Discord connection ${action.connectionId} is not configured.`,
-            onSome: (connection) =>
-              action.json ? JSON.stringify(connection) : renderDiscordConnectionDetail(connection),
-          }),
-        )
-        return
-      }
-      case 'config-discord-connection-list': {
-        const connections = yield* options.listDiscordConnections()
-        yield* Console.log(
-          action.json ? JSON.stringify(connections) : renderDiscordConnectionList(connections),
-        )
-        return
-      }
-      case 'config-discord-guild-enable': {
-        const result = yield* applyDiscordConfigMutation(
-          options.enableDiscordGuild(action.connectionId, action.guildId),
-          (outcome) => outcome === 'enabled',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildEnable(action.guildId, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-guild-disable': {
-        const result = yield* applyDiscordConfigMutation(
-          options.disableDiscordGuild(action.connectionId, action.guildId),
-          (outcome) => outcome === 'disabled',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildDisable(action.guildId, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-guild-remove': {
-        const result = yield* applyDiscordConfigMutation(
-          options.removeDiscordGuild(action.connectionId, action.guildId),
-          (outcome) => outcome === 'removed',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildRemove(action.guildId, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-guild-list': {
-        const guilds = yield* options.listDiscordGuilds(action.connectionId)
-        yield* Console.log(action.json ? JSON.stringify(guilds) : renderDiscordGuildList(guilds))
-        return
-      }
-      case 'config-discord-guild-set-invocation': {
-        const result = yield* applyDiscordConfigMutation(
-          options.setDiscordGuildInvocation(action.connectionId, action.guildId, action.mode),
-          (outcome) => outcome === 'updated',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildInvocation(action.guildId, action.mode, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-guild-set-users': {
-        const result = yield* applyDiscordConfigMutation(
-          options.setDiscordGuildUsers(action.connectionId, action.guildId, action.policy),
-          (outcome) => outcome === 'updated',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildUsers(action.guildId, action.policy, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-guild-set-channels': {
-        const result = yield* applyDiscordConfigMutation(
-          options.setDiscordGuildChannels(action.connectionId, action.guildId, action.policy),
-          (outcome) => outcome === 'updated',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildChannels(action.guildId, action.policy, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-guild-channel-set': {
-        const result = yield* applyDiscordConfigMutation(
-          options.setDiscordGuildChannel(
-            action.connectionId,
-            action.guildId,
-            action.channelId,
-            action.patch,
-          ),
-          (outcome) => outcome === 'updated',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildChannelSet(action.channelId, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-guild-channel-reset': {
-        const result = yield* applyDiscordConfigMutation(
-          options.resetDiscordGuildChannel(action.connectionId, action.guildId, action.channelId),
-          (outcome) => outcome === 'removed',
-          options.reloadConfig,
-        )
-        yield* Console.log(
-          formatDiscordConfigMutation(result, (outcome) =>
-            formatDiscordGuildChannelReset(action.channelId, outcome),
-          ),
-        )
-        return
-      }
-      case 'config-discord-activity-description-set':
-      case 'config-discord-activity-description-reset': {
-        const enabled = action.type === 'config-discord-activity-description-set'
-        yield* options.setDiscordActivityDescription(action, enabled)
-        yield* Console.log(
-          enabled
-            ? `Discord activity description for ${action.connectionId} enabled. ${activityDescriptionNote}`
-            : `Discord activity description for ${action.connectionId} disabled. Friday-owned text will be cleared. ${activityDescriptionNote}`,
-        )
-        return
-      }
-      case 'workspace-cleanup-apply': {
-        const result = yield* options.applyWorkspaceCleanup(action, process.cwd())
-        yield* Console.log(action.json ? JSON.stringify(result) : renderCleanup(result))
-        return
-      }
-      case 'workspace-cleanup-list': {
-        const proposals = yield* options.listWorkspaceCleanupProposals()
-        yield* Console.log(
-          action.json ? JSON.stringify(proposals) : renderWorkspaceCleanupList(proposals),
-        )
-        return
-      }
-      case 'worktree-ensure': {
-        const result = yield* options.ensureWorktree(action)
-        yield* Console.log(action.json ? JSON.stringify(result) : renderWorktree(result))
-        return
-      }
-      case 'worktree-list': {
-        const worktrees = yield* options.listWorktrees()
-        yield* Console.log(action.json ? JSON.stringify(worktrees) : renderWorktreeList(worktrees))
-        return
-      }
-      case 'start':
-        return yield* options.start
-      default: {
-        const unhandled: never = action
-        return unhandled
-      }
+    })
+    const group = cliActionGroups[action.type]
+    switch (group) {
+      case 'configuration':
+        return yield* runConfigurationAction(action)
+      case 'catalog':
+        return yield* runCatalogAction(action)
+      case 'guild':
+        return yield* runGuildAction(action)
+      case 'runtime':
+        return yield* runRuntimeAction(action)
     }
   })
