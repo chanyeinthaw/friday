@@ -29,31 +29,28 @@ Work three at a time in batch order. Verify each batch with
 - `DiscordGuilds.ts` `disableGuild` update + exists fallback
 - `HarnessReload.ts` `reloadConversationHarness` thread lookup
 
-## Inventory (21 remaining, GEN-022–GEN-042; B07 done)
+## Inventory (18 remaining, GEN-025–GEN-042; B08 done)
 
-| ID      | Pri | File                                                        | Function / range                    | Rationale                                                  | Risk   | Tests                                                         | Semantic boundary                                |
-| ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------ | ------------------------------------------------------------- | ------------------------------------------------ |
-| GEN-022 | 22  | `apps/friday/src/tasks/Tasks.ts`                            | `start` L627-645                    | Channel plus directory guards plus launch                  | low    | `tasks/Tasks.integration.test.ts`                             | guard order, launch delegation                   |
-| GEN-023 | 23  | `apps/friday/src/tasks/Tasks.ts`                            | `validateWorkingDirectory` L213-270 | Realpath/stat plus containment guards                      | medium | `tasks/Tasks.integration.test.ts`, `tasks/TaskPolicy.test.ts` | existence vs type vs containment errors          |
-| GEN-024 | 24  | `apps/friday/src/tasks/Tasks.ts`                            | `list` L844-883                     | N+1 turn reads plus null filtering plus status filter      | medium | `tasks/Tasks.integration.test.ts`                             | missing-turn filter vs decode vs filter          |
-| GEN-025 | 25  | `apps/friday/src/tasks/Tasks.ts`                            | `cancel` L884-933                   | Ownership plus active guard plus lifecycle cancel          | medium | `tasks/Tasks.integration.test.ts`                             | already-terminal vs cancel vs publish            |
-| GEN-026 | 26  | `apps/friday/src/tasks/Tasks.ts`                            | launch delivery fork L596-624       | Close plus cancelled guard plus channel accept             | medium | `tasks/Tasks.integration.test.ts`                             | cancelled check, exactly-once delivery           |
-| GEN-027 | 27  | `apps/friday/src/tasks/Tasks.ts`                            | steer delivery fork L820-843        | Same delivery shape, coupled with launch                   | medium | `tasks/Tasks.integration.test.ts`                             | same boundary as launch delivery                 |
-| GEN-028 | 28  | `apps/friday/src/platforms/PlatformIngestion.ts`            | title sidecar L132-152              | Title generate plus publish plus swallowed failure         | low    | `platforms/PlatformIngestion.test.ts`                         | failure stays swallowed and forked               |
-| GEN-029 | 29  | `apps/friday/src/tasks/Tasks.ts`                            | `launchTaskUnlocked` L429-595       | Worktree isolation plus thread/turn build plus open/prompt | high   | `tasks/Tasks.integration.test.ts`                             | isolation decision vs build vs prompt            |
-| GEN-030 | 30  | `apps/friday/src/platforms/testing/TestPlatform.ts`         | `send` L71-79                       | Record event plus resolve handler plus invoke              | low    | `platforms/testing/TestPlatform.test.ts`                      | record must precede handler                      |
-| GEN-031 | 31  | `apps/friday/src/tasks/Tasks.ts`                            | `steer` orchestration L734-819      | Owned/latest guards plus active-vs-idle branch             | high   | `tasks/Tasks.integration.test.ts`                             | steer-active vs continuation-idle                |
-| GEN-032 | 32  | `apps/friday/src/persistence/SqliteThreadPersistence.ts`    | `putActivitySnapshot` L319-388      | Sequence read plus upsert plus turn projection             | medium | `persistence/SqliteThreadPersistence.integration.test.ts`     | sequence vs upsert vs projection atomic          |
-| GEN-033 | 33  | `apps/friday/src/repositories/RepositoryWorktrees.ts`       | `readWorktreeRegistry` L269-302     | Missing-vs-invalid registry distinction                    | low    | `repositories/RepositoryWorktrees.test.ts`                    | ENOENT-null vs invalid error                     |
-| GEN-034 | 34  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `channelName` L203-235              | Cache guard plus fetch plus decode plus store              | low    | `platforms/discord/DiscordAgentActivity.test.ts`              | cache hit vs fetch vs decode                     |
-| GEN-035 | 35  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `currentApplication` L236-264       | Fetch plus ok-guard plus decode                            | low    | `platforms/discord/DiscordAgentActivity.test.ts`              | HTTP-ok guard vs decode                          |
-| GEN-036 | 36  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `patchDescription` L265-302         | Ownership guards plus PATCH plus 429 handling              | medium | `platforms/discord/DiscordAgentActivity.test.ts`              | ownership vs PATCH vs rate-limit                 |
-| GEN-037 | 37  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `desiredDescription` L303-320       | Per-channel fallback plus packing limit                    | low    | `platforms/discord/DiscordAgentActivity.test.ts`              | fallback vs truncation                           |
-| GEN-038 | 38  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `publishLatest` L321-356            | Retry loop plus last-write guard plus transient check      | high   | `platforms/discord/DiscordAgentActivity.test.ts`              | attempt loop vs lastDescription update           |
-| GEN-039 | 39  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `cleanupOwnedDescription` L357-375  | Owned guard plus clearing patch                            | low    | `platforms/discord/DiscordAgentActivity.test.ts`              | owned check vs clear exactly-once                |
-| GEN-040 | 40  | `apps/friday/src/platforms/DiscordActivityDescriptions.ts`  | `watch` refresh L155-175            | Change detection plus callback plus swallowed failure      | low    | `platforms/DiscordActivityDescriptions.integration.test.ts`   | previous compare vs callback, polling untouched  |
-| GEN-041 | 41  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | watch callback L407-414             | Enabled guard plus conditional cleanup plus offer          | low    | `platforms/discord/DiscordAgentActivity.test.ts`              | toggle guard vs cleanup vs signal                |
-| GEN-042 | 42  | `apps/friday/src/harness/pi/PiThreadRuntime.ts`             | subscribe compaction chain L599-612 | Drain plus projection plus logged failure                  | medium | `harness/pi/PiThreadRuntime.test.ts`                          | drain precedes projection, never fails subscribe |
+| ID      | Pri | File                                                        | Function / range                    | Rationale                                                  | Risk   | Tests                                                       | Semantic boundary                                |
+| ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------ | ----------------------------------------------------------- | ------------------------------------------------ |
+| GEN-025 | 25  | `apps/friday/src/tasks/Tasks.ts`                            | `cancel` L884-933                   | Ownership plus active guard plus lifecycle cancel          | medium | `tasks/Tasks.integration.test.ts`                           | already-terminal vs cancel vs publish            |
+| GEN-026 | 26  | `apps/friday/src/tasks/Tasks.ts`                            | launch delivery fork L596-624       | Close plus cancelled guard plus channel accept             | medium | `tasks/Tasks.integration.test.ts`                           | cancelled check, exactly-once delivery           |
+| GEN-027 | 27  | `apps/friday/src/tasks/Tasks.ts`                            | steer delivery fork L820-843        | Same delivery shape, coupled with launch                   | medium | `tasks/Tasks.integration.test.ts`                           | same boundary as launch delivery                 |
+| GEN-028 | 28  | `apps/friday/src/platforms/PlatformIngestion.ts`            | title sidecar L132-152              | Title generate plus publish plus swallowed failure         | low    | `platforms/PlatformIngestion.test.ts`                       | failure stays swallowed and forked               |
+| GEN-029 | 29  | `apps/friday/src/tasks/Tasks.ts`                            | `launchTaskUnlocked` L429-595       | Worktree isolation plus thread/turn build plus open/prompt | high   | `tasks/Tasks.integration.test.ts`                           | isolation decision vs build vs prompt            |
+| GEN-030 | 30  | `apps/friday/src/platforms/testing/TestPlatform.ts`         | `send` L71-79                       | Record event plus resolve handler plus invoke              | low    | `platforms/testing/TestPlatform.test.ts`                    | record must precede handler                      |
+| GEN-031 | 31  | `apps/friday/src/tasks/Tasks.ts`                            | `steer` orchestration L734-819      | Owned/latest guards plus active-vs-idle branch             | high   | `tasks/Tasks.integration.test.ts`                           | steer-active vs continuation-idle                |
+| GEN-032 | 32  | `apps/friday/src/persistence/SqliteThreadPersistence.ts`    | `putActivitySnapshot` L319-388      | Sequence read plus upsert plus turn projection             | medium | `persistence/SqliteThreadPersistence.integration.test.ts`   | sequence vs upsert vs projection atomic          |
+| GEN-033 | 33  | `apps/friday/src/repositories/RepositoryWorktrees.ts`       | `readWorktreeRegistry` L269-302     | Missing-vs-invalid registry distinction                    | low    | `repositories/RepositoryWorktrees.test.ts`                  | ENOENT-null vs invalid error                     |
+| GEN-034 | 34  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `channelName` L203-235              | Cache guard plus fetch plus decode plus store              | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | cache hit vs fetch vs decode                     |
+| GEN-035 | 35  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `currentApplication` L236-264       | Fetch plus ok-guard plus decode                            | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | HTTP-ok guard vs decode                          |
+| GEN-036 | 36  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `patchDescription` L265-302         | Ownership guards plus PATCH plus 429 handling              | medium | `platforms/discord/DiscordAgentActivity.test.ts`            | ownership vs PATCH vs rate-limit                 |
+| GEN-037 | 37  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `desiredDescription` L303-320       | Per-channel fallback plus packing limit                    | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | fallback vs truncation                           |
+| GEN-038 | 38  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `publishLatest` L321-356            | Retry loop plus last-write guard plus transient check      | high   | `platforms/discord/DiscordAgentActivity.test.ts`            | attempt loop vs lastDescription update           |
+| GEN-039 | 39  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | `cleanupOwnedDescription` L357-375  | Owned guard plus clearing patch                            | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | owned check vs clear exactly-once                |
+| GEN-040 | 40  | `apps/friday/src/platforms/DiscordActivityDescriptions.ts`  | `watch` refresh L155-175            | Change detection plus callback plus swallowed failure      | low    | `platforms/DiscordActivityDescriptions.integration.test.ts` | previous compare vs callback, polling untouched  |
+| GEN-041 | 41  | `apps/friday/src/platforms/discord/DiscordAgentActivity.ts` | watch callback L407-414             | Enabled guard plus conditional cleanup plus offer          | low    | `platforms/discord/DiscordAgentActivity.test.ts`            | toggle guard vs cleanup vs signal                |
+| GEN-042 | 42  | `apps/friday/src/harness/pi/PiThreadRuntime.ts`             | subscribe compaction chain L599-612 | Drain plus projection plus logged failure                  | medium | `harness/pi/PiThreadRuntime.test.ts`                        | drain precedes projection, never fails subscribe |
 
 Excluded as non-candidates (spot check): `main.ts` service delegations,
 `Cli.ts` decode `flatMap`s, `SqliteThreadPersistence` encode-then-insert
@@ -64,7 +61,7 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 `ControlSocket` promise-based lock protocol, `WorkspaceCleanup` already-gen
 `apply`/`propose`, `contracts/*` (no Effect chains).
 
-## Batches (B07 done; 7 remaining)
+## Batches (B08 done; 6 remaining)
 
 - B01 (done): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
 - B02 (done): GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
@@ -73,16 +70,16 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B05 (done): GEN-013, GEN-014, GEN-015. Transactional unchanged-guard pattern.
 - B06 (done): GEN-016, GEN-017, GEN-018. Coupled guild policy trio, same file.
 - B07 (done): GEN-019, GEN-020, GEN-021. Coupled guild singles, all low.
-- B08 (next): GEN-022, GEN-023, GEN-024. Task setup and reads, no high risk.
-- B09: GEN-025, GEN-026, GEN-027. Task cancel plus coupled deliveries.
+- B08 (done): GEN-022, GEN-023, GEN-024. Retired as already-compliant (outer Effect.gen; inner map/mapError only), no code churn.
+- B09 (next): GEN-025, GEN-026, GEN-027. Task cancel plus coupled deliveries.
 - B10: GEN-029 (high), GEN-028 (low), GEN-030 (low). High isolated with lows.
 - B11: GEN-031 (high), GEN-032 (medium), GEN-033 (low). High isolated.
 - B12: GEN-034, GEN-035, GEN-036. Coupled activity fetch chain.
 - B13: GEN-037 (low), GEN-038 (high), GEN-039 (low). High isolated with lows.
 - B14: GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
 
-First next batch is B08: GEN-022 `start`, GEN-023
-`validateWorkingDirectory`, GEN-024 `list`.
+First next batch is B09: GEN-025 `cancel`, GEN-026
+launch delivery fork, GEN-027 steer delivery fork.
 
 ## Limitations
 
