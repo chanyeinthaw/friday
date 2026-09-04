@@ -530,20 +530,16 @@ export const DiscordGuildsLive = Layer.effect(
         }),
 
       removeGuild: (connectionId, guildId) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            sql<Record<string, unknown>>`
-          DELETE FROM discord_guilds
-          WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
-          RETURNING guild_id
-        `.pipe(
-              Effect.mapError(writeError(connectionId)),
-              Effect.map((rows): DiscordGuildRemoveOutcome =>
-                rows[0] === undefined ? 'missing' : 'removed',
-              ),
-            ),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          const rows = yield* sql<Record<string, unknown>>`
+            DELETE FROM discord_guilds
+            WHERE connection_id = ${connectionId} AND guild_id = ${guildId}
+            RETURNING guild_id
+          `.pipe(Effect.mapError(writeError(connectionId)))
+          if (rows[0] === undefined) return 'missing' as const
+          return 'removed' as const
+        }),
 
       setGuildInvocation: (connectionId, guildId, mode) =>
         Effect.gen(function* () {
@@ -659,31 +655,26 @@ export const DiscordGuildsLive = Layer.effect(
         }),
 
       setChannel: (connectionId, guildId, channelId, patch) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            sql
-              .withTransaction(updateChannel(connectionId, guildId, channelId, patch))
-              .pipe(Effect.mapError(writeError(connectionId))),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          return yield* sql
+            .withTransaction(updateChannel(connectionId, guildId, channelId, patch))
+            .pipe(Effect.mapError(writeError(connectionId)))
+        }),
 
       resetChannel: (connectionId, guildId, channelId) =>
-        requireDiscordConnection(connectionId).pipe(
-          Effect.andThen(
-            sql<Record<string, unknown>>`
-          DELETE FROM discord_guild_channels
-          WHERE connection_id = ${connectionId}
-            AND guild_id = ${guildId}
-            AND channel_id = ${channelId}
-          RETURNING channel_id
-        `.pipe(
-              Effect.mapError(writeError(connectionId)),
-              Effect.map((rows): DiscordGuildChannelResetOutcome =>
-                rows[0] === undefined ? 'missing' : 'removed',
-              ),
-            ),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* requireDiscordConnection(connectionId)
+          const rows = yield* sql<Record<string, unknown>>`
+            DELETE FROM discord_guild_channels
+            WHERE connection_id = ${connectionId}
+              AND guild_id = ${guildId}
+              AND channel_id = ${channelId}
+            RETURNING channel_id
+          `.pipe(Effect.mapError(writeError(connectionId)))
+          if (rows[0] === undefined) return 'missing' as const
+          return 'removed' as const
+        }),
     })
   }),
 )

@@ -29,13 +29,10 @@ Work three at a time in batch order. Verify each batch with
 - `DiscordGuilds.ts` `disableGuild` update + exists fallback
 - `HarnessReload.ts` `reloadConversationHarness` thread lookup
 
-## Inventory (24 remaining, GEN-019–GEN-042; B06 done)
+## Inventory (21 remaining, GEN-022–GEN-042; B07 done)
 
 | ID      | Pri | File                                                        | Function / range                    | Rationale                                                  | Risk   | Tests                                                         | Semantic boundary                                |
 | ------- | --- | ----------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------ | ------------------------------------------------------------- | ------------------------------------------------ |
-| GEN-019 | 19  | `apps/friday/src/config/DiscordGuilds.ts`                   | `removeGuild` L539-554              | Require plus delete plus outcome map                       | low    | `config/DiscordGuilds.integration.test.ts`                    | missing vs removed                               |
-| GEN-020 | 20  | `apps/friday/src/config/DiscordGuilds.ts`                   | `resetChannel` L680-697             | Require plus delete plus outcome map                       | low    | `config/DiscordGuilds.integration.test.ts`                    | missing vs removed                               |
-| GEN-021 | 21  | `apps/friday/src/config/DiscordGuilds.ts`                   | `setChannel` outer L671-679         | Require plus delegated transaction                         | low    | `config/DiscordGuilds.integration.test.ts`                    | require must precede transaction                 |
 | GEN-022 | 22  | `apps/friday/src/tasks/Tasks.ts`                            | `start` L627-645                    | Channel plus directory guards plus launch                  | low    | `tasks/Tasks.integration.test.ts`                             | guard order, launch delegation                   |
 | GEN-023 | 23  | `apps/friday/src/tasks/Tasks.ts`                            | `validateWorkingDirectory` L213-270 | Realpath/stat plus containment guards                      | medium | `tasks/Tasks.integration.test.ts`, `tasks/TaskPolicy.test.ts` | existence vs type vs containment errors          |
 | GEN-024 | 24  | `apps/friday/src/tasks/Tasks.ts`                            | `list` L844-883                     | N+1 turn reads plus null filtering plus status filter      | medium | `tasks/Tasks.integration.test.ts`                             | missing-turn filter vs decode vs filter          |
@@ -67,7 +64,7 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 `ControlSocket` promise-based lock protocol, `WorkspaceCleanup` already-gen
 `apply`/`propose`, `contracts/*` (no Effect chains).
 
-## Batches (B06 done; 8 remaining)
+## Batches (B07 done; 7 remaining)
 
 - B01 (done): GEN-001, GEN-002, GEN-003. Foundations, all low risk.
 - B02 (done): GEN-004, GEN-005, GEN-006. Coupled persistence guards, all low.
@@ -75,8 +72,8 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B04 (done): GEN-010, GEN-011, GEN-012. Coupled add/remove plus low companion.
 - B05 (done): GEN-013, GEN-014, GEN-015. Transactional unchanged-guard pattern.
 - B06 (done): GEN-016, GEN-017, GEN-018. Coupled guild policy trio, same file.
-- B07 (next): GEN-019, GEN-020, GEN-021. Coupled guild singles, all low.
-- B08: GEN-022, GEN-023, GEN-024. Task setup and reads, no high risk.
+- B07 (done): GEN-019, GEN-020, GEN-021. Coupled guild singles, all low.
+- B08 (next): GEN-022, GEN-023, GEN-024. Task setup and reads, no high risk.
 - B09: GEN-025, GEN-026, GEN-027. Task cancel plus coupled deliveries.
 - B10: GEN-029 (high), GEN-028 (low), GEN-030 (low). High isolated with lows.
 - B11: GEN-031 (high), GEN-032 (medium), GEN-033 (low). High isolated.
@@ -84,8 +81,8 @@ primitives and simple `get*` projections, `DiscordConnections.platformOf` /
 - B13: GEN-037 (low), GEN-038 (high), GEN-039 (low). High isolated with lows.
 - B14: GEN-040, GEN-041, GEN-042. Event and polling tail, low to medium.
 
-First next batch is B07: GEN-019 `removeGuild`, GEN-020
-`resetChannel`, GEN-021 `setChannel` outer.
+First next batch is B08: GEN-022 `start`, GEN-023
+`validateWorkingDirectory`, GEN-024 `list`.
 
 ## Limitations
 
