@@ -197,14 +197,14 @@ const requireOwnedTask = Effect.fn('Tasks.requireOwnedTask')(function* (
   )
   const found = yield* persistence.getThread(threadId)
   if (Option.isNone(found) || found.value.audience !== 'agent') {
-    return yield* Effect.fail(
-      taskError('task-not-found', `Task '${taskId}' was not found.`, operation),
-    )
+    return yield* taskError('task-not-found', `Task '${taskId}' was not found.`, operation)
   }
   const thread = found.value
   if (thread.parent.threadId !== parentThreadId) {
-    return yield* Effect.fail(
-      taskError('task-not-owned', `Task '${taskId}' does not belong to this channel.`, operation),
+    return yield* taskError(
+      'task-not-owned',
+      `Task '${taskId}' does not belong to this channel.`,
+      operation,
     )
   }
   return thread
