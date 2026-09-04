@@ -601,13 +601,13 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
       ? drainSteering.pipe(Effect.catchTag('PiThreadRuntimeError', failActiveTurnFromSteering))
       : Effect.void
     return runPromise(
-      lifecycleLog.pipe(
-        Effect.andThen(compaction),
-        Effect.andThen(
-          projectionLock.withPermit(projectPiSessionEvent({ state, event, emit, makeActivityId })),
-        ),
-        Effect.catchCause((cause) => Effect.logError('Pi event handling failed', { cause })),
-      ),
+      Effect.gen(function* () {
+        yield* lifecycleLog
+        if (shouldDrain) yield* compaction
+        yield* projectionLock.withPermit(
+          projectPiSessionEvent({ state, event, emit, makeActivityId }),
+        )
+      }).pipe(Effect.catchCause((cause) => Effect.logError('Pi event handling failed', { cause }))),
     )
   })
   yield* Effect.addFinalizer(() =>

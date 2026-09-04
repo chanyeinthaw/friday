@@ -153,12 +153,12 @@ export const DiscordActivityDescriptionsLive = Layer.effect(
       enabled,
       watch: (connectionId, onChange) => {
         let previous: boolean | undefined
-        const refresh = enabled(connectionId).pipe(
-          Effect.flatMap((next) => {
-            if (next === previous) return Effect.void
-            previous = next
-            return onChange(next)
-          }),
+        const refresh = Effect.gen(function* () {
+          const next = yield* enabled(connectionId)
+          if (next === previous) return
+          previous = next
+          yield* onChange(next)
+        }).pipe(
           Effect.tapError((cause) =>
             Effect.logWarning('discord.activity-description.refresh-failed').pipe(
               Effect.annotateLogs({ connectionId, cause: String(cause) }),
