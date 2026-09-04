@@ -280,177 +280,152 @@ export const DiscordConnectionsLive = Layer.effect(
         ),
 
       addConnection: (input) =>
-        platformOf(input.connectionId).pipe(
-          Effect.flatMap((platform) =>
-            platform !== undefined
-              ? Effect.succeed<DiscordConnectionAddOutcome>('connection-exists')
-              : sql.withTransaction(
-                  Effect.gen(function* () {
-                    const applicationOwner = yield* sql<Record<string, unknown>>`
-                      SELECT connection_id FROM discord_connections
-                      WHERE application_id = ${input.applicationId}
-                      LIMIT 1
-                    `
-                    if ((yield* decodeApplicationOwnerRows(applicationOwner))[0] !== undefined) {
-                      return 'application-exists' as const
-                    }
-                    yield* sql`
-                      INSERT INTO platform_connections (
-                        connection_id, platform, name, enabled, created_at, updated_at
-                      ) VALUES (
-                        ${input.connectionId}, 'discord', ${input.name}, 1,
-                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                      )
-                    `
-                    yield* sql`
-                      INSERT INTO discord_connections (
-                        connection_id, application_id, public_key, bot_token_env,
-                        respond_to_global_mentions
-                      ) VALUES (
-                        ${input.connectionId}, ${input.applicationId}, ${input.publicKey},
-                        ${input.botTokenEnv}, ${input.respondToGlobalMentions ? 1 : 0}
-                      )
-                    `
-                    return 'added' as const
-                  }),
-                ),
-          ),
-          Effect.mapError(writeError(input.connectionId)),
-        ),
+        Effect.gen(function* () {
+          const platform = yield* platformOf(input.connectionId)
+          if (platform !== undefined) return 'connection-exists' as const
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const applicationOwner = yield* sql<Record<string, unknown>>`
+                SELECT connection_id FROM discord_connections
+                WHERE application_id = ${input.applicationId}
+                LIMIT 1
+              `
+              const owners = yield* decodeApplicationOwnerRows(applicationOwner)
+              if (owners[0] !== undefined) return 'application-exists' as const
+              yield* sql`
+                INSERT INTO platform_connections (
+                  connection_id, platform, name, enabled, created_at, updated_at
+                ) VALUES (
+                  ${input.connectionId}, 'discord', ${input.name}, 1,
+                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+              `
+              yield* sql`
+                INSERT INTO discord_connections (
+                  connection_id, application_id, public_key, bot_token_env,
+                  respond_to_global_mentions
+                ) VALUES (
+                  ${input.connectionId}, ${input.applicationId}, ${input.publicKey},
+                  ${input.botTokenEnv}, ${input.respondToGlobalMentions ? 1 : 0}
+                )
+              `
+              return 'added' as const
+            }),
+          )
+        }).pipe(Effect.mapError(writeError(input.connectionId))),
 
       removeConnection: (connectionId) =>
-        platformOf(connectionId).pipe(
-          Effect.flatMap((platform) =>
-            platform !== 'discord'
-              ? Effect.succeed<DiscordConnectionRemoveOutcome>('missing')
-              : sql
-                  .withTransaction(
-                    Effect.gen(function* () {
-                      yield* sql`
-                    DELETE FROM discord_connections WHERE connection_id = ${connectionId}
-                  `
-                      const deleted = yield* sql<Record<string, unknown>>`
-                    DELETE FROM platform_connections
-                    WHERE connection_id = ${connectionId} AND platform = 'discord'
-                    RETURNING connection_id
-                  `
-                      const outcome: DiscordConnectionRemoveOutcome =
-                        deleted[0] === undefined ? 'missing' : 'removed'
-                      return outcome
-                    }),
-                  )
-                  .pipe(Effect.mapError(writeError(connectionId))),
-          ),
-          Effect.mapError(writeError(connectionId)),
-        ),
+        Effect.gen(function* () {
+          const platform = yield* platformOf(connectionId)
+          if (platform !== 'discord') return 'missing' as const
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`
+                  DELETE FROM discord_connections WHERE connection_id = ${connectionId}
+                `
+                const deleted = yield* sql<Record<string, unknown>>`
+                  DELETE FROM platform_connections
+                  WHERE connection_id = ${connectionId} AND platform = 'discord'
+                  RETURNING connection_id
+                `
+                if (deleted[0] === undefined) return 'missing' as const
+                return 'removed' as const
+              }),
+            )
+            .pipe(Effect.mapError(writeError(connectionId)))
+        }).pipe(Effect.mapError(writeError(connectionId))),
 
       updateConnection: (update) =>
-        platformOf(update.connectionId).pipe(
-          Effect.flatMap((platform) =>
-            platform !== 'discord'
-              ? Effect.succeed<DiscordConnectionUpdateOutcome>('missing')
-              : sql
-                  .withTransaction(
-                    Effect.gen(function* () {
-                      const rows = yield* sql<Record<string, unknown>>`
-                        SELECT
-                          platform_connections.name AS name,
-                          discord_connections.application_id AS application_id,
-                          discord_connections.public_key AS public_key,
-                          discord_connections.bot_token_env AS bot_token_env,
-                          discord_connections.respond_to_global_mentions
-                            AS respond_to_global_mentions
-                        FROM platform_connections
-                        JOIN discord_connections USING (connection_id)
-                        WHERE platform_connections.connection_id = ${update.connectionId}
-                        LIMIT 1
-                      `
-                      const current = (yield* decodeCurrentConnectionRows(rows))[0]
-                      if (current === undefined) return 'missing' as const
-                      const nextName = update.name ?? current.name
-                      const nextApplicationId = update.applicationId ?? current.application_id
-                      const nextPublicKey = update.publicKey ?? current.public_key
-                      const nextBotTokenEnv = update.botTokenEnv ?? current.bot_token_env
-                      const nextRespondToGlobalMentions =
-                        update.respondToGlobalMentions ?? current.respond_to_global_mentions === 1
-                      if (
-                        nextName === current.name &&
-                        nextApplicationId === current.application_id &&
-                        nextPublicKey === current.public_key &&
-                        nextBotTokenEnv === current.bot_token_env &&
-                        nextRespondToGlobalMentions === (current.respond_to_global_mentions === 1)
-                      ) {
-                        return 'unchanged' as const
-                      }
-                      if (nextApplicationId !== current.application_id) {
-                        const owners = yield* sql<Record<string, unknown>>`
-                          SELECT connection_id FROM discord_connections
-                          WHERE application_id = ${nextApplicationId}
-                            AND connection_id <> ${update.connectionId}
-                          LIMIT 1
-                        `
-                        if ((yield* decodeApplicationOwnerRows(owners))[0] !== undefined) {
-                          return 'application-exists' as const
-                        }
-                      }
-                      yield* sql`
-                        UPDATE platform_connections
-                        SET name = ${nextName}, updated_at = CURRENT_TIMESTAMP
-                        WHERE connection_id = ${update.connectionId}
-                      `
-                      yield* sql`
-                        UPDATE discord_connections
-                        SET application_id = ${nextApplicationId},
-                          public_key = ${nextPublicKey},
-                          bot_token_env = ${nextBotTokenEnv},
-                          respond_to_global_mentions = ${nextRespondToGlobalMentions ? 1 : 0}
-                        WHERE connection_id = ${update.connectionId}
-                      `
-                      return 'updated' as const
-                    }),
-                  )
-                  .pipe(Effect.mapError(writeError(update.connectionId))),
-          ),
-          Effect.mapError(writeError(update.connectionId)),
-        ),
+        Effect.gen(function* () {
+          const platform = yield* platformOf(update.connectionId)
+          if (platform !== 'discord') return 'missing' as const
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const rows = yield* sql<Record<string, unknown>>`
+                  SELECT
+                    platform_connections.name AS name,
+                    discord_connections.application_id AS application_id,
+                    discord_connections.public_key AS public_key,
+                    discord_connections.bot_token_env AS bot_token_env,
+                    discord_connections.respond_to_global_mentions
+                      AS respond_to_global_mentions
+                  FROM platform_connections
+                  JOIN discord_connections USING (connection_id)
+                  WHERE platform_connections.connection_id = ${update.connectionId}
+                  LIMIT 1
+                `
+                const current = (yield* decodeCurrentConnectionRows(rows))[0]
+                if (current === undefined) return 'missing' as const
+                const nextName = update.name ?? current.name
+                const nextApplicationId = update.applicationId ?? current.application_id
+                const nextPublicKey = update.publicKey ?? current.public_key
+                const nextBotTokenEnv = update.botTokenEnv ?? current.bot_token_env
+                const nextRespondToGlobalMentions =
+                  update.respondToGlobalMentions ?? current.respond_to_global_mentions === 1
+                if (
+                  nextName === current.name &&
+                  nextApplicationId === current.application_id &&
+                  nextPublicKey === current.public_key &&
+                  nextBotTokenEnv === current.bot_token_env &&
+                  nextRespondToGlobalMentions === (current.respond_to_global_mentions === 1)
+                ) {
+                  return 'unchanged' as const
+                }
+                if (nextApplicationId !== current.application_id) {
+                  const owners = yield* sql<Record<string, unknown>>`
+                    SELECT connection_id FROM discord_connections
+                    WHERE application_id = ${nextApplicationId}
+                      AND connection_id <> ${update.connectionId}
+                    LIMIT 1
+                  `
+                  if ((yield* decodeApplicationOwnerRows(owners))[0] !== undefined) {
+                    return 'application-exists' as const
+                  }
+                }
+                yield* sql`
+                  UPDATE platform_connections
+                  SET name = ${nextName}, updated_at = CURRENT_TIMESTAMP
+                  WHERE connection_id = ${update.connectionId}
+                `
+                yield* sql`
+                  UPDATE discord_connections
+                  SET application_id = ${nextApplicationId},
+                    public_key = ${nextPublicKey},
+                    bot_token_env = ${nextBotTokenEnv},
+                    respond_to_global_mentions = ${nextRespondToGlobalMentions ? 1 : 0}
+                  WHERE connection_id = ${update.connectionId}
+                `
+                return 'updated' as const
+              }),
+            )
+            .pipe(Effect.mapError(writeError(update.connectionId)))
+        }).pipe(Effect.mapError(writeError(update.connectionId))),
 
       enableConnection: (connectionId) =>
-        sql<Record<string, unknown>>`
+        Effect.gen(function* () {
+          const rows = yield* sql<Record<string, unknown>>`
           UPDATE platform_connections SET enabled = 1, updated_at = CURRENT_TIMESTAMP
           WHERE connection_id = ${connectionId} AND platform = 'discord' AND enabled = 0
           RETURNING connection_id
-        `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.flatMap((rows) =>
-            rows[0] !== undefined
-              ? Effect.succeed<DiscordConnectionEnableOutcome>('enabled')
-              : platformOf(connectionId).pipe(
-                  Effect.map((platform): DiscordConnectionEnableOutcome =>
-                    platform === 'discord' ? 'already-enabled' : 'missing',
-                  ),
-                  Effect.mapError(writeError(connectionId)),
-                ),
-          ),
-        ),
+        `
+          if (rows[0] !== undefined) return 'enabled' as const
+          const platform = yield* platformOf(connectionId)
+          return platform === 'discord' ? ('already-enabled' as const) : ('missing' as const)
+        }).pipe(Effect.mapError(writeError(connectionId))),
 
       disableConnection: (connectionId) =>
-        sql<Record<string, unknown>>`
+        Effect.gen(function* () {
+          const rows = yield* sql<Record<string, unknown>>`
           UPDATE platform_connections SET enabled = 0, updated_at = CURRENT_TIMESTAMP
           WHERE connection_id = ${connectionId} AND platform = 'discord' AND enabled = 1
           RETURNING connection_id
-        `.pipe(
-          Effect.mapError(writeError(connectionId)),
-          Effect.flatMap((rows) =>
-            rows[0] !== undefined
-              ? Effect.succeed<DiscordConnectionDisableOutcome>('disabled')
-              : platformOf(connectionId).pipe(
-                  Effect.map((platform): DiscordConnectionDisableOutcome =>
-                    platform === 'discord' ? 'already-disabled' : 'missing',
-                  ),
-                  Effect.mapError(writeError(connectionId)),
-                ),
-          ),
-        ),
+        `
+          if (rows[0] !== undefined) return 'disabled' as const
+          const platform = yield* platformOf(connectionId)
+          return platform === 'discord' ? ('already-disabled' as const) : ('missing' as const)
+        }).pipe(Effect.mapError(writeError(connectionId))),
     })
   }),
 )

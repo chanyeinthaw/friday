@@ -80,24 +80,23 @@ export const WorkspaceCleanupNotificationsLive = Layer.effect(
       yield* Effect.forEach(
         rows,
         ({ thread_id: threadId }) =>
-          decodeThreadId(threadId).pipe(
-            Effect.flatMap((id) => persistence.getThread(id)),
-            Effect.flatMap((thread) => {
-              if (Option.isNone(thread) || thread.value.audience !== 'user') return Effect.void
-              const channelThread = thread.value
-              return cleanup.propose(channelThread).pipe(
-                Effect.flatMap((proposal) => {
-                  if (proposal === null) return Effect.void
-                  return channelTurns.accept({
-                    thread: channelThread,
-                    message: {
-                      source: 'system',
-                      content: { text: renderProposal(proposal), images: [] },
-                    },
-                  })
-                }),
-              )
-            }),
+          Effect.gen(function* () {
+            const id = yield* decodeThreadId(threadId)
+            const thread = yield* persistence.getThread(id)
+            if (Option.isNone(thread) || thread.value.audience !== 'user') return
+
+            const channelThread = thread.value
+            const proposal = yield* cleanup.propose(channelThread)
+            if (proposal === null) return
+
+            yield* channelTurns.accept({
+              thread: channelThread,
+              message: {
+                source: 'system',
+                content: { text: renderProposal(proposal), images: [] },
+              },
+            })
+          }).pipe(
             Effect.tapError((cause) =>
               Effect.logWarning('workspace.cleanup.notification-failed').pipe(
                 Effect.annotateLogs({ threadId, cause: String(cause) }),

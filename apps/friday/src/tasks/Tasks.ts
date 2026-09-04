@@ -150,19 +150,16 @@ const resolveProfile = Effect.fn('Tasks.resolveProfile')(function* (
 ) {
   const resolved =
     requested === undefined ? yield* models.defaultProfile : yield* models.resolve(requested)
-  return yield* Option.match(resolved, {
-    onNone: () =>
-      Effect.fail(
-        taskError(
-          'model-not-configured',
-          requested === undefined
-            ? "No 'primary' subagent profile is configured."
-            : `Subagent profile '${requested}' is not configured.`,
-          operation,
-        ),
-      ),
-    onSome: Effect.succeed,
-  })
+  if (Option.isNone(resolved)) {
+    return yield* taskError(
+      'model-not-configured',
+      requested === undefined
+        ? "No 'primary' subagent profile is configured."
+        : `Subagent profile '${requested}' is not configured.`,
+      operation,
+    )
+  }
+  return resolved.value
 })
 
 const requireChannelThread = Effect.fn('Tasks.requireChannelThread')(function* (
@@ -170,18 +167,16 @@ const requireChannelThread = Effect.fn('Tasks.requireChannelThread')(function* (
   parentThreadId: StartTaskRequest['parentThreadId'],
 ) {
   const found = yield* persistence.getThread(parentThreadId)
-  return yield* Option.match(found, {
-    onNone: () =>
-      Effect.fail(
-        taskError('parent-not-found', `Parent Thread '${parentThreadId}' was not found.`),
-      ),
-    onSome: (thread) =>
-      thread.audience === 'user'
-        ? Effect.succeed(thread)
-        : Effect.fail(
-            taskError('parent-not-channel', `Thread '${parentThreadId}' is not a channel Thread.`),
-          ),
-  })
+  if (Option.isNone(found)) {
+    return yield* taskError('parent-not-found', `Parent Thread '${parentThreadId}' was not found.`)
+  }
+  if (found.value.audience !== 'user') {
+    return yield* taskError(
+      'parent-not-channel',
+      `Thread '${parentThreadId}' is not a channel Thread.`,
+    )
+  }
+  return found.value
 })
 
 const requireOwnedTask = Effect.fn('Tasks.requireOwnedTask')(function* (
@@ -196,27 +191,18 @@ const requireOwnedTask = Effect.fn('Tasks.requireOwnedTask')(function* (
     ),
   )
   const found = yield* persistence.getThread(threadId)
-  return yield* Option.match(found, {
-    onNone: () =>
-      Effect.fail(taskError('task-not-found', `Task '${taskId}' was not found.`, operation)),
-    onSome: (thread) => {
-      if (thread.audience !== 'agent') {
-        return Effect.fail(
-          taskError('task-not-found', `Task '${taskId}' was not found.`, operation),
-        )
-      }
-      if (thread.parent.threadId !== parentThreadId) {
-        return Effect.fail(
-          taskError(
-            'task-not-owned',
-            `Task '${taskId}' does not belong to this channel.`,
-            operation,
-          ),
-        )
-      }
-      return Effect.succeed(thread)
-    },
-  })
+  if (Option.isNone(found) || found.value.audience !== 'agent') {
+    return yield* taskError('task-not-found', `Task '${taskId}' was not found.`, operation)
+  }
+  const thread = found.value
+  if (thread.parent.threadId !== parentThreadId) {
+    return yield* taskError(
+      'task-not-owned',
+      `Task '${taskId}' does not belong to this channel.`,
+      operation,
+    )
+  }
+  return thread
 })
 
 const validateWorkingDirectory = Effect.fn('Tasks.validateWorkingDirectory')(function* (
@@ -654,36 +640,28 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
 
   const bootstrap = Effect.fn('Tasks.bootstrap')(function* (request: BootstrapTaskRequest) {
     const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
-    const resolvedWorkingDirectory = yield* options.fileSystem
-      .realPath(parent.workingDirectory)
-      .pipe(
-        Effect.flatMap((path) =>
-          options.fileSystem
-            .stat(path)
-            .pipe(
-              Effect.flatMap((info) =>
-                info.type === 'Directory'
-                  ? Effect.succeed(path)
-                  : Effect.fail(
-                      taskError(
-                        'invalid-working-directory',
-                        `Channel workspace '${parent.workingDirectory}' is not a directory.`,
-                        'bootstrap',
-                      ),
-                    ),
-              ),
-            ),
+    const { path: resolvedWorkingDirectory, info } = yield* Effect.gen(function* () {
+      const path = yield* options.fileSystem.realPath(parent.workingDirectory)
+      const info = yield* options.fileSystem.stat(path)
+      return { path, info }
+    }).pipe(
+      Effect.mapError(() =>
+        taskError(
+          'invalid-working-directory',
+          `Channel workspace '${parent.workingDirectory}' cannot be used for bootstrap work.`,
+          'bootstrap',
         ),
-        Effect.mapError((cause) =>
-          cause instanceof TaskError
-            ? cause
-            : taskError(
-                'invalid-working-directory',
-                `Channel workspace '${parent.workingDirectory}' cannot be used for bootstrap work.`,
-                'bootstrap',
-              ),
+      ),
+    )
+    if (info.type !== 'Directory') {
+      return yield* Effect.fail(
+        taskError(
+          'invalid-working-directory',
+          `Channel workspace '${parent.workingDirectory}' is not a directory.`,
+          'bootstrap',
         ),
       )
+    }
     const workingDirectory = yield* decodeWorkingDirectory(resolvedWorkingDirectory).pipe(
       Effect.mapError((cause) =>
         taskError(
@@ -756,13 +734,10 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
       request.taskId,
     )
     const latest = yield* options.persistence.getLatestTurn(thread.id)
-    const turn = yield* Option.match(latest, {
-      onNone: () =>
-        Effect.fail(
-          taskError('task-not-active', `Task '${request.taskId}' has no Turns.`, 'steer'),
-        ),
-      onSome: Effect.succeed,
-    })
+    if (Option.isNone(latest)) {
+      return yield* taskError('task-not-active', `Task '${request.taskId}' has no Turns.`, 'steer')
+    }
+    const turn = latest.value
     const coordinator = yield* options.friday
       .openThread(thread)
       .pipe(

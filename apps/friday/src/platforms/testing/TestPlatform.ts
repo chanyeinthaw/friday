@@ -68,13 +68,13 @@ export const TestPlatformLive = Layer.effect(
       connectionId: testConnectionId,
       kind: 'test',
       connect: (handler) => Deferred.succeed(inboundHandler, handler),
-      send: (binding, message) => {
-        const inbound = { binding, message }
-        return record({ type: 'inbound-message', inbound }).pipe(
-          Effect.andThen(Deferred.await(inboundHandler)),
-          Effect.flatMap((handler) => handler(inbound)),
-        )
-      },
+      send: (binding, message) =>
+        Effect.gen(function* () {
+          const inbound = { binding, message }
+          yield* record({ type: 'inbound-message', inbound })
+          const handler = yield* Deferred.await(inboundHandler)
+          yield* handler(inbound)
+        }),
       publish: (publication) => record({ type: 'message-published', publication }),
       acknowledge: ({ binding }) => record({ type: 'message-acknowledged', binding }),
       beginWorking: ({ binding, text }) => record({ type: 'working-started', binding, text }),

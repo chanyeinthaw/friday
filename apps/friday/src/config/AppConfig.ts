@@ -365,33 +365,25 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
   const installationRows = yield* sql<Record<string, unknown>>`
     SELECT installation_id FROM installation_config WHERE id = 1
   `
-  const installation = yield* decodeInstallationRows(installationRows).pipe(
-    Effect.flatMap((rows) =>
-      rows[0] === undefined
-        ? Effect.fail(
-            new AppConfigError({
-              operation: 'read',
-              path: 'installation_config',
-              detail: 'Friday installation identity has not been initialized.',
-            }),
-          )
-        : Effect.succeed(rows[0]),
-    ),
-  )
+  const installationRowsDecoded = yield* decodeInstallationRows(installationRows)
+  const installation = installationRowsDecoded[0]
+  if (installation === undefined) {
+    return yield* new AppConfigError({
+      operation: 'read',
+      path: 'installation_config',
+      detail: 'Friday installation identity has not been initialized.',
+    })
+  }
   const agentRows = yield* sql<Record<string, unknown>>`SELECT * FROM agent_config WHERE id = 1`
-  const agent = yield* decodeAgentConfigRows(agentRows).pipe(
-    Effect.flatMap((rows) =>
-      rows[0] === undefined
-        ? Effect.fail(
-            new AppConfigError({
-              operation: 'read',
-              path: 'agent_config',
-              detail: 'Friday configuration has not been initialized.',
-            }),
-          )
-        : Effect.succeed(rows[0]),
-    ),
-  )
+  const agentRowsDecoded = yield* decodeAgentConfigRows(agentRows)
+  const agent = agentRowsDecoded[0]
+  if (agent === undefined) {
+    return yield* new AppConfigError({
+      operation: 'read',
+      path: 'agent_config',
+      detail: 'Friday configuration has not been initialized.',
+    })
+  }
   const profiles = yield* sql<
     Record<string, unknown>
   >`SELECT * FROM subagent_profiles ORDER BY name`
@@ -550,12 +542,13 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
     },
     platforms: {
       discord: yield* Effect.forEach(rows.discord, (connection) =>
-        resolveSecret(
-          environment,
-          connection.bot_token_env,
-          `platforms.${connection.connection_id}.credentials.botToken`,
-        ).pipe(
-          Effect.map((botToken) => ({
+        Effect.gen(function* () {
+          const botToken = yield* resolveSecret(
+            environment,
+            connection.bot_token_env,
+            `platforms.${connection.connection_id}.credentials.botToken`,
+          )
+          return {
             connectionId: connection.connection_id,
             platform: 'discord',
             name: connection.name,
@@ -637,8 +630,8 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
                 }
                 return guildEntry
               }),
-          })),
-        ),
+          }
+        }),
       ),
       slack: [],
     },

@@ -365,22 +365,21 @@ export const WorkspaceCleanupLive = Layer.effect(
         (resource) => resource.removalStatus === 'removing',
       )
       const remaining = [...pending, ...removing]
-      yield* Effect.forEach(pending, validateRepositoryWorktreeSnapshot, {
-        discard: true,
-        concurrency: 1,
+      yield* Effect.gen(function* () {
+        yield* Effect.forEach(pending, validateRepositoryWorktreeSnapshot, {
+          discard: true,
+          concurrency: 1,
+        })
+        yield* Effect.forEach(
+          removing,
+          (resource) =>
+            Effect.gen(function* () {
+              const current = yield* inspectRepositoryWorktree(resource.path)
+              if (current !== null) yield* validateRepositoryWorktreeSnapshot(resource)
+            }),
+          { discard: true, concurrency: 1 },
+        )
       }).pipe(
-        Effect.andThen(
-          Effect.forEach(
-            removing,
-            (resource) =>
-              inspectRepositoryWorktree(resource.path).pipe(
-                Effect.flatMap((current) =>
-                  current === null ? Effect.void : validateRepositoryWorktreeSnapshot(resource),
-                ),
-              ),
-            { discard: true, concurrency: 1 },
-          ),
-        ),
         Effect.catch(
           (
             error,
@@ -403,16 +402,15 @@ export const WorkspaceCleanupLive = Layer.effect(
           `
         }
         const step = yield* Effect.exit(
-          removeRepositoryWorktree(resource).pipe(
-            Effect.andThen(
-              sql`
-                UPDATE workspace_cleanup_resources
-                SET removal_status = 'removed'
-                WHERE proposal_id = ${proposalId} AND worktree_path = ${resource.path}
-                  AND removal_status = 'removing'
-              `,
-            ),
-          ),
+          Effect.gen(function* () {
+            yield* removeRepositoryWorktree(resource)
+            yield* sql`
+              UPDATE workspace_cleanup_resources
+              SET removal_status = 'removed'
+              WHERE proposal_id = ${proposalId} AND worktree_path = ${resource.path}
+                AND removal_status = 'removing'
+            `
+          }),
         )
         if (step._tag === 'Failure') {
           yield* sql`

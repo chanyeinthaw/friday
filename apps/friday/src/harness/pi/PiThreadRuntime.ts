@@ -447,10 +447,12 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
   })
   return {
     ...created,
-    refreshSystemPrompt: Effect.suspend(() => renderSystemPrompt(options, 'reload')).pipe(
-      Effect.map((nextSystemPrompt) => {
+    refreshSystemPrompt: Effect.suspend(() =>
+      Effect.gen(function* () {
+        const nextSystemPrompt = yield* renderSystemPrompt(options, 'reload')
         const previousSystemPrompt = systemPrompt
         systemPrompt = nextSystemPrompt
+        // Deliberately return this nested effect as a rollback value for reload failures.
         return Effect.sync(() => {
           systemPrompt = previousSystemPrompt
         }).pipe(
@@ -601,13 +603,13 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
       ? drainSteering.pipe(Effect.catchTag('PiThreadRuntimeError', failActiveTurnFromSteering))
       : Effect.void
     return runPromise(
-      lifecycleLog.pipe(
-        Effect.andThen(compaction),
-        Effect.andThen(
-          projectionLock.withPermit(projectPiSessionEvent({ state, event, emit, makeActivityId })),
-        ),
-        Effect.catchCause((cause) => Effect.logError('Pi event handling failed', { cause })),
-      ),
+      Effect.gen(function* () {
+        yield* lifecycleLog
+        if (shouldDrain) yield* compaction
+        yield* projectionLock.withPermit(
+          projectPiSessionEvent({ state, event, emit, makeActivityId }),
+        )
+      }).pipe(Effect.catchCause((cause) => Effect.logError('Pi event handling failed', { cause }))),
     )
   })
   yield* Effect.addFinalizer(() =>

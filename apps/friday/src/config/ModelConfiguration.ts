@@ -200,14 +200,14 @@ export const ModelConfigurationLive = Layer.effect(
     return ModelConfiguration.of({
       listModels,
       getModel: (name) =>
-        listModels().pipe(
-          Effect.flatMap((models) => {
-            const model = models.find((candidate) => candidate.name === name)
-            return model === undefined
-              ? Effect.fail(new ModelConfigurationError({ operation: 'get-model', subject: name }))
-              : Effect.succeed(model)
-          }),
-        ),
+        Effect.gen(function* () {
+          const models = yield* listModels()
+          const model = models.find((candidate) => candidate.name === name)
+          if (model === undefined) {
+            return yield* new ModelConfigurationError({ operation: 'get-model', subject: name })
+          }
+          return model
+        }),
       setModel: (selection) =>
         sql
           .withTransaction(
@@ -273,16 +273,14 @@ export const ModelConfigurationLive = Layer.effect(
           )
           .pipe(Effect.mapError(error('update-profile', patch.name))),
       removeProfile: (name) =>
-        name === 'primary'
-          ? Effect.succeed('protected')
-          : sql<
-              Record<string, unknown>
-            >`DELETE FROM subagent_profiles WHERE name = ${name} RETURNING name`.pipe(
-              Effect.map((rows): SubagentProfileRemoveOutcome =>
-                rows[0] === undefined ? 'missing' : 'removed',
-              ),
-              Effect.mapError(error('remove-profile', name)),
-            ),
+        Effect.gen(function* () {
+          if (name === 'primary') return 'protected' as const
+          const rows = yield* sql<
+            Record<string, unknown>
+          >`DELETE FROM subagent_profiles WHERE name = ${name} RETURNING name`
+          if (rows[0] === undefined) return 'missing' as const
+          return 'removed' as const
+        }).pipe(Effect.mapError(error('remove-profile', name))),
     })
   }),
 )

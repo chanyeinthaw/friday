@@ -135,21 +135,18 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
           }),
         )
 
-      const update = (state: ChannelProgressState, status: string) => {
-        if (state.status === status) return Effect.void
-        return attempt(
-          'update-working',
-          platforms.updateWorking({
-            binding: state.thread.conversationBinding,
-            text: render(status),
-          }),
-        ).pipe(
-          Effect.tap((published) =>
-            published ? Effect.sync(() => void (state.status = status)) : Effect.void,
-          ),
-          Effect.asVoid,
-        )
-      }
+      const update = (state: ChannelProgressState, status: string) =>
+        Effect.gen(function* () {
+          if (state.status === status) return
+          const published = yield* attempt(
+            'update-working',
+            platforms.updateWorking({
+              binding: state.thread.conversationBinding,
+              text: render(status),
+            }),
+          )
+          if (published) state.status = status
+        })
 
       return ChannelProgress.of({
         accept: (thread, message) =>

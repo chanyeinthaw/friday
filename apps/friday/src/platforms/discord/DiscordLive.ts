@@ -271,46 +271,39 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               },
               catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
             }).pipe(
-              Effect.flatMap(
-                ({
-                  location,
-                  resolved,
-                }): Effect.Effect<
-                  {
-                    readonly allowed: boolean
-                    readonly location: typeof location
-                    readonly mode: InvocationMode | null
-                  },
-                  ChatSdkCallbackError
-                > =>
-                  Option.isSome(resolved) &&
-                  isAllowedByPolicy(message.author.userId, resolved.value.users)
-                    ? projectDiscordMessage(
-                        discordConfig.connectionId,
-                        discord,
-                        thread,
-                        message,
-                      ).pipe(
-                        Effect.flatMap((input) => ingestion.hasBinding(input)),
-                        Effect.mapError(
-                          (cause) =>
-                            new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
-                        ),
-                        Effect.map((hasBinding) => ({
-                          allowed: shouldInvoke({
-                            kind,
-                            mode: resolved.value.invocationMode,
-                            hasBinding,
-                          }),
-                          location,
-                          mode: resolved.value.invocationMode,
-                        })),
-                      )
-                    : Effect.succeed({
-                        allowed: false,
-                        location,
-                        mode: null,
-                      }),
+              Effect.flatMap(({ location, resolved }) =>
+                Effect.gen(function* () {
+                  if (
+                    Option.isNone(resolved) ||
+                    !isAllowedByPolicy(message.author.userId, resolved.value.users)
+                  ) {
+                    return {
+                      allowed: false,
+                      location,
+                      mode: null satisfies InvocationMode | null,
+                    }
+                  }
+                  const input = yield* projectDiscordMessage(
+                    discordConfig.connectionId,
+                    discord,
+                    thread,
+                    message,
+                  )
+                  const hasBinding = yield* ingestion.hasBinding(input)
+                  return {
+                    allowed: shouldInvoke({
+                      kind,
+                      mode: resolved.value.invocationMode,
+                      hasBinding,
+                    }),
+                    location,
+                    mode: resolved.value.invocationMode,
+                  }
+                }).pipe(
+                  Effect.mapError(
+                    (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
+                  ),
+                ),
               ),
               Effect.tap(({ allowed, location, mode }) =>
                 allowed

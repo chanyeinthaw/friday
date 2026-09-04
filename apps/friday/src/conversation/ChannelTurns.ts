@@ -15,6 +15,7 @@ import * as Crypto from 'effect/Crypto'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Match from 'effect/Match'
 import * as Option from 'effect/Option'
 import type * as PlatformError from 'effect/PlatformError'
 import * as PartitionedSemaphore from 'effect/PartitionedSemaphore'
@@ -157,26 +158,23 @@ export const ChannelTurnsLive = Layer.effect(
 
       if (Option.isNone(accepted)) return
 
-      yield* accepted.value.pipe(
-        Effect.tap((terminal) => logTerminal(request.thread, terminal)),
-        Effect.flatMap((terminal) => {
-          const text =
-            terminal.status === 'completed'
-              ? terminal.agentMessage
-              : terminal.status === 'interrupted'
-                ? (terminal.agentMessage ?? 'Work was interrupted before a response was ready.')
-                : `Work failed: ${terminal.errorMessage}`
-          return progress.finalize(request.thread, text).pipe(
-            Effect.andThen(
-              Effect.logInfo('publication.completed').pipe(
-                Effect.annotateLogs({
-                  threadId: request.thread.id,
-                  turnId: terminal.turnId,
-                  responseLength: text.length,
-                }),
-              ),
-            ),
-          )
+      const terminal = yield* accepted.value
+      yield* logTerminal(request.thread, terminal)
+      const text = Match.value(terminal).pipe(
+        Match.when({ status: 'completed' }, ({ agentMessage }) => agentMessage),
+        Match.when(
+          { status: 'interrupted' },
+          ({ agentMessage }) => agentMessage ?? 'Work was interrupted before a response was ready.',
+        ),
+        Match.when({ status: 'failed' }, ({ errorMessage }) => `Work failed: ${errorMessage}`),
+        Match.exhaustive,
+      )
+      yield* progress.finalize(request.thread, text)
+      yield* Effect.logInfo('publication.completed').pipe(
+        Effect.annotateLogs({
+          threadId: request.thread.id,
+          turnId: terminal.turnId,
+          responseLength: text.length,
         }),
       )
     })

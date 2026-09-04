@@ -149,20 +149,12 @@ export const ThreadRuntimePoolLive = <R>(
                         }),
                       ),
                     )
-                    yield* handle.awaitTerminal.pipe(
-                      Effect.exit,
-                      Effect.andThen(
-                        Clock.currentTimeMillis.pipe(
-                          Effect.flatMap((completedAt) =>
-                            Effect.sync(() => {
-                              entry.activeTurns -= 1
-                              entry.lastActivityAt = completedAt
-                            }),
-                          ),
-                        ),
-                      ),
-                      Effect.forkIn(entry.scope),
-                    )
+                    yield* Effect.gen(function* () {
+                      yield* Effect.exit(handle.awaitTerminal)
+                      const completedAt = yield* Clock.currentTimeMillis
+                      entry.activeTurns -= 1
+                      entry.lastActivityAt = completedAt
+                    }).pipe(Effect.forkIn(entry.scope))
                     return handle
                   }),
                 cancel: coordinator.cancel,
