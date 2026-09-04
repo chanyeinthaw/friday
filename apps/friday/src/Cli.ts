@@ -2426,6 +2426,10 @@ export const runFridayCli = <
           if (outcome === 'updated') yield* reloadAfterCommit()
           return
         }
+        default: {
+          const unhandled: never = selected
+          return unhandled
+        }
       }
     })
     const runProfileAction = Effect.fn('Cli.runProfileAction')(function* (selected: ProfileAction) {
@@ -2483,6 +2487,10 @@ export const runFridayCli = <
           if (outcome === 'removed') yield* reloadAfterCommit()
           return
         }
+        default: {
+          const unhandled: never = selected
+          return unhandled
+        }
       }
     })
     const runCatalogAction = Effect.fn('Cli.runCatalogAction')(function* (selected: CatalogAction) {
@@ -2534,6 +2542,10 @@ export const runFridayCli = <
           )
           return
         }
+        default: {
+          const unhandled: never = selected
+          return unhandled
+        }
       }
     })
     const runConnectionAction = Effect.fn('Cli.runConnectionAction')(function* (
@@ -2584,6 +2596,10 @@ export const runFridayCli = <
             selected.json ? JSON.stringify(connections) : renderDiscordConnectionList(connections),
           )
           return
+        }
+        default: {
+          const unhandled: never = selected
+          return unhandled
         }
       }
     })
@@ -2717,6 +2733,10 @@ export const runFridayCli = <
           )
           return
         }
+        default: {
+          const unhandled: never = selected
+          return unhandled
+        }
       }
     })
     const runRuntimeAction = Effect.fn('Cli.runRuntimeAction')(function* (selected: RuntimeAction) {
@@ -2758,6 +2778,10 @@ export const runFridayCli = <
         }
         case 'start':
           return yield* options.start
+        default: {
+          const unhandled: never = selected
+          return unhandled
+        }
       }
     })
     if (isConfigurationAction(action)) return yield* runConfigurationAction(action)
