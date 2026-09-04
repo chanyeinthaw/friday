@@ -417,13 +417,11 @@ export const DiscordConnectionsLive = Layer.effect(
           UPDATE platform_connections SET enabled = 1, updated_at = CURRENT_TIMESTAMP
           WHERE connection_id = ${connectionId} AND platform = 'discord' AND enabled = 0
           RETURNING connection_id
-        `.pipe(Effect.mapError(writeError(connectionId)))
+        `
           if (rows[0] !== undefined) return 'enabled' as const
-          const platform = yield* platformOf(connectionId).pipe(
-            Effect.mapError(writeError(connectionId)),
-          )
+          const platform = yield* platformOf(connectionId)
           return platform === 'discord' ? ('already-enabled' as const) : ('missing' as const)
-        }),
+        }).pipe(Effect.mapError(writeError(connectionId))),
 
       disableConnection: (connectionId) =>
         Effect.gen(function* () {
@@ -431,13 +429,11 @@ export const DiscordConnectionsLive = Layer.effect(
           UPDATE platform_connections SET enabled = 0, updated_at = CURRENT_TIMESTAMP
           WHERE connection_id = ${connectionId} AND platform = 'discord' AND enabled = 1
           RETURNING connection_id
-        `.pipe(Effect.mapError(writeError(connectionId)))
+        `
           if (rows[0] !== undefined) return 'disabled' as const
-          const platform = yield* platformOf(connectionId).pipe(
-            Effect.mapError(writeError(connectionId)),
-          )
+          const platform = yield* platformOf(connectionId)
           return platform === 'discord' ? ('already-disabled' as const) : ('missing' as const)
-        }),
+        }).pipe(Effect.mapError(writeError(connectionId))),
     })
   }),
 )
