@@ -447,10 +447,12 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
   })
   return {
     ...created,
-    refreshSystemPrompt: Effect.suspend(() => renderSystemPrompt(options, 'reload')).pipe(
-      Effect.map((nextSystemPrompt) => {
+    refreshSystemPrompt: Effect.suspend(() =>
+      Effect.gen(function* () {
+        const nextSystemPrompt = yield* renderSystemPrompt(options, 'reload')
         const previousSystemPrompt = systemPrompt
         systemPrompt = nextSystemPrompt
+        // Deliberately return this nested effect as a rollback value for reload failures.
         return Effect.sync(() => {
           systemPrompt = previousSystemPrompt
         }).pipe(
