@@ -2219,9 +2219,49 @@ export type FridayCliOperations<
   >
 }
 
-type CliActionGroup = 'configuration' | 'catalog' | 'guild' | 'runtime'
+type ProfileAction = Extract<FridayCliAction, { readonly type: `config-profile-${string}` }>
+type ConnectionAction = Extract<
+  FridayCliAction,
+  { readonly type: `config-discord-connection-${string}` }
+>
+type ConfigurationAction = Extract<
+  FridayCliAction,
+  {
+    readonly type:
+      | 'help'
+      | 'version'
+      | 'config-reload'
+      | 'config-model-list'
+      | 'config-model-get'
+      | 'config-model-set'
+      | ProfileAction['type']
+  }
+>
+type CatalogAction = Extract<
+  FridayCliAction,
+  {
+    readonly type:
+      | 'model-list'
+      | 'model-get'
+      | 'model-reload'
+      | 'config-admin-discord-add'
+      | 'config-admin-discord-remove'
+      | 'config-admin-discord-list'
+      | ConnectionAction['type']
+  }
+>
+type GuildAction = Extract<FridayCliAction, { readonly type: `config-discord-guild-${string}` }>
+type RuntimeAction = Exclude<FridayCliAction, ConfigurationAction | CatalogAction | GuildAction>
+type GroupFor<ActionType extends FridayCliAction['type']> =
+  ActionType extends ConfigurationAction['type']
+    ? 'configuration'
+    : ActionType extends CatalogAction['type']
+      ? 'catalog'
+      : ActionType extends GuildAction['type']
+        ? 'guild'
+        : 'runtime'
 
-/** An exhaustive action-to-handler assignment keeps each command dispatcher small. */
+/** An exhaustive, type-checked action-to-handler assignment keeps each dispatcher small. */
 const cliActionGroups = {
   help: 'configuration',
   version: 'configuration',
@@ -2263,7 +2303,20 @@ const cliActionGroups = {
   'worktree-ensure': 'runtime',
   'worktree-list': 'runtime',
   start: 'runtime',
-} satisfies Record<FridayCliAction['type'], CliActionGroup>
+} satisfies {
+  readonly [ActionType in FridayCliAction['type']]: GroupFor<ActionType>
+}
+
+const isConfigurationAction = (action: FridayCliAction): action is ConfigurationAction =>
+  cliActionGroups[action.type] === 'configuration'
+const isProfileAction = (action: ConfigurationAction): action is ProfileAction =>
+  action.type.startsWith('config-profile-')
+const isCatalogAction = (action: FridayCliAction): action is CatalogAction =>
+  cliActionGroups[action.type] === 'catalog'
+const isConnectionAction = (action: CatalogAction): action is ConnectionAction =>
+  action.type.startsWith('config-discord-connection-')
+const isGuildAction = (action: FridayCliAction): action is GuildAction =>
+  cliActionGroups[action.type] === 'guild'
 
 export const runFridayCli = <
   E,
@@ -2331,11 +2384,9 @@ export const runFridayCli = <
       yield* Console.log(formatConfigReloadOutcome(result.value))
     })
     const runConfigurationAction = Effect.fn('Cli.runConfigurationAction')(function* (
-      selected: FridayCliAction,
+      selected: ConfigurationAction,
     ) {
-      if (selected.type.startsWith('config-profile-')) {
-        return yield* runProfileAction(selected)
-      }
+      if (isProfileAction(selected)) return yield* runProfileAction(selected)
       switch (selected.type) {
         case 'help':
           yield* Console.log(renderCliHelp(selected.topic))
@@ -2375,15 +2426,9 @@ export const runFridayCli = <
           if (outcome === 'updated') yield* reloadAfterCommit()
           return
         }
-        default:
-          return yield* Effect.die(
-            `Unexpected ${selected.type} action in the configuration CLI handler.`,
-          )
       }
     })
-    const runProfileAction = Effect.fn('Cli.runProfileAction')(function* (
-      selected: FridayCliAction,
-    ) {
+    const runProfileAction = Effect.fn('Cli.runProfileAction')(function* (selected: ProfileAction) {
       switch (selected.type) {
         case 'config-profile-list': {
           const profiles = yield* options.listSubagentProfiles()
@@ -2438,16 +2483,10 @@ export const runFridayCli = <
           if (outcome === 'removed') yield* reloadAfterCommit()
           return
         }
-        default:
-          return yield* Effect.die(`Unexpected ${selected.type} action in the profile CLI handler.`)
       }
     })
-    const runCatalogAction = Effect.fn('Cli.runCatalogAction')(function* (
-      selected: FridayCliAction,
-    ) {
-      if (selected.type.startsWith('config-discord-connection-')) {
-        return yield* runConnectionAction(selected)
-      }
+    const runCatalogAction = Effect.fn('Cli.runCatalogAction')(function* (selected: CatalogAction) {
+      if (isConnectionAction(selected)) return yield* runConnectionAction(selected)
       switch (selected.type) {
         case 'model-list': {
           const listOptions: PiModelListOptions = {
@@ -2495,12 +2534,10 @@ export const runFridayCli = <
           )
           return
         }
-        default:
-          return yield* Effect.die(`Unexpected ${selected.type} action in the catalog CLI handler.`)
       }
     })
     const runConnectionAction = Effect.fn('Cli.runConnectionAction')(function* (
-      selected: FridayCliAction,
+      selected: ConnectionAction,
     ) {
       switch (selected.type) {
         case 'config-discord-connection-add': {
@@ -2548,13 +2585,9 @@ export const runFridayCli = <
           )
           return
         }
-        default:
-          return yield* Effect.die(
-            `Unexpected ${selected.type} action in the connection CLI handler.`,
-          )
       }
     })
-    const runGuildAction = Effect.fn('Cli.runGuildAction')(function* (selected: FridayCliAction) {
+    const runGuildAction = Effect.fn('Cli.runGuildAction')(function* (selected: GuildAction) {
       switch (selected.type) {
         case 'config-discord-guild-enable': {
           const result = yield* applyDiscordConfigMutation(
@@ -2684,13 +2717,9 @@ export const runFridayCli = <
           )
           return
         }
-        default:
-          return yield* Effect.die(`Unexpected ${selected.type} action in the guild CLI handler.`)
       }
     })
-    const runRuntimeAction = Effect.fn('Cli.runRuntimeAction')(function* (
-      selected: FridayCliAction,
-    ) {
+    const runRuntimeAction = Effect.fn('Cli.runRuntimeAction')(function* (selected: RuntimeAction) {
       switch (selected.type) {
         case 'config-discord-activity-description-set':
         case 'config-discord-activity-description-reset': {
@@ -2729,19 +2758,10 @@ export const runFridayCli = <
         }
         case 'start':
           return yield* options.start
-        default:
-          return yield* Effect.die(`Unexpected ${selected.type} action in the runtime CLI handler.`)
       }
     })
-    const group = cliActionGroups[action.type]
-    switch (group) {
-      case 'configuration':
-        return yield* runConfigurationAction(action)
-      case 'catalog':
-        return yield* runCatalogAction(action)
-      case 'guild':
-        return yield* runGuildAction(action)
-      case 'runtime':
-        return yield* runRuntimeAction(action)
-    }
+    if (isConfigurationAction(action)) return yield* runConfigurationAction(action)
+    if (isCatalogAction(action)) return yield* runCatalogAction(action)
+    if (isGuildAction(action)) return yield* runGuildAction(action)
+    return yield* runRuntimeAction(action)
   })
