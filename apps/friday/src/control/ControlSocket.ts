@@ -475,24 +475,22 @@ const acquireLifecycleLock = Effect.fn('acquireLifecycleLock')(function* (
 
 /** Releases the lock only when the recorded ownership token is still ours. */
 const releaseLifecycleLock = (lockPath: string, token: string) =>
-  Effect.promise(() =>
-    fs
-      .readFile(lockOwnerFileFor(lockPath), 'utf8')
-      .then((raw) => {
-        const decoded = decodeLockOwner(raw)
-        // A re-acquired lock (another starter's token) must never be removed.
-        return Option.isSome(decoded) && decoded.value.token === token
-      })
-      .catch(() => false),
-  ).pipe(
-    Effect.flatMap((owned) =>
-      owned
-        ? Effect.promise(() =>
-            fs.rm(lockPath, { recursive: true, force: true }).catch(() => undefined),
-          )
-        : Effect.void,
-    ),
-  )
+  Effect.gen(function* () {
+    const owned = yield* Effect.promise(() =>
+      fs
+        .readFile(lockOwnerFileFor(lockPath), 'utf8')
+        .then((raw) => {
+          const decoded = decodeLockOwner(raw)
+          // A re-acquired lock (another starter's token) must never be removed.
+          return Option.isSome(decoded) && decoded.value.token === token
+        })
+        .catch(() => false),
+    )
+    if (!owned) return
+    yield* Effect.promise(() =>
+      fs.rm(lockPath, { recursive: true, force: true }).catch(() => undefined),
+    )
+  })
 
 export const serveControlSocket = Effect.fn('serveControlSocket')(function* (
   options: ControlSocketServerOptions,
