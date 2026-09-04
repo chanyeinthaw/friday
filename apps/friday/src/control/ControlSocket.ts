@@ -522,12 +522,13 @@ export const serveControlSocket = Effect.fn('serveControlSocket')(function* (
   }
   const respond = (line: string): Promise<string> =>
     Effect.runPromise(
-      decodeRequestLine(line).pipe(
-        Effect.flatMap((request) =>
-          request.op === 'config.reload'
-            ? options.reload.pipe(Effect.map(encodeOutcomeLine))
-            : Effect.succeed(encodeOutcomeLine(reloadFailed('Unknown control operation.'))),
-        ),
+      Effect.gen(function* () {
+        const request = yield* decodeRequestLine(line)
+        if (request.op !== 'config.reload') {
+          return encodeOutcomeLine(reloadFailed('Unknown control operation.'))
+        }
+        return encodeOutcomeLine(yield* options.reload)
+      }).pipe(
         // Unparseable requests still receive a structured failure outcome.
         Effect.catch(() =>
           Effect.succeed(encodeOutcomeLine(reloadFailed('Invalid control request.'))),
