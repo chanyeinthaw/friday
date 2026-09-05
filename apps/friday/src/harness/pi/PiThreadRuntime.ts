@@ -625,12 +625,6 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   )
 
   const prompt = Effect.fn('PiThreadRuntime.prompt')(function* (request: PromptRequest) {
-    if (request.message.content.images.length > 0) {
-      return yield* new PiThreadRuntimeError({
-        operation: 'attachments',
-        detail: 'Pi image attachment loading is not implemented yet.',
-      })
-    }
     const text = renderPromptMessage(request.message)
     const mode = request.mode ?? 'steer'
     if (mode === 'steer') {

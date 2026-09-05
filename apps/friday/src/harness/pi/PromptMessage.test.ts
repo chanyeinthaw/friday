@@ -1,11 +1,19 @@
 import { assert, it } from '@effect/vitest'
-import { InputMessage } from '@friday/contracts/conversation'
+import { ImageAttachment, InputMessage } from '@friday/contracts/conversation'
 import * as Schema from 'effect/Schema'
 
 import { PromptMessageEnvelopeJson, renderPromptMessage } from './PromptMessage.ts'
 
 const decodeMessage = Schema.decodeSync(InputMessage)
+const decodeImage = Schema.decodeSync(ImageAttachment)
 const decodePromptMessageEnvelope = Schema.decodeSync(PromptMessageEnvelopeJson)
+const image = decodeImage({
+  id: 'attachment-1',
+  name: 'diagram.png',
+  mediaType: 'image/png',
+  sizeBytes: 1234,
+  storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/diagram.png',
+})
 const author = (id: string, username: string | null, displayName: string | null) => ({
   platformUserId: id,
   mention: `<@${id}>`,
@@ -44,6 +52,36 @@ it('renders one typed current trigger with its platform message ID', () => {
       content: 'Hello Friday',
     },
   })
+})
+
+it('serializes trigger, history, and reply attachment links', () => {
+  const envelope = decodePromptMessageEnvelope(
+    renderPromptMessage(
+      decodeMessage({
+        source: 'user',
+        author: author('user-1', 'chan', 'Chan'),
+        context: [
+          {
+            author: author('user-2', 'alice', 'Alice'),
+            content: { text: 'Earlier.', images: [image] },
+            platformMessageId: 'message-1',
+          },
+        ],
+        replyTo: {
+          author: author('user-3', 'bob', 'Bob'),
+          content: { text: '', images: [image] },
+          platformMessageId: 'message-0',
+        },
+        content: { text: '', images: [image] },
+        platformMessageId: 'message-2',
+      }),
+    ),
+  )
+
+  assert.deepStrictEqual(envelope.historicalContext[0]?.images, [image])
+  assert.deepStrictEqual(envelope.replyTarget?.images, [image])
+  assert.deepStrictEqual(envelope.trigger.images, [image])
+  assert.strictEqual(envelope.trigger.content, '')
 })
 
 it('keeps same-author history separate from the current trigger', () => {

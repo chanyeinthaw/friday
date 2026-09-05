@@ -6,6 +6,7 @@ import {
   ActivityId,
   ChannelThread,
   HarnessSession,
+  ImageAttachment,
   MessageAuthor,
   TurnId,
 } from '@friday/contracts/conversation'
@@ -31,6 +32,7 @@ const decodeActivityId = Schema.decodeSync(ActivityId)
 const decodeTurnId = Schema.decodeSync(TurnId)
 const decodeThread = Schema.decodeSync(ChannelThread)
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
+const decodeImage = Schema.decodeSync(ImageAttachment)
 const decodeAuthor = Schema.decodeSync(MessageAuthor)
 const decodePromptMessageEnvelope = Schema.decodeSync(PromptMessageEnvelopeJson)
 
@@ -203,6 +205,119 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
     assert.strictEqual(abortCount, 1)
     assert.strictEqual(disposeCount, 1)
   }).pipe(Effect.provide(BunCrypto.layer)),
+)
+
+it.effect('sends image-bearing messages through the normal JSON prompt', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const prompts: Array<string> = []
+      const session = {
+        sessionId: 'pi-session-images',
+        sessionManager: { getSessionFile: () => '/tmp/pi-session-images.jsonl' },
+        subscribe: () => () => undefined,
+        bindExtensions: async () => undefined,
+        prompt: async (text) => {
+          prompts.push(text)
+        },
+        abort: async () => undefined,
+        reload: async () => undefined,
+        dispose: () => undefined,
+        getSessionStats: () => ({
+          sessionFile: '/tmp/pi-session-images.jsonl',
+          sessionId: 'pi-session-images',
+          userMessages: 1,
+          assistantMessages: 0,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: 1,
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          cost: 0,
+        }),
+      } satisfies PiAgentSessionContract
+      const runtime = yield* makePiThreadRuntime({
+        thread: decodeThread({
+          id: 'thread-images',
+          audience: 'user',
+          parent: null,
+          harness: 'pi',
+          harnessSession: null,
+          workingDirectory: '/tmp/friday/thread-images',
+          model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
+          thinkingLevel: 'max',
+          channelContext: { name: 'Friday test channel', description: '' },
+          conversationBinding: {
+            platform: 'discord',
+            connectionId: 'discord',
+            channelId: 'channel-images',
+            sourceMessageId: 'message-images',
+            conversationId: 'platform-conversation-images',
+          },
+          status: 'active',
+          createdAt: '2026-03-21T09:00:00.000Z',
+          updatedAt: '2026-03-21T09:00:00.000Z',
+          closedAt: null,
+        }),
+        sessionFactory: () => Effect.succeed(session),
+      })
+
+      yield* runtime.prompt({
+        turnId: decodeTurnId('turn-images'),
+        message: {
+          source: 'user',
+          author: decodeAuthor({
+            platformUserId: 'user-1',
+            mention: '<@user-1>',
+            username: 'chan',
+            displayName: 'Chan',
+          }),
+          content: {
+            text: '',
+            images: [
+              decodeImage({
+                id: 'attachment-1',
+                name: 'diagram.png',
+                mediaType: 'image/png',
+                sizeBytes: 1234,
+                storageReference:
+                  'https://cdn.discordapp.com/attachments/channel/attachment/diagram.png',
+              }),
+            ],
+          },
+        },
+        mode: 'turn',
+      })
+
+      assert.lengthOf(prompts, 1)
+      assert.deepStrictEqual(decodePromptMessageEnvelope(prompts[0] ?? ''), {
+        kind: 'user-message',
+        participants: [
+          {
+            id: 'p1',
+            platformUserId: 'user-1',
+            mention: '<@user-1>',
+            username: 'chan',
+            displayName: 'Chan',
+          },
+        ],
+        historicalContext: [],
+        trigger: {
+          kind: 'trigger',
+          participantId: 'p1',
+          content: '',
+          images: [
+            decodeImage({
+              id: 'attachment-1',
+              name: 'diagram.png',
+              mediaType: 'image/png',
+              sizeBytes: 1234,
+              storageReference:
+                'https://cdn.discordapp.com/attachments/channel/attachment/diagram.png',
+            }),
+          ],
+        },
+      })
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
 )
 
 it.effect('queues steering during compaction and drains it in FIFO order', () =>

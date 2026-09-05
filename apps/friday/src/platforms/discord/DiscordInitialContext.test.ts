@@ -1,6 +1,7 @@
 import { assert, it } from '@effect/vitest'
 import {
   ConversationBinding,
+  ImageAttachment,
   InputMessage,
   PlatformConversationId,
 } from '@friday/contracts/conversation'
@@ -10,6 +11,7 @@ import * as Schema from 'effect/Schema'
 import { loadDiscordInitialContext, shouldLoadDiscordContext } from './DiscordInitialContext.ts'
 
 const decodeConversationId = Schema.decodeSync(PlatformConversationId)
+const decodeImage = Schema.decodeSync(ImageAttachment)
 const binding = Schema.decodeSync(ConversationBinding)({
   platform: 'discord',
   connectionId: 'discord',
@@ -35,11 +37,22 @@ const author = (id: string, bot = false) => ({
   isBot: bot,
   isMe: bot,
 })
-const message = (id: string, text: string, bot = false) => ({
-  id,
-  text,
-  author: author(id, bot),
-})
+const message = (
+  id: string,
+  text: string,
+  bot = false,
+  attachments?: ReadonlyArray<{
+    readonly type: 'image'
+    readonly url: string
+    readonly name: string
+    readonly mimeType: string
+    readonly size: number
+  }>,
+) => {
+  const historyMessage = { id, text, author: author(id, bot), attachments }
+  if (attachments !== undefined) historyMessage.attachments = attachments
+  return historyMessage
+}
 
 it('loads context for new bindings, mention-only invocations, and reply-in-channel transport', () => {
   assert.isTrue(
@@ -118,6 +131,35 @@ it.effect('fetches history backward from the current trigger and treats the page
       result.initialContext?.map(({ content }) => content.text),
       ['Earlier context.'],
     )
+  }),
+)
+
+it.effect('preserves attachment metadata in fetched Discord history', () =>
+  Effect.gen(function* () {
+    const { result } = yield* load({ binding, message: trigger, discordHistorySource: 'thread' }, [
+      message('earlier-1', 'See this.', false, [
+        {
+          type: 'image',
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/history.png',
+          name: 'history.png',
+          mimeType: 'image/png',
+          size: 321,
+        },
+      ]),
+    ])
+
+    assert.deepStrictEqual(result.initialContext?.[0]?.content, {
+      text: 'See this.',
+      images: [
+        decodeImage({
+          id: 'attachment-earlier-1-1',
+          name: 'history.png',
+          mediaType: 'image/png',
+          sizeBytes: 321,
+          storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/history.png',
+        }),
+      ],
+    })
   }),
 )
 
