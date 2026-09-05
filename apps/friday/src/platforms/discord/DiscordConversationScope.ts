@@ -18,3 +18,16 @@ export const discordChannelConversationId = (
     channelId: location.channelId,
     threadId: location.channelId,
   })
+
+export const discordCanonicalConversationId = (
+  discord: Pick<DiscordAdapter, 'decodeThreadId' | 'encodeThreadId'>,
+  conversationId: string,
+): string => {
+  const location = discord.decodeThreadId(conversationId)
+  return isDiscordThread(location)
+    ? conversationId
+    : discordChannelConversationId(discord, {
+        guildId: location.guildId,
+        channelId: location.channelId,
+      })
+}
