@@ -56,6 +56,14 @@ export interface PlatformIngestionContract {
       input: PlatformInput,
       cursor: IngestCursor,
     ) => Effect.Effect<PlatformInput, ContextError>,
+    /**
+     * Adaptive thread routing, run after projection and context enrichment
+     * but before `ChannelTurns.accept`. Rebinds the normalized input to a
+     * new native thread when routing decides to split; otherwise returns the
+     * input unchanged. Never re-ingests through Chat SDK and never fails
+     * with a routing error: routing failures return the parent input.
+     */
+    routeThread?: (input: PlatformInput) => Effect.Effect<PlatformInput>,
   ) => Effect.Effect<void, PlatformIngestionError<CreationError> | ContextError, Scope.Scope>
 }
 
@@ -187,6 +195,7 @@ export const PlatformIngestionLive = Layer.effect(
         input: PlatformInput,
         cursor: IngestCursor,
       ) => Effect.Effect<PlatformInput, ContextError>,
+      routeThread?: (input: PlatformInput) => Effect.Effect<PlatformInput>,
     ) {
       const key = ingestKey(input)
       const annotations = ingestAnnotations(input)
@@ -199,11 +208,18 @@ export const PlatformIngestionLive = Layer.effect(
               foundThread,
               loadContext,
             )
-            const thread = yield* resolveChannelThread(foundThread, enrichedInput, createThread)
-            if (created) {
+            const routedInput =
+              routeThread !== undefined ? yield* routeThread(enrichedInput) : enrichedInput
+            const isRouted =
+              String(routedInput.binding.conversationId) !==
+              String(enrichedInput.binding.conversationId)
+            const targetLookup = isRouted ? yield* lookupAdmission(routedInput) : foundThread
+            const targetCreated = isRouted ? Option.isNone(targetLookup) : created
+            const thread = yield* resolveChannelThread(targetLookup, routedInput, createThread)
+            if (targetCreated) {
               yield* launchTitleSidecar(thread, input.message.content.text)
             }
-            const message = resolveIngestMessage(enrichedInput)
+            const message = resolveIngestMessage(routedInput)
             yield* channelTurns.accept({ thread, message })
           }),
         )

@@ -76,6 +76,21 @@ export class FridayDiscordAdapter extends DiscordAdapter {
   }
 
   /**
+   * Explicit adaptive-routing thread creation that bypasses the
+   * reply-in-channel suppression. Single awaited attempt with no retry and no
+   * client-side timeout; callers log and continue in the parent channel only
+   * when native creation fails. The underlying Discord POST is non-abortable,
+   * so callers wait for its result rather than racing a timeout that could
+   * orphan a late-created thread.
+   */
+  public createRoutedDiscordThread(
+    channelId: string,
+    messageId: string,
+  ): Promise<{ id: string; name: string }> {
+    return super.createDiscordThread(channelId, messageId)
+  }
+
+  /**
    * Guild gate for application commands (`/friday`, `/harness`): an interaction
    * from an unregistered or disabled guild is dropped before any handler runs,
    * so it can neither invoke configuration operations nor receive a Friday

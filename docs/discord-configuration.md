@@ -80,7 +80,35 @@ policy and always invoke; the guild channel scope never applies to them.
 Messages that already live in a thread (user-created or previously created by
 Friday) always stay in that thread; their policy resolves from the parent
 channel. Reply-in-channel therefore never splits an existing thread — it only
-determines where the first reply to a channel message goes.
+determines where the first reply to a channel message goes, subject to adaptive
+thread routing below.
+
+## Adaptive thread routing
+
+Top-level messages in `reply-in-channel` channels use adaptive thread routing.
+After projection and channel-history enrichment but before the agent turn,
+Friday asks the configured utility model whether the message should stay
+in-channel or move to a new native Discord thread.
+
+- The decision is conservative and schema-validated: `keep-channel` with
+  `channel-appropriate`, or `create-thread` with `explicit-request` (the user
+  asked for a thread) or `thread-beneficial` (substantial focused multi-step
+  work). Ambiguous, short, casual, acknowledgement, lookup, and status messages
+  stay in-channel.
+- Messages already in native threads never route, including manually created
+  thread starters repaired by projection.
+- A routed message keeps its source identity, channel identity, attribution,
+  and bounded parent-channel context; only the conversation binding moves to
+  the new thread. The new thread becomes a distinct Friday channel thread with
+  its own runtime. Working and final output target the native thread; the
+  parent channel receives no notice.
+- Model, auth, decision-timeout, validation, and native-thread-creation
+  failures log and continue in the parent channel without dropping the
+  message. Native thread creation is a single awaited attempt with no retry,
+  no client-side timeout, and no persistent routing records. The Discord POST
+  cannot be cancelled server-side, so routing waits for its result: a slow
+  Discord API delays the reply instead of answering in the parent while the
+  same creation later orphans a native thread.
 
 ## CLI
 
