@@ -194,10 +194,16 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
               const isThreadStarter = String(target.binding.conversationId).endsWith(
                 `:${target.messageId}`,
               )
+              // A routed first message lives in the parent channel while its
+              // binding already points at the new native thread, so fall back
+              // to the other location before failing. The primary location
+              // succeeds for ordinary messages without an extra scan.
               if (isThreadStarter) {
                 if (await react(String(target.binding.channelId))) return
-              } else if (await react(String(target.binding.conversationId))) {
-                return
+                if (await react(String(target.binding.conversationId))) return
+              } else {
+                if (await react(String(target.binding.conversationId))) return
+                if (await react(String(target.binding.channelId))) return
               }
               throw new Error(`Message '${target.messageId}' was not found for acknowledgement.`)
             },

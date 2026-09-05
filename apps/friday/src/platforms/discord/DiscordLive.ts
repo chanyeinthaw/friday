@@ -7,6 +7,7 @@ import * as Schema from 'effect/Schema'
 
 import { DiscordActivityDescriptions } from '../DiscordActivityDescriptions.ts'
 import { PlatformIngestion } from '../PlatformIngestion.ts'
+import { PlatformThreadRouter } from '../PlatformThreadRouter.ts'
 import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import { AppConfig } from '../../config/AppConfigLive.ts'
 import { findDiscordConnection } from '../../config/AppConfig.ts'
@@ -60,6 +61,7 @@ import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
 } from './DiscordChannelBootstrap.ts'
+import { makeDiscordThreadRoute } from './DiscordThreadRouting.ts'
 
 const decodePlatformConversationId = Schema.decodeOption(PlatformConversationId)
 
@@ -67,6 +69,7 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
   const platforms = yield* PlatformRegistry
   const activityDescriptions = yield* DiscordActivityDescriptions
   const ingestion = yield* PlatformIngestion
+  const threadRouter = yield* PlatformThreadRouter
   const config = yield* AppConfig
   // Startup topology snapshot: Discord resources are built once per process.
   const startup = config.current()
@@ -157,6 +160,15 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           model: () => config.current().models.primary,
         }
         const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
+        // Adaptive thread routing runs after projection and context
+        // enrichment but before the agent turn. It rebinds top-level
+        // reply-in-channel messages to a new native thread without
+        // re-ingesting through Chat SDK; failures return the parent input.
+        const routeThread = makeDiscordThreadRoute({
+          discord,
+          decide: (decideInput) => threadRouter.decide(decideInput),
+          resolveChannelPolicy,
+        })
         const botToken = String(discordConfig.credentials.botToken)
         const setAgentActivity = yield* makeDiscordAgentActivity(discord, botToken, {
           activityDescription: discordConfig.activityDescription,
@@ -338,23 +350,28 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               Effect.map(({ allowed }) => allowed),
             ),
           onInboundMessage: (input) =>
-            ingestion.ingest(input, bootstrap, (contextInput, cursor) => {
-              const location = discord.decodeThreadId(String(contextInput.binding.conversationId))
-              const policy = resolveChannelPolicy(location.guildId, location.channelId)
-              return policy !== undefined &&
-                shouldLoadDiscordContext({
-                  created: cursor.created,
-                  invocationMode: policy.invocationMode,
-                  replyMode: policy.replyMode,
-                })
-                ? loadDiscordInitialContext(
-                    discord,
-                    config.current().agent.recentMessageCount,
-                    contextInput,
-                    cursor,
-                  )
-                : Effect.succeed(contextInput)
-            }),
+            ingestion.ingest(
+              input,
+              bootstrap,
+              (contextInput, cursor) => {
+                const location = discord.decodeThreadId(String(contextInput.binding.conversationId))
+                const policy = resolveChannelPolicy(location.guildId, location.channelId)
+                return policy !== undefined &&
+                  shouldLoadDiscordContext({
+                    created: cursor.created,
+                    invocationMode: policy.invocationMode,
+                    replyMode: policy.replyMode,
+                  })
+                  ? loadDiscordInitialContext(
+                      discord,
+                      config.current().agent.recentMessageCount,
+                      contextInput,
+                      cursor,
+                    )
+                  : Effect.succeed(contextInput)
+              },
+              routeThread,
+            ),
         })
         // Register the application commands before the gateway starts so a
         // registration failure cannot leave partially started Discord resources.

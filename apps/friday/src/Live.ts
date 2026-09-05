@@ -13,7 +13,9 @@ import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntime
 import { AppConfig, AppConfigLive } from './config/AppConfigLive.ts'
 import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiTextGeneration } from './harness/pi/PiTextGeneration.ts'
+import { makePiPlatformThreadRouter } from './harness/pi/PiPlatformThreadRouter.ts'
 import { TextGeneration } from './harness/TextGeneration.ts'
+import { PlatformThreadRouter } from './platforms/PlatformThreadRouter.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
@@ -107,6 +109,10 @@ const CoreLive = Layer.mergeAll(
 const TextGenerationLive = Layer.effect(TextGeneration, makePiTextGeneration()).pipe(
   Layer.provide(CoreLive),
 )
+const PlatformThreadRouterConfiguredLive = Layer.effect(
+  PlatformThreadRouter,
+  makePiPlatformThreadRouter(),
+).pipe(Layer.provide(CoreLive))
 const ConversationTitlesConfiguredLive = ConversationTitlesLive.pipe(Layer.provide(CoreLive))
 const ChannelProgressConfiguredLive = ChannelProgressLive.pipe(Layer.provide(CoreLive))
 const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
@@ -169,6 +175,7 @@ export const FridayLive = Layer.mergeAll(
   PoolLive,
   AgentLive,
   TextGenerationLive,
+  PlatformThreadRouterConfiguredLive,
   ConversationTitlesConfiguredLive,
   ChannelProgressConfiguredLive,
   ChannelTurnsConfiguredLive,
