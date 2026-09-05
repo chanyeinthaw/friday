@@ -74,7 +74,7 @@ import {
   type WorkspaceCleanupProposal,
 } from './workspaces/WorkspaceCleanup.ts'
 
-export const FRIDAY_VERSION = '0.0.0-nightly.22'
+export const FRIDAY_VERSION = '0.0.0-nightly.23'
 
 /**
  * One node of the CLI command tree: the typed source of parsing, validation,
