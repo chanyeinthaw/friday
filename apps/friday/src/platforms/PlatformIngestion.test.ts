@@ -1,5 +1,6 @@
 import { assert, it } from '@effect/vitest'
 import {
+  AgentThread,
   ChannelThread,
   ContextMessage,
   ConversationBinding,
@@ -9,15 +10,17 @@ import {
   type Thread as ThreadType,
   type Turn as TurnType,
 } from '@friday/contracts/conversation'
+import * as Cause from 'effect/Cause'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { Friday, type FridayContract } from '../Friday.ts'
 import { AppConfig } from '../config/AppConfigLive.ts'
-import { TextGeneration } from '../harness/TextGeneration.ts'
+import { TextGeneration, TextGenerationError } from '../harness/TextGeneration.ts'
 import { ChannelProgressLive } from '../conversation/ChannelProgress.ts'
 import { ChannelTurnsLive } from '../conversation/ChannelTurns.ts'
 import {
@@ -63,6 +66,7 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
   updatedAt: '2026-03-21T09:00:00.000Z',
   closedAt: null,
 })
+const decodeAgentThread = Schema.decodeSync(AgentThread)
 const decodeTurnId = Schema.decodeSync(TurnId)
 const decodeInputMessage = Schema.decodeSync(InputMessage)
 const decodeContextMessage = Schema.decodeSync(ContextMessage)
@@ -325,6 +329,132 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         'open-thread',
         'steer',
       ])
+    }),
+  ),
+)
+
+it.effect('keeps thread title failure non-fatal for new channel Threads', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const persistence = makePersistence(events, { newThread: true })
+      const friday = makeFriday(events, persistence)
+      const platform = makePlatform(events)
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(ThreadPersistence, persistence),
+        Layer.succeed(Friday, friday),
+        Layer.succeed(Crypto.Crypto, testCrypto),
+        Layer.succeed(AppConfig, testAppConfig),
+        Layer.succeed(
+          TextGeneration,
+          TextGeneration.of({
+            generateThreadTitle: () =>
+              Effect.fail(
+                new TextGenerationError({ operation: 'thread-title', detail: 'title boom' }),
+              ),
+          }),
+        ),
+        Layer.succeed(
+          ConversationTitles,
+          ConversationTitles.of({
+            generated: () => Effect.sync(() => events.push('title-generated')),
+            taskStarted: () => Effect.void,
+            taskFinished: () => Effect.void,
+          }),
+        ),
+        PlatformRegistryLive,
+      )
+      const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
+      const TurnsLive = ChannelTurnsLive.pipe(
+        Layer.provide(Layer.merge(dependencies, ProgressLive)),
+      )
+      const TestLive = Layer.merge(
+        Layer.mergeAll(dependencies, ProgressLive, TurnsLive),
+        PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
+      )
+
+      yield* Effect.gen(function* () {
+        const ingestion = yield* PlatformIngestion
+        const platforms = yield* PlatformRegistry
+        yield* platforms.register(platform)
+        yield* ingestion.ingest(input, () => Effect.succeed(thread))
+      }).pipe(Effect.provide(TestLive))
+
+      assert.deepStrictEqual(events, [
+        'acknowledge',
+        'working:-# Thinking...',
+        'open-thread',
+        'prompt',
+        'finalize:Friday is done.',
+      ])
+    }),
+  ),
+)
+
+it.effect('dies without accepting when the resolved Thread is not a user channel', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const agentThread = decodeAgentThread({
+        id: 'thread-agent',
+        audience: 'agent',
+        parent: { threadId: thread.id, turnId: decodeTurnId('active-turn') },
+        harness: 'pi',
+        harnessSession: null,
+        workingDirectory: '/tmp/friday/thread-agent',
+        model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
+        thinkingLevel: 'max',
+        role: 'subagent',
+        conversationBinding: null,
+        status: 'active',
+        createdAt: '2026-03-21T09:00:00.000Z',
+        updatedAt: '2026-03-21T09:00:00.000Z',
+        closedAt: null,
+      })
+      const persistence: ThreadPersistenceContract = {
+        ...makePersistence(events),
+        findPlatformThread: () => Effect.succeedSome(agentThread),
+      }
+      const friday = makeFriday(events, persistence)
+      const platform = makePlatform(events)
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(ThreadPersistence, persistence),
+        Layer.succeed(Friday, friday),
+        Layer.succeed(Crypto.Crypto, testCrypto),
+        Layer.succeed(AppConfig, testAppConfig),
+        Layer.succeed(
+          TextGeneration,
+          TextGeneration.of({ generateThreadTitle: () => Effect.succeed('Test Thread') }),
+        ),
+        Layer.succeed(
+          ConversationTitles,
+          ConversationTitles.of({
+            generated: () => Effect.void,
+            taskStarted: () => Effect.void,
+            taskFinished: () => Effect.void,
+          }),
+        ),
+        PlatformRegistryLive,
+      )
+      const ProgressLive = ChannelProgressLive.pipe(Layer.provide(dependencies))
+      const TurnsLive = ChannelTurnsLive.pipe(
+        Layer.provide(Layer.merge(dependencies, ProgressLive)),
+      )
+      const TestLive = Layer.merge(
+        Layer.mergeAll(dependencies, ProgressLive, TurnsLive),
+        PlatformIngestionLive.pipe(Layer.provide(Layer.merge(dependencies, TurnsLive))),
+      )
+
+      const exit = yield* Effect.gen(function* () {
+        const ingestion = yield* PlatformIngestion
+        const platforms = yield* PlatformRegistry
+        yield* platforms.register(platform)
+        yield* ingestion.ingest(input, () => Effect.succeed(thread))
+      }).pipe(Effect.provide(TestLive), Effect.exit)
+
+      assert(Exit.isFailure(exit))
+      assert.strictEqual(Cause.squash(exit.cause), 'Expected channel Thread')
+      assert.deepStrictEqual(events, [])
     }),
   ),
 )
