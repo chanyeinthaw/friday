@@ -34,6 +34,7 @@ import {
 } from './DiscordChannelAccess.ts'
 import { registerGlobalDiscordCommands } from './DiscordCommandRegistration.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
+import { discordCanonicalConversationId } from './DiscordConversationScope.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext, shouldLoadDiscordContext } from './DiscordInitialContext.ts'
 import { projectDiscordMessage } from './DiscordMessageProjection.ts'
@@ -59,6 +60,8 @@ import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
 } from './DiscordChannelBootstrap.ts'
+
+const decodePlatformConversationId = Schema.decodeOption(PlatformConversationId)
 
 export const startDiscord = Effect.fn('startDiscord')(function* () {
   const platforms = yield* PlatformRegistry
@@ -176,7 +179,6 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         // and its already-open runtime; both lookups are connection-scoped.
         const persistence = yield* ThreadPersistence
         const pool = yield* ThreadRuntimePool
-        const decodeConversationId = Schema.decodeOption(PlatformConversationId)
         const runFridayCommand = (event: SlashCommandEvent) =>
           Effect.gen(function* () {
             const decision = decideFridayCommand({
@@ -214,7 +216,13 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
               yield* respondEphemeral(event, harnessCommandReply(decision))
               return
             }
-            const conversationId = decodeConversationId(event.channel.id)
+            const canonicalConversationId = yield* Effect.try(() =>
+              discordCanonicalConversationId(discord, event.channel.id),
+            ).pipe(Effect.option)
+            const conversationId = Option.flatMap(
+              canonicalConversationId,
+              decodePlatformConversationId,
+            )
             if (Option.isNone(conversationId)) {
               yield* respondEphemeral(
                 event,
