@@ -1,4 +1,10 @@
-import type { ContextMessage, InputMessage, MessageAuthor } from '@friday/contracts/conversation'
+import {
+  ImageAttachment,
+  type ContextMessage,
+  type InputMessage,
+  type MessageAuthor,
+  type MessageContent,
+} from '@friday/contracts/conversation'
 import * as Schema from 'effect/Schema'
 
 export const PromptParticipant = Schema.Struct({
@@ -15,6 +21,7 @@ export const PromptHistoricalMessage = Schema.Struct({
   participantId: Schema.String,
   platformMessageId: Schema.optionalKey(Schema.String),
   content: Schema.String,
+  images: Schema.optionalKey(Schema.Array(ImageAttachment)),
 })
 export interface PromptHistoricalMessage extends Schema.Schema.Type<
   typeof PromptHistoricalMessage
@@ -25,6 +32,7 @@ export const PromptReplyTarget = Schema.Struct({
   participantId: Schema.String,
   platformMessageId: Schema.optionalKey(Schema.String),
   content: Schema.String,
+  images: Schema.optionalKey(Schema.Array(ImageAttachment)),
 })
 export interface PromptReplyTarget extends Schema.Schema.Type<typeof PromptReplyTarget> {}
 
@@ -34,6 +42,7 @@ export const PromptTrigger = Schema.Struct({
   platformMessageId: Schema.optionalKey(Schema.String),
   replyTargetParticipantId: Schema.optionalKey(Schema.String),
   content: Schema.String,
+  images: Schema.optionalKey(Schema.Array(ImageAttachment)),
 })
 export interface PromptTrigger extends Schema.Schema.Type<typeof PromptTrigger> {}
 
@@ -52,6 +61,10 @@ const encodePromptMessageEnvelope = Schema.encodeSync(PromptMessageEnvelopeJson)
 const authorKey = (author: MessageAuthor): string => author.platformUserId
 const platformMessageId = (message: ContextMessage | InputMessage): string | undefined =>
   message.platformMessageId === undefined ? undefined : String(message.platformMessageId)
+const promptContent = (content: MessageContent) =>
+  content.images.length === 0
+    ? { content: content.text }
+    : { content: content.text, images: [...content.images] }
 
 const renderAttributedConversation = (
   trigger: InputMessage & { readonly author: MessageAuthor },
@@ -86,13 +99,13 @@ const renderAttributedConversation = (
       ? {
           kind: 'historical',
           participantId: participantFor(message.author).id,
-          content: message.content.text,
+          ...promptContent(message.content),
         }
       : {
           kind: 'historical',
           participantId: participantFor(message.author).id,
           platformMessageId: messageId,
-          content: message.content.text,
+          ...promptContent(message.content),
         }
   })
   const triggerParticipant = participantFor(trigger.author)
@@ -105,13 +118,13 @@ const renderAttributedConversation = (
         ? {
             kind: 'reply-target',
             participantId: replyTargetParticipant.id,
-            content: replyTo.content.text,
+            ...promptContent(replyTo.content),
           }
         : {
             kind: 'reply-target',
             participantId: replyTargetParticipant.id,
             platformMessageId: replyTargetMessageId,
-            content: replyTo.content.text,
+            ...promptContent(replyTo.content),
           }
   let triggerEnvelope: PromptTrigger
   if (triggerMessageId === undefined) {
@@ -120,13 +133,13 @@ const renderAttributedConversation = (
         ? {
             kind: 'trigger',
             participantId: triggerParticipant.id,
-            content: trigger.content.text,
+            ...promptContent(trigger.content),
           }
         : {
             kind: 'trigger',
             participantId: triggerParticipant.id,
             replyTargetParticipantId: replyTargetParticipant.id,
-            content: trigger.content.text,
+            ...promptContent(trigger.content),
           }
   } else {
     triggerEnvelope =
@@ -135,14 +148,14 @@ const renderAttributedConversation = (
             kind: 'trigger',
             participantId: triggerParticipant.id,
             platformMessageId: triggerMessageId,
-            content: trigger.content.text,
+            ...promptContent(trigger.content),
           }
         : {
             kind: 'trigger',
             participantId: triggerParticipant.id,
             platformMessageId: triggerMessageId,
             replyTargetParticipantId: replyTargetParticipant.id,
-            content: trigger.content.text,
+            ...promptContent(trigger.content),
           }
   }
   const envelope: PromptMessageEnvelope =

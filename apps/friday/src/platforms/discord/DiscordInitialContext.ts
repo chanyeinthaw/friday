@@ -11,6 +11,16 @@ const MaximumRenderedCharacters = 8_000
 interface DiscordHistoryMessage {
   readonly id: string
   readonly text: string
+  readonly raw?: unknown
+  readonly attachments?:
+    | ReadonlyArray<{
+        readonly type: 'image' | 'file' | 'video' | 'audio'
+        readonly url?: string
+        readonly name?: string
+        readonly mimeType?: string
+        readonly size?: number
+      }>
+    | undefined
   readonly author: {
     readonly userId: string
     readonly userName: string
@@ -57,7 +67,18 @@ const boundedContext = (
     if (message.author.isBot || message.author.isMe) {
       continue
     }
-    const projected = projectChatSdkContextMessage('discord', message)
+    const projected = projectChatSdkContextMessage(
+      'discord',
+      message.attachments === undefined
+        ? { id: message.id, text: message.text, author: message.author, raw: message.raw }
+        : {
+            id: message.id,
+            text: message.text,
+            author: message.author,
+            raw: message.raw,
+            attachments: message.attachments,
+          },
+    )
     if (characters + projected.content.text.length > MaximumRenderedCharacters) break
     characters += projected.content.text.length
     context.push(projected)

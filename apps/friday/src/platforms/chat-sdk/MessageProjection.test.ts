@@ -1,6 +1,18 @@
 import { assert, it } from '@effect/vitest'
+import { ImageAttachment } from '@friday/contracts/conversation'
+import * as Schema from 'effect/Schema'
 
 import { projectChatSdkContextMessage, projectChatSdkMessage } from './MessageProjection.ts'
+
+const decodeImage = Schema.decodeSync(ImageAttachment)
+
+const image = {
+  id: 'attachment-1',
+  filename: 'diagram.png',
+  content_type: 'image/png',
+  size: 1234,
+  url: 'https://cdn.discordapp.com/attachments/channel/attachment/diagram.png',
+}
 
 const discordRawReply = {
   type: 19,
@@ -48,6 +60,40 @@ it('projects Chat SDK identifiers and text into Friday contracts', () => {
   assert.strictEqual(inbound.message.replyTo, undefined)
 })
 
+it('projects Discord trigger attachments, including image-only input', () => {
+  const inbound = projectChatSdkMessage(
+    'discord',
+    {
+      adapter: { name: 'discord' },
+      channelId: 'discord-channel-1',
+      id: 'discord-thread-1',
+    },
+    {
+      id: 'discord-message-1',
+      text: '',
+      raw: { attachments: [image] },
+      author: {
+        userId: 'user-1',
+        userName: 'user',
+        fullName: 'User',
+        isBot: false,
+        isMe: false,
+      },
+    },
+  )
+
+  assert.strictEqual(inbound.message.content.text, '')
+  assert.deepStrictEqual(inbound.message.content.images, [
+    decodeImage({
+      id: 'attachment-1',
+      name: 'diagram.png',
+      mediaType: 'image/png',
+      sizeBytes: 1234,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/diagram.png',
+    }),
+  ])
+})
+
 it('projects the referenced message of a Discord reply from the raw payload', () => {
   const inbound = projectChatSdkMessage(
     'discord',
@@ -79,6 +125,78 @@ it('projects the referenced message of a Discord reply from the raw payload', ()
   assert.strictEqual(replyTo.author.displayName, 'Bob')
   assert.strictEqual(replyTo.content.text, 'The original question')
   assert.deepStrictEqual(replyTo.content.images, [])
+})
+
+it('projects attachment-only Discord reply targets', () => {
+  const inbound = projectChatSdkMessage(
+    'discord',
+    {
+      adapter: { name: 'discord' },
+      channelId: 'discord-channel-1',
+      id: 'discord-thread-1',
+    },
+    {
+      id: 'discord-message-1',
+      text: 'What is this?',
+      raw: {
+        type: 19,
+        referenced_message: {
+          id: 'discord-message-0',
+          author: { id: 'user-0', username: 'bob', global_name: 'Bob' },
+          attachments: [image],
+        },
+      },
+      author: {
+        userId: 'user-1',
+        userName: 'user',
+        fullName: 'User',
+        isBot: false,
+        isMe: false,
+      },
+    },
+  )
+
+  assert.deepStrictEqual(inbound.message.replyTo?.content, {
+    text: '',
+    images: [
+      decodeImage({
+        id: 'attachment-1',
+        name: 'diagram.png',
+        mediaType: 'image/png',
+        sizeBytes: 1234,
+        storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/diagram.png',
+      }),
+    ],
+  })
+})
+
+it('keeps malformed, unavailable, and unsupported Discord attachments non-fatal', () => {
+  const context = projectChatSdkContextMessage('discord', {
+    id: 'discord-message-2',
+    text: '',
+    raw: {
+      attachments: [
+        { ...image, url: null },
+        { ...image, id: 'attachment-2', filename: 'notes.txt', content_type: 'text/plain' },
+        { filename: 'broken.png' },
+      ],
+    },
+    author: {
+      userId: 'user-2',
+      userName: 'alice',
+      fullName: 'Alice',
+      isBot: false,
+      isMe: false,
+    },
+  })
+
+  assert.deepStrictEqual(context.content.images, [])
+  assert.strictEqual(
+    context.content.text,
+    '[Discord attachment unavailable: diagram.png]\n' +
+      '[Discord attachment unsupported: notes.txt (text/plain)]\n' +
+      '[Discord attachment metadata malformed: unnamed attachment]',
+  )
 })
 
 it('drops reply context when the raw Discord message type is not 19', () => {
