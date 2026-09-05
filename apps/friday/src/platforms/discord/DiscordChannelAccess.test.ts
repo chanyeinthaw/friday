@@ -2,6 +2,7 @@ import { assert, it } from '@effect/vitest'
 import * as Option from 'effect/Option'
 
 import type { AccessPolicy, DiscordGuildConfig } from '../../config/AppConfig.ts'
+import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 
 /** Mutable assembly shapes for fixtures carrying optional overrides only. */
 interface GuildFixture {
@@ -193,6 +194,28 @@ it('layers channel overrides over guild defaults over the connection policy', ()
   assert.strictEqual(replyOnly.value.invocationMode, 'all-messages')
   assert.deepStrictEqual(replyOnly.value.users, guildUsers)
   assert.strictEqual(replyOnly.value.replyMode, 'reply-in-channel')
+})
+
+it('replaces a guild allow-list with a channel allow-list', () => {
+  const guildUserId = '333333333333333333'
+  const channelUserId = '444444444444444444'
+  const channelUsers: AccessPolicy = { mode: 'allow', ids: [channelUserId] }
+  const resolved = resolveDiscordChannelPolicy(
+    policies({
+      guilds: [
+        guild({
+          users: { mode: 'allow', ids: [guildUserId] },
+          channels: [channel({ users: channelUsers })],
+        }),
+      ],
+    }),
+    '111111111111111111',
+    '222222222222222222',
+  )
+  assert(Option.isSome(resolved))
+  assert.deepStrictEqual(resolved.value.users, channelUsers)
+  assert.strictEqual(isAllowedByPolicy(guildUserId, resolved.value.users), false)
+  assert.strictEqual(isAllowedByPolicy(channelUserId, resolved.value.users), true)
 })
 
 it('inherits the connection user policy when neither guild nor channel configure one', () => {

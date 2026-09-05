@@ -46,7 +46,9 @@ A channel entry overrides guild defaults for one channel. Every field is
 optional, so a row only carries the overrides it needs:
 
 - `invocationMode` — override of the guild invocation default
-- `users` — override of the guild user permission default
+- `users` — override of the guild user permission default. A configured
+  channel policy replaces the guild policy completely; allow-list IDs are not
+  merged. Repeat any guild-allowed IDs you still want to permit.
 - `replyMode` — `reply-in-thread` (the default) or `reply-in-channel`
 
 Channel entries are overrides only. They never grant admission: a channel that
@@ -67,8 +69,9 @@ For a message in an enabled guild:
   mentions (user, configured role, or global per the connection topology);
   `all-messages` invokes on every message.
 - **Permissions**: channel users override → guild users default → connection
-  user policy. The resolved policy gates the message at the adapter boundary,
-  before any externally visible action.
+  user policy. A channel `users` override replaces the inherited policy
+  completely, including its subject IDs. The resolved policy gates the message
+  at the adapter boundary, before any externally visible action.
 - **Reply mode**: channel override → `reply-in-thread`.
 
 Direct messages have no guild: they resolve against the connection-wide user

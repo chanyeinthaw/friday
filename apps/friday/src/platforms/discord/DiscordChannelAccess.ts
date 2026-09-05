@@ -35,7 +35,8 @@ export interface DiscordResolvedChannelPolicy {
   readonly replyMode: 'reply-in-thread' | 'reply-in-channel'
   /**
    * User permission resolved from the channel override, the guild default, or
-   * the connection-wide policy.
+   * the connection-wide policy. A channel override replaces the inherited
+   * policy; its allow-list is not merged with the guild allow-list.
    */
   readonly users: AccessPolicy
 }
@@ -48,8 +49,10 @@ export interface DiscordResolvedChannelPolicy {
  * applies before invocation, permissions, and reply behavior, so a channel
  * outside the scope never invokes Friday and never gains thread or reply
  * behavior. Per-channel entries only override resolved behavior; they never
- * grant admission. Direct messages (`@me`) resolve against the connection-wide
- * user policy only; they are always operational and always mention-invoked.
+ * grant admission. A channel `users` override replaces the inherited guild or
+ * connection user policy completely, including its subject IDs. Direct messages
+ * (`@me`) resolve against the connection-wide user policy only; they are always
+ * operational and always mention-invoked.
  *
  * Callers pass the parent channel for messages inside threads, so thread
  * messages resolve their policy from the parent channel while remaining bound
