@@ -8,7 +8,7 @@ import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 
-import type { ThreadCoordinatorContract } from './ThreadCoordinator.ts'
+import type { ThreadCoordinatorContract, TurnHandle } from './ThreadCoordinator.ts'
 import type { ThreadPersistenceError } from './ThreadPersistence.ts'
 import { harnessReloadRefused, type HarnessReloadOutcome } from './ThreadRuntime.ts'
 import type { ThreadRuntimeError } from './ThreadRuntimes.ts'
@@ -39,14 +39,106 @@ export class ThreadRuntimePool extends Context.Service<
   ThreadRuntimePoolContract
 >()('friday/conversation/ThreadRuntimePool') {}
 
-const closeEntry = (entry: ThreadRuntimeEntry) => Scope.close(entry.scope, Exit.void)
+type ThreadCoordinator = ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
 
-interface ThreadRuntimeEntry {
-  coordinator: ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
-  readonly scope: Scope.Closeable
+interface ThreadRuntimeTracking {
   lastActivityAt: number
   activeTurns: number
 }
+
+interface ThreadRuntimeEntry {
+  readonly coordinator: ThreadCoordinator
+  readonly scope: Scope.Closeable
+  readonly tracking: ThreadRuntimeTracking
+}
+
+const closeEntry = (entry: ThreadRuntimeEntry) => Scope.close(entry.scope, Exit.void)
+
+const touch = (tracking: ThreadRuntimeTracking) =>
+  Clock.currentTimeMillis.pipe(
+    Effect.tap((now) =>
+      Effect.sync(() => {
+        tracking.lastActivityAt = now
+      }),
+    ),
+    Effect.asVoid,
+  )
+
+const observeTerminal = (tracking: ThreadRuntimeTracking, handle: TurnHandle<ThreadRuntimeError>) =>
+  Effect.gen(function* () {
+    yield* Effect.exit(handle.awaitTerminal)
+    const completedAt = yield* Clock.currentTimeMillis
+    tracking.activeTurns -= 1
+    tracking.lastActivityAt = completedAt
+  })
+
+const releasePromptAccounting = (tracking: ThreadRuntimeTracking) =>
+  Effect.sync(() => {
+    tracking.activeTurns -= 1
+  })
+
+const trackCoordinator = (
+  coordinator: ThreadCoordinator,
+  tracking: ThreadRuntimeTracking,
+  scope: Scope.Closeable,
+): ThreadCoordinator => ({
+  ...coordinator,
+  prompt: (turn) =>
+    Effect.gen(function* () {
+      yield* touch(tracking)
+      tracking.activeTurns += 1
+      const handle = yield* coordinator
+        .prompt(turn)
+        .pipe(Effect.tapError(() => releasePromptAccounting(tracking)))
+      yield* observeTerminal(tracking, handle).pipe(Effect.forkIn(scope))
+      return handle
+    }),
+  steer: (turnId, activity) =>
+    touch(tracking).pipe(Effect.andThen(coordinator.steer(turnId, activity))),
+})
+
+const openRuntimeEntry = <R>(
+  openThread: (
+    thread: Thread,
+  ) => Effect.Effect<
+    ThreadCoordinator,
+    ThreadRuntimeError | ThreadPersistenceError,
+    Scope.Scope | R
+  >,
+  context: Context.Context<R>,
+  thread: Thread,
+  lastActivityAt: number,
+): Effect.Effect<ThreadRuntimeEntry, ThreadRuntimeError | ThreadPersistenceError> =>
+  Effect.gen(function* () {
+    const scope = yield* Scope.make('sequential')
+    const coordinator = yield* openThread(thread).pipe(
+      Scope.provide(scope),
+      Effect.provide(context),
+      Effect.onError(() => Scope.close(scope, Exit.void)),
+    )
+    const tracking: ThreadRuntimeTracking = {
+      lastActivityAt,
+      activeTurns: 0,
+    }
+    return {
+      coordinator: trackCoordinator(coordinator, tracking, scope),
+      scope,
+      tracking,
+    }
+  })
+
+const reuseRuntimeEntry = (thread: Thread, entry: ThreadRuntimeEntry, now: number) =>
+  Effect.gen(function* () {
+    entry.tracking.lastActivityAt = now
+    yield* Effect.logDebug('thread.runtime.reused').pipe(
+      Effect.annotateLogs({
+        component: 'runtime-pool',
+        threadId: thread.id,
+        activeTurns: entry.tracking.activeTurns,
+      }),
+    )
+    return entry.coordinator
+  })
 
 export const ThreadRuntimePoolLive = <R>(
   openThread: (
@@ -74,7 +166,8 @@ export const ThreadRuntimePoolLive = <R>(
           const reaped: Array<ThreadRuntimeEntry> = []
           const reapedThreadIds: Array<ThreadId> = []
           for (const [threadId, entry] of entries) {
-            if (entry.activeTurns > 0 || now - entry.lastActivityAt < idleTimeout) continue
+            if (entry.tracking.activeTurns > 0 || now - entry.tracking.lastActivityAt < idleTimeout)
+              continue
             entries.delete(threadId)
             reaped.push(entry)
             reapedThreadIds.push(threadId)
@@ -92,6 +185,25 @@ export const ThreadRuntimePoolLive = <R>(
         }),
       )
 
+      const acquireRuntime = (thread: Thread) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          const existing = entries.get(thread.id)
+          if (existing !== undefined) return yield* reuseRuntimeEntry(thread, existing, now)
+
+          const entry = yield* openRuntimeEntry(openThread, context, thread, now)
+          entries.set(thread.id, entry)
+          yield* Effect.logInfo('thread.runtime.opened').pipe(
+            Effect.annotateLogs({
+              component: 'runtime-pool',
+              threadId: thread.id,
+              audience: thread.audience,
+              harness: thread.harness,
+            }),
+          )
+          return entry.coordinator
+        })
+
       yield* Effect.forkScoped(
         Effect.forever(Effect.sleep(reaperInterval).pipe(Effect.andThen(reapIdle))),
       )
@@ -107,81 +219,8 @@ export const ThreadRuntimePoolLive = <R>(
       )
 
       return ThreadRuntimePool.of({
-        acquire: (thread) =>
-          lock.withPermit(
-            Effect.gen(function* () {
-              const now = yield* Clock.currentTimeMillis
-              const existing = entries.get(thread.id)
-              if (existing) {
-                existing.lastActivityAt = now
-                yield* Effect.logDebug('thread.runtime.reused').pipe(
-                  Effect.annotateLogs({
-                    component: 'runtime-pool',
-                    threadId: thread.id,
-                    activeTurns: existing.activeTurns,
-                  }),
-                )
-                return existing.coordinator
-              }
-
-              const scope = yield* Scope.make('sequential')
-              const coordinator = yield* openThread(thread).pipe(
-                Scope.provide(scope),
-                Effect.provide(context),
-                Effect.onError(() => Scope.close(scope, Exit.void)),
-              )
-              const entry: ThreadRuntimeEntry = {
-                coordinator,
-                scope,
-                lastActivityAt: now,
-                activeTurns: 0,
-              }
-              const tracked: ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError> = {
-                ...coordinator,
-                prompt: (turn) =>
-                  Effect.gen(function* () {
-                    entry.lastActivityAt = yield* Clock.currentTimeMillis
-                    entry.activeTurns += 1
-                    const handle = yield* coordinator.prompt(turn).pipe(
-                      Effect.tapError(() =>
-                        Effect.sync(() => {
-                          entry.activeTurns -= 1
-                        }),
-                      ),
-                    )
-                    yield* Effect.gen(function* () {
-                      yield* Effect.exit(handle.awaitTerminal)
-                      const completedAt = yield* Clock.currentTimeMillis
-                      entry.activeTurns -= 1
-                      entry.lastActivityAt = completedAt
-                    }).pipe(Effect.forkIn(entry.scope))
-                    return handle
-                  }),
-                cancel: coordinator.cancel,
-                onEvent: coordinator.onEvent,
-                steer: (turnId, activity) =>
-                  Clock.currentTimeMillis.pipe(
-                    Effect.tap((steeredAt) =>
-                      Effect.sync(() => {
-                        entry.lastActivityAt = steeredAt
-                      }),
-                    ),
-                    Effect.andThen(coordinator.steer(turnId, activity)),
-                  ),
-              }
-              entry.coordinator = tracked
-              entries.set(thread.id, entry)
-              yield* Effect.logInfo('thread.runtime.opened').pipe(
-                Effect.annotateLogs({
-                  component: 'runtime-pool',
-                  threadId: thread.id,
-                  audience: thread.audience,
-                  harness: thread.harness,
-                }),
-              )
-              return tracked
-            }),
-          ),
+        // The lock covers lookup and opening so concurrent acquisition of one thread opens once.
+        acquire: (thread) => lock.withPermit(acquireRuntime(thread)),
         reapIdle,
         reloadHarness: (threadId) =>
           lock.withPermit(
@@ -199,12 +238,12 @@ export const ThreadRuntimePoolLive = <R>(
                   'No live harness runtime is open for this thread; send a message to start one before reloading.',
                 )
               }
-              if (entry.activeTurns > 0) {
+              if (entry.tracking.activeTurns > 0) {
                 yield* Effect.logDebug('thread.runtime.reload-busy').pipe(
                   Effect.annotateLogs({
                     component: 'runtime-pool',
                     threadId,
-                    activeTurns: entry.activeTurns,
+                    activeTurns: entry.tracking.activeTurns,
                   }),
                 )
                 return harnessReloadRefused(
