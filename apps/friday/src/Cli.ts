@@ -120,10 +120,12 @@ const isLeaf = (node: CliCommandSpec): node is CliLeafSpec =>
 
 const permissionPoliciesNote = `Permission policies are "all", "allow=<id>[,<id>...]", or "deny=<id>[,<id>...]".
 Channel entries set with "guild channel set" are per-channel overrides of the
-guild defaults; which channels admit Friday at all is controlled separately by
-the guild channel scope ("guild set-channels"). Overrides never grant admission.
-The default reply mode is reply-in-thread; channels already inside a
-user-created thread always stay in that thread.`
+guild defaults. A channel "--users" policy replaces the guild user policy
+completely; allow lists are not merged, so repeat any guild-allowed IDs you
+still want to permit. Which channels admit Friday at all is controlled
+separately by the guild channel scope ("guild set-channels"). Overrides never
+grant admission. The default reply mode is reply-in-thread; channels already
+inside a user-created thread always stay in that thread.`
 
 /** Resolves the command node at a topic path, if the path names a live node. */
 export const findCommandSpec = (path: ReadonlyArray<string>): CliCommandSpec | undefined => {

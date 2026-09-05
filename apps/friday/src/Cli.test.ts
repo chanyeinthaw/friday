@@ -2558,6 +2558,8 @@ it.effect('renders help per topic: full tree, branch children, leaf usage, and f
         'Permission policies are "all", "allow=<id>[,<id>...]", or "deny=<id>[,<id>...]".',
       ),
     )
+    assert.match(help, /A channel "--users" policy replaces the guild user policy/)
+    assert.match(help, /repeat any guild-allowed IDs you/)
     assert(help.includes('-v, --version  Show the version'))
     assert(
       help.includes('  -h, --help     Show help; add a command prefix for help on that command'),
