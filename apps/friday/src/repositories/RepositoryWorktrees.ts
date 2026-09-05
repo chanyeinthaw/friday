@@ -1,15 +1,15 @@
-/* oxlint-disable effecttsgo/node-builtin-import -- Repository paths, stable hashes, and process control use Node's standard library (available under both Bun and vitest runtimes). */
+/* oxlint-disable effecttsgo/node-builtin-import -- Repository paths and stable hashes use Node's standard library (available under both Bun and vitest runtimes). */
 
 import * as Effect from 'effect/Effect'
 import * as DateTime from 'effect/DateTime'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
-import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 
 import { FRIDAY_HOME } from '../FridayHome.ts'
+import { runProcess } from './RepositoryWorktreesProcess.ts'
 
 const NonEmptyString = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
 export const RepositoryUrl = NonEmptyString.pipe(Schema.brand('RepositoryUrl'))
@@ -56,19 +56,6 @@ export class RepositoryWorktreeError extends Schema.Error<RepositoryWorktreeErro
   }
 }
 
-interface CommandResult {
-  readonly stdout: string
-  readonly stderr: string
-  readonly exitCode: number
-}
-
-const readStream = async (stream: NodeJS.ReadableStream | null): Promise<string> => {
-  if (stream === null) return ''
-  const chunks: Array<Buffer> = []
-  for await (const chunk of stream) chunks.push(Buffer.from(chunk))
-  return Buffer.concat(chunks).toString('utf8').trim()
-}
-
 /** Resolves `true` when any filesystem entry exists at the path. */
 const pathExists = (path: string) =>
   Effect.promise(() =>
@@ -79,31 +66,6 @@ const pathExists = (path: string) =>
         throw cause
       }),
   )
-
-/** Runs an external process and captures its trimmed output and exit code. */
-const runProcess = Effect.fn('RepositoryWorktrees.runProcess')(function* (
-  command: string,
-  arguments_: ReadonlyArray<string>,
-  failure: (cause: unknown) => RepositoryWorktreeError,
-) {
-  return yield* Effect.tryPromise({
-    try: async (): Promise<CommandResult> => {
-      const child = spawn(command, [...arguments_], {
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      const [stdout, stderr, exitCode] = await Promise.all([
-        readStream(child.stdout),
-        readStream(child.stderr),
-        new Promise<number | null>((resolveClose) => {
-          child.on('close', resolveClose)
-        }),
-      ])
-      return { stdout, stderr, exitCode: exitCode ?? -1 }
-    },
-    catch: failure,
-  })
-})
 
 const runGit = Effect.fn('RepositoryWorktrees.git')(function* (arguments_: ReadonlyArray<string>) {
   return yield* runProcess(
