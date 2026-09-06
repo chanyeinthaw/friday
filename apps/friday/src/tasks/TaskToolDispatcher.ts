@@ -1,6 +1,8 @@
 import type {
   BootstrapTaskRequest,
   CancelTaskRequest,
+  InspectTaskRequest,
+  InspectTaskResult,
   ListTasksRequest,
   StartedTask,
   StartTaskRequest,
@@ -33,6 +35,9 @@ export interface TaskToolDispatcherContract {
     request: ListTasksRequest,
   ) => Effect.Effect<ReadonlyArray<TaskSummary>, TaskToolDispatchError>
   readonly cancel: (request: CancelTaskRequest) => Effect.Effect<void, TaskToolDispatchError>
+  readonly inspect: (
+    request: InspectTaskRequest,
+  ) => Effect.Effect<InspectTaskResult, TaskToolDispatchError>
   readonly bind: (tasks: TasksContract) => Effect.Effect<void>
 }
 
@@ -52,6 +57,7 @@ export const TaskToolDispatcherLive = Layer.sync(TaskToolDispatcher, () => {
     steer: (request) => dispatch((service) => service.steer(request)),
     list: (request) => dispatch((service) => service.list(request)),
     cancel: (request) => dispatch((service) => service.cancel(request)),
+    inspect: (request) => dispatch((service) => service.inspect(request)),
     bind: (service) => Effect.sync(() => void (tasks = service)),
   })
 })

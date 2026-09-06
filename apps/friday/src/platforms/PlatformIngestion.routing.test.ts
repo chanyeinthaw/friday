@@ -233,6 +233,7 @@ const makeFriday = (harness: RoutingHarness): FridayContract => ({
         drain: Effect.void,
       } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
     }),
+  observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
 })
 
 const makePersistence = (
@@ -259,6 +260,7 @@ const makePersistence = (
     getTurn: () => Effect.succeedNone,
     getFirstTurn: () => Effect.succeedNone,
     getLatestTurn: () => Effect.succeedNone,
+    listTurns: () => Effect.succeed([]),
     getLatestUserTurn: () => Effect.succeedNone,
     startTurn: () => Effect.void,
     putActivitySnapshot: () => Effect.void,
@@ -411,6 +413,7 @@ it.effect('seeds the routed turn with bounded parent-channel context', () =>
             drain: Effect.void,
           } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
         }),
+      observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     }
     const platform = makePlatform(harness)
     const parentWithContext: PlatformInput = {

@@ -1,12 +1,15 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, effecttsgo/any-unknown-in-error-context -- Pi tool input and dispatcher failures cross the SDK boundary and are schema-decoded before use. */
 
 import {
+  InspectTaskLimit,
   SubagentProfileName,
   TaskId,
+  TaskInspectCursor,
   TaskStatusFilter,
   TurnId,
   WorkingDirectory,
   type ChannelThread,
+  type InspectTaskResult,
   type ListTasksRequest,
   type TaskSummary,
 } from '@friday/contracts/conversation'
@@ -34,6 +37,12 @@ const TaskToolInput = Schema.Union([
   Schema.Struct({ action: Schema.Literal('steer'), taskId: TaskId, message: Schema.String }),
   Schema.Struct({ action: Schema.Literal('list'), status: Schema.optionalKey(TaskStatusFilter) }),
   Schema.Struct({ action: Schema.Literal('cancel'), taskId: TaskId, reason: Schema.String }),
+  Schema.Struct({
+    action: Schema.Literal('inspect'),
+    taskId: TaskId,
+    cursor: Schema.optionalKey(TaskInspectCursor),
+    limit: Schema.optionalKey(InspectTaskLimit),
+  }),
 ])
 
 const decodeTaskToolInput = Schema.decodeUnknownEffect(TaskToolInput)
@@ -74,6 +83,29 @@ const TaskToolParameters = Type.Union([
     ),
   }),
   Type.Object({ action: Type.Literal('cancel'), taskId: Type.String(), reason: Type.String() }),
+  Type.Object({
+    action: Type.Literal('inspect'),
+    taskId: Type.String({
+      minLength: 1,
+      pattern: '^\\S(?:[\\s\\S]*\\S)?$',
+      description: 'Task identifier returned by a previous start.',
+    }),
+    cursor: Type.Optional(
+      Type.String({
+        minLength: 1,
+        pattern: '^\\S(?:[\\s\\S]*\\S)?$',
+        description:
+          'Opaque cursor from a previous inspect result. Omit for the latest activities; pass through only to read older history.',
+      }),
+    ),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 20,
+        description: 'Maximum activities to return. Defaults to 5, maximum 20.',
+      }),
+    ),
+  }),
 ])
 
 const taskSummary = (task: TaskSummary) => {
@@ -101,6 +133,33 @@ type StartRequest = Parameters<TasksContract['start']>[0]
 type BootstrapRequest = Parameters<TasksContract['bootstrap']>[0]
 type SteerRequest = Parameters<TasksContract['steer']>[0]
 type CancelRequest = Parameters<TasksContract['cancel']>[0]
+type InspectRequest = Parameters<TasksContract['inspect']>[0]
+
+const inspectResult = (result: InspectTaskResult) => {
+  const outlineBase = {
+    taskId: result.outline.taskId,
+    role: result.outline.role,
+    status: result.outline.status,
+    workspacePath: result.outline.workspacePath,
+    mayWrite: result.outline.mayWrite,
+    createdAt: result.outline.createdAt,
+    updatedAt: result.outline.updatedAt,
+    completedAt: result.outline.completedAt,
+    runtimePresent: result.outline.runtimePresent,
+    activeTurns: result.outline.activeTurns,
+    warnings: result.outline.warnings,
+  }
+  const outline =
+    result.outline.profile === undefined
+      ? outlineBase
+      : { ...outlineBase, profile: result.outline.profile }
+  return {
+    outline,
+    activities: result.activities,
+    nextCursor: result.nextCursor,
+    hasMore: result.hasMore,
+  }
+}
 
 export interface PiTaskOperations {
   readonly start: (request: StartRequest) => Effect.Effect<unknown, TaskToolDispatchError>
@@ -110,6 +169,9 @@ export interface PiTaskOperations {
     request: ListTasksRequest,
   ) => Effect.Effect<ReadonlyArray<TaskSummary>, TaskToolDispatchError>
   readonly cancel: (request: CancelRequest) => Effect.Effect<void, TaskToolDispatchError>
+  readonly inspect: (
+    request: InspectRequest,
+  ) => Effect.Effect<InspectTaskResult, TaskToolDispatchError>
 }
 
 export interface MakePiTaskToolOptions {
@@ -124,7 +186,7 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
     name: 'task',
     label: 'Task',
     description:
-      'Start background agent tasks, prepare workspaces, steer or cancel existing tasks, and list tasks for this channel thread.',
+      'Start background agent tasks, prepare workspaces, steer or cancel existing tasks, list tasks for this channel thread, and inspect one known task with a safe outline and activity summaries.',
     promptSnippet: 'Use `task` to run delegated work in background agent threads.',
     parameters: TaskToolParameters,
     executionMode: 'parallel',
@@ -184,6 +246,18 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
             }),
           )
           return output({ taskId: input.taskId, status: 'cancelled' })
+        case 'inspect': {
+          const base = {
+            parentThreadId: options.thread.id,
+            taskId: input.taskId,
+          }
+          const withCursor: InspectRequest =
+            input.cursor === undefined ? base : { ...base, cursor: input.cursor }
+          const request: InspectRequest =
+            input.limit === undefined ? withCursor : { ...withCursor, limit: input.limit }
+          const result = await options.runPromise(options.tasks.inspect(request))
+          return output(inspectResult(result))
+        }
       }
     },
   })
