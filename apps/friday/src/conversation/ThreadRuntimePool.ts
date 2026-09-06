@@ -18,6 +18,11 @@ export interface ThreadRuntimePoolOptions {
   readonly reaperInterval?: Duration.Input
 }
 
+export interface ThreadRuntimeObservation {
+  readonly runtimePresent: boolean
+  readonly activeTurns: number
+}
+
 export interface ThreadRuntimePoolContract {
   readonly acquire: (
     thread: Thread,
@@ -25,6 +30,8 @@ export interface ThreadRuntimePoolContract {
     ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>,
     ThreadRuntimeError | ThreadPersistenceError
   >
+  /** Observes the current pool entry without opening or refreshing a runtime. */
+  readonly observe: (threadId: ThreadId) => Effect.Effect<ThreadRuntimeObservation>
   /**
    * Reloads the harness session of an already-open runtime for the thread.
    * Never opens a runtime for a thread that has none, and refuses while a Turn
@@ -221,6 +228,18 @@ export const ThreadRuntimePoolLive = <R>(
       return ThreadRuntimePool.of({
         // The lock covers lookup and opening so concurrent acquisition of one thread opens once.
         acquire: (thread) => lock.withPermit(acquireRuntime(thread)),
+        observe: (threadId) =>
+          lock.withPermit(
+            Effect.sync(() => {
+              const entry = entries.get(threadId)
+              return entry === undefined
+                ? { runtimePresent: false, activeTurns: 0 }
+                : {
+                    runtimePresent: true,
+                    activeTurns: entry.tracking.activeTurns,
+                  }
+            }),
+          ),
         reapIdle,
         reloadHarness: (threadId) =>
           lock.withPermit(

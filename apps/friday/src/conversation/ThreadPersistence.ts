@@ -90,6 +90,9 @@ export interface ThreadPersistenceContract {
   readonly getLatestTurn: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>
+  readonly listTurns: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<Turn>, ThreadPersistenceError>
   readonly getLatestUserTurn: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>

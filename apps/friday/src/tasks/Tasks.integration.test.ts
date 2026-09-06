@@ -81,6 +81,7 @@ const makePersistence = (
   getTurn: () => Effect.succeedNone,
   getFirstTurn: () => Effect.succeedNone,
   getLatestTurn: () => Effect.succeedNone,
+  listTurns: () => Effect.succeed([]),
   getLatestUserTurn: () => Effect.succeedNone,
   startTurn: () => Effect.void,
   putActivitySnapshot: () => Effect.void,
@@ -114,6 +115,7 @@ const makeFriday = (promptedTurns: Array<Turn>): FridayContract => ({
       start: Effect.void,
       drain: Effect.never,
     }),
+  observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
 })
 
 test('starts a subagent task without waiting for its terminal result', async () => {
@@ -199,6 +201,7 @@ test('publishes task lifecycle in order and cleans up once for an immediately te
         start: Effect.void,
         drain: Effect.never,
       }),
+    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
   }
   const program = Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem
@@ -267,6 +270,7 @@ test('finalizes initial task activity when awaitTerminal defects', async () => {
             start: Effect.void,
             drain: Effect.never,
           }),
+        observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
       },
       models: makeTaskModels(() => profilesFor(parent)),
       channelTurns: noChannelTurns,
@@ -471,6 +475,7 @@ test('delivers a completed task back to the parent channel Thread', async () => 
         start: Effect.void,
         drain: Effect.never,
       }),
+    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
   }
   const program = Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem
@@ -550,6 +555,7 @@ test('delivers a bootstrap result back to the channel for a separate normal task
         start: Effect.void,
         drain: Effect.never,
       }),
+    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
   }
   const program = Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem
@@ -659,6 +665,7 @@ test('steers an active task and continues an idle task with a new Turn', async (
         start: Effect.void,
         drain: Effect.never,
       }),
+    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
   }
   let latest = active
   const persistence = taskPersistence(parent, thread, active, latest)
@@ -718,6 +725,7 @@ test('does not prompt a continuation when metadata reads fail', async () => {
           start: Effect.void,
           drain: Effect.never,
         }),
+      observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     },
     models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: noChannelTurns,
@@ -760,6 +768,7 @@ test('marks an idle task active while its continuation runs', async () => {
         start: Effect.void,
         drain: Effect.never,
       }),
+    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
   }
   const program = Effect.gen(function* () {
     const tasks = makeTasks({
@@ -875,6 +884,7 @@ test('keeps task activity active across overlapping continuation finalizers', as
           start: Effect.void,
           drain: Effect.never,
         }),
+      observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     }
     const persistence = taskPersistence(parent, thread, completed, completed)
     const identifiers = ['continuation-one', 'continuation-two']
@@ -970,6 +980,7 @@ test('cancels only an active owned task', async () => {
           start: Effect.void,
           drain: Effect.never,
         }),
+      observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     },
     models: makeTaskModels(() => profilesFor(parent)),
     channelTurns: {
@@ -1093,6 +1104,7 @@ test('rejects unmanaged directory conflicts without attempting worktree isolatio
     ...makePersistence(parent, []),
     listAgentThreads: () => Effect.succeed([existing]),
     getLatestTurn: () => Effect.succeedSome(running),
+    listTurns: () => Effect.succeed([]),
   }
   let isolationAttempts = 0
   const program = Effect.gen(function* () {
@@ -1159,6 +1171,7 @@ test('isolates conflicts only after managed worktree ownership is confirmed', as
     ...makePersistence(parent, createdThreads),
     listAgentThreads: () => Effect.succeed([existing]),
     getLatestTurn: () => Effect.succeedSome(running),
+    listTurns: () => Effect.succeed([]),
   }
   let ownershipChecks = 0
   let isolationAttempts = 0
@@ -1235,6 +1248,7 @@ test('allows concurrent read-only tasks sharing one canonical working directory'
     ...makePersistence(parent, []),
     listAgentThreads: () => Effect.succeed([existing]),
     getLatestTurn: () => Effect.succeedSome(running),
+    listTurns: () => Effect.succeed([]),
   }
   const program = Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem
@@ -1366,6 +1380,12 @@ const taskPersistence = (
   listAgentThreads: () => Effect.succeed([thread]),
   getFirstTurn: () => Effect.succeedSome(first),
   getLatestTurn: () => Effect.succeedSome(latest),
+  listTurns: () =>
+    Effect.succeed(
+      first.id === latest.id
+        ? [first]
+        : [first, latest].toSorted((a, b) => a.sequence - b.sequence),
+    ),
 })
 
 test('rejects directories outside the channel workspace for a normal task', async () => {

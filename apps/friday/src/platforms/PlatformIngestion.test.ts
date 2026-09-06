@@ -513,6 +513,7 @@ const makeFriday = (
         drain: Effect.void,
       } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
     }),
+  observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
 })
 
 const makePersistence = (
@@ -560,6 +561,7 @@ const makePersistence = (
             }),
       ),
     getFirstTurn: () => Effect.succeedNone,
+    listTurns: () => Effect.succeed([]),
     getLatestTurn: () =>
       Effect.succeed(
         options.latestIsActive

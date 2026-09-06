@@ -374,6 +374,7 @@ it.effect('leaves the initial task Turn byte-for-byte the caller task', () =>
       getTurn: () => Effect.succeedNone,
       getFirstTurn: () => Effect.succeedNone,
       getLatestTurn: () => Effect.succeedNone,
+      listTurns: () => Effect.succeed([]),
       getLatestUserTurn: () => Effect.succeedNone,
       startTurn: () => Effect.void,
       putActivitySnapshot: () => Effect.void,
@@ -396,6 +397,7 @@ it.effect('leaves the initial task Turn byte-for-byte the caller task', () =>
           start: Effect.void,
           drain: Effect.never,
         }),
+      observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     }
     const channelTurns: ChannelTurnsContract = { accept: () => Effect.void }
     const tasks = makeTasks({

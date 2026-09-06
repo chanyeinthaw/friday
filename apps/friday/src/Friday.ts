@@ -5,7 +5,10 @@ import * as Layer from 'effect/Layer'
 
 import type { ThreadCoordinatorContract } from './conversation/ThreadCoordinator.ts'
 import type { ThreadPersistenceError } from './conversation/ThreadPersistence.ts'
-import { ThreadRuntimePool } from './conversation/ThreadRuntimePool.ts'
+import {
+  ThreadRuntimePool,
+  type ThreadRuntimeObservation,
+} from './conversation/ThreadRuntimePool.ts'
 import type { ThreadRuntimeError } from './conversation/ThreadRuntimes.ts'
 
 export interface FridayContract {
@@ -15,6 +18,7 @@ export interface FridayContract {
     ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>,
     ThreadRuntimeError | ThreadPersistenceError
   >
+  readonly observeRuntime: (threadId: Thread['id']) => Effect.Effect<ThreadRuntimeObservation>
 }
 
 export class Friday extends Context.Service<Friday, FridayContract>()('friday/Friday') {}
@@ -26,6 +30,7 @@ export const FridayLive = Layer.effect(
 
     return Friday.of({
       openThread: pool.acquire,
+      observeRuntime: pool.observe,
     })
   }),
 )

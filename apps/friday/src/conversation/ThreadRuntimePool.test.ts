@@ -317,6 +317,37 @@ it.effect('does not reap a runtime while its Turn is active', () =>
   ).pipe(Effect.provide(TestClock.layer())),
 )
 
+it.effect('observes runtime presence without opening a runtime', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const terminal = yield* Deferred.make<TerminalTurn>()
+      let opened = 0
+      const pool = yield* ThreadRuntimePool.pipe(
+        Effect.provide(
+          testLayer(() => Effect.sync(() => makeCoordinator(++opened, Deferred.await(terminal)))),
+        ),
+      )
+
+      const absent = yield* pool.observe(thread.id)
+      assert.deepStrictEqual(absent, { runtimePresent: false, activeTurns: 0 })
+      assert.strictEqual(opened, 0)
+
+      const coordinator = yield* pool.acquire(thread)
+      const present = yield* pool.observe(thread.id)
+      assert.deepStrictEqual(present, { runtimePresent: true, activeTurns: 0 })
+      assert.strictEqual(opened, 1)
+
+      yield* coordinator.prompt(turn)
+      const observedWhileActive = yield* pool.observe(thread.id)
+      assert.deepStrictEqual(observedWhileActive, { runtimePresent: true, activeTurns: 1 })
+      // Observing never opens a second runtime as a side effect.
+      assert.strictEqual(opened, 1)
+
+      yield* Deferred.succeed(terminal, completedTurn(turn))
+    }),
+  ).pipe(Effect.provide(TestClock.layer())),
+)
+
 it.effect('refuses harness reload for a thread with no open runtime', () =>
   Effect.scoped(
     Effect.gen(function* () {

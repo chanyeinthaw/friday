@@ -205,6 +205,21 @@ test('retrieves the latest Turn for a Thread', async () => {
   await rm(directory, { recursive: true, force: true })
 })
 
+test('lists Turns for a Thread in sequence order', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(thread)
+    yield* persistence.createTurn(secondTurn)
+    yield* persistence.createTurn(turn)
+    const turns = yield* persistence.listTurns(thread.id)
+    expect(turns.map((entry) => String(entry.id))).toEqual(['turn-1', 'turn-2'])
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+})
+
 test('creates and retrieves a channel Thread', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
   const filename = join(directory, 'friday.sqlite')

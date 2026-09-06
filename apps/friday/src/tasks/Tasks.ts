@@ -5,6 +5,8 @@ import {
   AgentThread,
   SteeringActivity,
   TaskId,
+  TaskInspectCursor,
+  TaskInspectDefaultLimit,
   ThreadId,
   Turn,
   TurnId,
@@ -12,6 +14,8 @@ import {
   type BootstrapTaskRequest,
   type CancelTaskRequest,
   type ChannelThread,
+  type InspectTaskRequest,
+  type InspectTaskResult,
   type IsoDateTime,
   type ListTasksRequest,
   type StartedTask,
@@ -55,10 +59,20 @@ import {
   matchesTaskStatusFilter,
   workingDirectoriesConflict,
 } from './TaskPolicy.ts'
+import {
+  buildInspectSnapshotBoundary,
+  buildOrderedTaskActivities,
+  buildTaskOutline,
+  decodeInspectCursor,
+  encodeInspectCursor,
+  inspectPositionForActivity,
+  isOlderThanInspectCursor,
+  isWithinInspectSnapshot,
+} from './TaskInspection.ts'
 
 export class TaskError extends Schema.Error<TaskError>('TaskError')({
   _tag: Schema.tag('TaskError'),
-  operation: Schema.Literals(['start', 'bootstrap', 'steer', 'list', 'cancel']),
+  operation: Schema.Literals(['start', 'bootstrap', 'steer', 'list', 'cancel', 'inspect']),
   reason: Schema.Literals([
     'model-not-configured',
     'invalid-working-directory',
@@ -71,6 +85,7 @@ export class TaskError extends Schema.Error<TaskError>('TaskError')({
     'parent-not-found',
     'parent-not-channel',
     'start-failed',
+    'invalid-cursor',
   ]),
   detail: Schema.String,
 }) {
@@ -95,6 +110,9 @@ export interface TasksContract {
   readonly cancel: (
     request: CancelTaskRequest,
   ) => Effect.Effect<void, TaskError | ThreadPersistenceError>
+  readonly inspect: (
+    request: InspectTaskRequest,
+  ) => Effect.Effect<InspectTaskResult, TaskError | ThreadPersistenceError>
 }
 
 export class Tasks extends Context.Service<Tasks, TasksContract>()('friday/tasks/Tasks') {}
@@ -924,12 +942,92 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
     )
   })
 
+  const requireInspectTask = Effect.fn('Tasks.requireInspectTask')(function* (
+    parentThreadId: InspectTaskRequest['parentThreadId'],
+    taskId: InspectTaskRequest['taskId'],
+  ) {
+    const threadId = yield* decodeThreadId(taskId).pipe(
+      Effect.mapError(() =>
+        taskError('task-not-found', `Task '${taskId}' was not found.`, 'inspect'),
+      ),
+    )
+    const found = yield* options.persistence.getThread(threadId)
+    if (Option.isNone(found) || found.value.audience !== 'agent') {
+      return yield* taskError('task-not-found', `Task '${taskId}' was not found.`, 'inspect')
+    }
+    const thread = found.value
+    if (thread.parent.threadId !== parentThreadId) {
+      return yield* taskError('task-not-found', `Task '${taskId}' was not found.`, 'inspect')
+    }
+    return thread
+  })
+
+  const inspect = Effect.fn('Tasks.inspect')(function* (request: InspectTaskRequest) {
+    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
+    const thread = yield* requireInspectTask(request.parentThreadId, request.taskId)
+    const turns = yield* options.persistence.listTurns(thread.id)
+    const first = turns.at(0)
+    const latest = turns.at(-1)
+    if (first === undefined || latest === undefined) {
+      return yield* taskError(
+        'task-not-active',
+        `Task '${request.taskId}' has no Turns.`,
+        'inspect',
+      )
+    }
+    const limit = request.limit ?? TaskInspectDefaultLimit
+    const cursor =
+      request.cursor === undefined
+        ? null
+        : Option.getOrElse(decodeInspectCursor(request.cursor, request.taskId), () => null)
+    if (request.cursor !== undefined && cursor === null) {
+      return yield* taskError(
+        'invalid-cursor',
+        'The task inspection cursor is invalid or does not belong to this task.',
+        'inspect',
+      )
+    }
+    const runtime = yield* options.friday.observeRuntime(thread.id)
+    const outline = buildTaskOutline({
+      taskId: request.taskId,
+      thread,
+      parent,
+      latestTurn: latest,
+      runtime,
+    })
+    const ordered = buildOrderedTaskActivities(turns)
+    const boundary = cursor?.boundary ?? buildInspectSnapshotBoundary(ordered)
+    const filtered = ordered.filter((activity) => {
+      const position = inspectPositionForActivity(activity, boundary)
+      return (
+        isWithinInspectSnapshot(position, boundary) &&
+        (cursor === null || isOlderThanInspectCursor(position, cursor.after))
+      )
+    })
+    const page = filtered.slice(0, limit)
+    const hasMore = filtered.length > limit
+    const last = page.at(-1)
+    const nextCursor: TaskInspectCursor | null =
+      hasMore && last !== undefined
+        ? encodeInspectCursor(request.taskId, boundary, {
+            ...inspectPositionForActivity(last, boundary),
+          })
+        : null
+    return {
+      outline,
+      activities: page.map(({ summary }) => summary),
+      nextCursor,
+      hasMore,
+    } satisfies InspectTaskResult
+  })
+
   return Tasks.of({
     start,
     bootstrap,
     steer,
     list,
     cancel,
+    inspect,
   })
 }
 

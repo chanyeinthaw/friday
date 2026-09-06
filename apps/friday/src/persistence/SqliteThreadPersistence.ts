@@ -44,6 +44,7 @@ const ListAgentThreadsRequest = Schema.Struct({ parentThreadId: ThreadId })
 const GetTurnRequest = Schema.Struct({ turnId: TurnId })
 const GetFirstTurnRequest = Schema.Struct({ threadId: ThreadId })
 const GetLatestTurnRequest = Schema.Struct({ threadId: ThreadId })
+const ListTurnsRequest = Schema.Struct({ threadId: ThreadId })
 const GetLatestUserTurnRequest = Schema.Struct({ threadId: ThreadId })
 const GetActivityRequest = Schema.Struct({ activityId: ActivityId })
 const PersistedThreadRow = Schema.Struct({ payload: ThreadJson })
@@ -224,6 +225,17 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     `,
   })
 
+  const selectTurns = SqlSchema.findAll({
+    Request: ListTurnsRequest,
+    Result: PersistedTurnRow,
+    execute: ({ threadId }) => sql`
+      SELECT payload_json AS payload
+      FROM turns
+      WHERE thread_id = ${threadId}
+      ORDER BY sequence ASC
+    `,
+  })
+
   const selectLatestUserTurn = SqlSchema.findOneOption({
     Request: GetLatestUserTurnRequest,
     Result: PersistedTurnRow,
@@ -287,6 +299,12 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     selectLatestTurn({ threadId }).pipe(
       Effect.map(Option.map((row) => row.payload)),
       Effect.mapError(toPersistenceError('ThreadPersistence.getLatestTurn')),
+    )
+
+  const listTurns = (threadId: ThreadType['id']) =>
+    selectTurns({ threadId }).pipe(
+      Effect.map((rows) => rows.map((row) => row.payload)),
+      Effect.mapError(toPersistenceError('ThreadPersistence.listTurns')),
     )
 
   const getLatestUserTurn = (threadId: ThreadType['id']) =>
@@ -414,6 +432,7 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
     getTurn,
     getFirstTurn,
     getLatestTurn,
+    listTurns,
     getLatestUserTurn,
     startTurn: (update) =>
       updateExistingTurn('ThreadPersistence.startTurn', update.turnId, (turn) => ({

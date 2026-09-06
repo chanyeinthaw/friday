@@ -85,6 +85,7 @@ it.effect('opens a Thread through the runtime service and returns its started co
                     operations.push('set-harness-session')
                     return pooledCoordinator
                   }),
+                observe: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
                 reloadHarness: () => Effect.succeed(harnessReloadSucceeded()),
                 reapIdle: Effect.void,
               }),
@@ -123,6 +124,7 @@ const makePersistence = (operations: Array<string>): ThreadPersistenceContract =
   getTurn: () => Effect.succeedNone,
   getFirstTurn: () => Effect.succeedNone,
   getLatestTurn: () => Effect.succeedNone,
+  listTurns: () => Effect.succeed([]),
   getLatestUserTurn: () => Effect.succeedNone,
   startTurn: () => Effect.void,
   putActivitySnapshot: () => Effect.void,
