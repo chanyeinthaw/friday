@@ -60,6 +60,74 @@ it('projects Chat SDK identifiers and text into Friday contracts', () => {
   assert.strictEqual(inbound.message.replyTo, undefined)
 })
 
+it('projects the platform scope for Discord guilds and Slack workspaces', () => {
+  const discord = projectChatSdkMessage(
+    'discord',
+    {
+      adapter: { name: 'discord' },
+      channelId: 'discord:guild-1:channel-1',
+      id: 'discord:guild-1:channel-1:thread-1',
+    },
+    {
+      id: 'discord-message-1',
+      text: 'Hello Friday',
+      raw: {},
+      author: {
+        userId: 'user-1',
+        userName: 'user',
+        fullName: 'User',
+        isBot: false,
+        isMe: false,
+      },
+    },
+  )
+  assert.strictEqual(discord.binding.scopeId, 'guild-1')
+
+  const slack = projectChatSdkMessage(
+    'slack',
+    {
+      adapter: { name: 'slack' },
+      channelId: 'slack:C123',
+      id: 'slack:C123:1710000000.000000',
+    },
+    {
+      id: '1710000000.000000',
+      text: 'Hello Friday',
+      raw: { team_id: 'T123' },
+      author: {
+        userId: 'U123',
+        userName: 'user',
+        fullName: 'User',
+        isBot: false,
+        isMe: false,
+      },
+    },
+  )
+  assert.strictEqual(slack.binding.scopeId, 'T123')
+
+  const dm = projectChatSdkMessage(
+    'discord',
+    {
+      adapter: { name: 'discord' },
+      channelId: 'discord:@me:channel-1',
+      id: 'discord:@me:channel-1',
+    },
+    {
+      id: 'discord-dm-message-1',
+      text: 'Hello Friday',
+      raw: {},
+      author: {
+        userId: 'user-1',
+        userName: 'user',
+        fullName: 'User',
+        isBot: false,
+        isMe: false,
+      },
+    },
+  )
+  assert.isUndefined(dm.binding.scopeId)
+})
+
 it('projects Discord trigger attachments, including image-only input', () => {
   const inbound = projectChatSdkMessage(
     'discord',

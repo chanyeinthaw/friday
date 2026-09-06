@@ -5,6 +5,7 @@ import {
   HarnessSessionId,
   ToolCallId,
   type Activity,
+  type ConversationBinding,
   type ToolCallId as ToolCallIdType,
   type IsoDateTime,
   type Thread,
@@ -31,6 +32,8 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 
 import type { AppConfig } from '../../config/AppConfig.ts'
+import { DefaultIdentityText, type IdentityText } from '../../config/IdentityConfiguration.ts'
+import type { RootUser } from '../../config/RootUsers.ts'
 import {
   harnessReloadFailed,
   harnessReloadRefused,
@@ -42,7 +45,6 @@ import {
 } from '../../conversation/ThreadRuntime.ts'
 import {
   renderModelHint,
-  type SystemPromptTemplateError,
   type SystemPromptTemplatesContract,
 } from '../../system-prompt/SystemPromptTemplates.ts'
 import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
@@ -110,6 +112,12 @@ export interface PiAgentSessionContract {
 
 export interface MakePiThreadRuntimeOptions {
   readonly thread: Thread
+  /** Resolves the configured identity text for a channel prompt. */
+  readonly identityTextForChannel?: () => Effect.Effect<IdentityText>
+  /** Resolves the already-scoped root-user subset for a channel binding. */
+  readonly rootUsersForBinding?: (
+    binding: ConversationBinding,
+  ) => Effect.Effect<ReadonlyArray<RootUser>>
   readonly modelRuntime?: ModelRuntime
   readonly createSession?: (
     options: CreateAgentSessionOptions,
@@ -300,28 +308,50 @@ export const projectPiSessionEvent = Effect.fn('projectPiSessionEvent')(function
 const renderSystemPrompt = (
   options: MakePiThreadRuntimeOptions,
   operation: 'create-session' | 'reload',
-): Effect.Effect<string | undefined, PiThreadRuntimeError> => {
-  if (!options.systemPromptTemplates) return Effect.succeed(undefined)
-  const rendered: Effect.Effect<string | undefined, SystemPromptTemplateError> =
-    options.thread.audience === 'user'
-      ? options.systemPromptTemplates.renderChannelAgent({
+): Effect.Effect<string | undefined, PiThreadRuntimeError> =>
+  Effect.gen(function* () {
+    if (!options.systemPromptTemplates) return undefined
+    if (options.thread.audience === 'user') {
+      const identityText = options.identityTextForChannel
+        ? yield* options.identityTextForChannel()
+        : undefined
+      const rootUsers = options.rootUsersForBinding
+        ? yield* options.rootUsersForBinding(options.thread.conversationBinding)
+        : []
+      return yield* options.systemPromptTemplates
+        .renderChannelAgent({
           thread: options.thread,
           availableAgentModels: options.availableAgentModels?.() ?? [],
+          identityText: identityText ?? DefaultIdentityText,
+          rootUsers,
         })
-      : options.thread.role === 'bootstrap'
-        ? options.systemPromptTemplates.renderBootstrapAgent(options.thread.workingDirectory)
-        : Effect.succeed(undefined)
-  return rendered.pipe(
-    Effect.mapError(
-      (cause) =>
-        new PiThreadRuntimeError({
-          operation,
-          detail: cause.detail,
-          cause,
-        }),
-    ),
-  )
-}
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PiThreadRuntimeError({
+                operation,
+                detail: cause.detail,
+                cause,
+              }),
+          ),
+        )
+    }
+    if (options.thread.role === 'bootstrap') {
+      return yield* options.systemPromptTemplates
+        .renderBootstrapAgent(options.thread.workingDirectory)
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PiThreadRuntimeError({
+                operation,
+                detail: cause.detail,
+                cause,
+              }),
+          ),
+        )
+    }
+    return undefined
+  })
 
 const makeSession = Effect.fn('makePiAgentSession')(function* (
   options: MakePiThreadRuntimeOptions,

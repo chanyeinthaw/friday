@@ -55,6 +55,15 @@ import {
   type DiscordAdminRemoveOutcome,
 } from './config/DiscordAdmins.ts'
 import {
+  RootUserPlatform,
+  RootUserScopeId,
+  RootUserId,
+  type RootUser,
+  type RootUserAddOutcome,
+  type RootUserRemoveOutcome,
+} from './config/RootUsers.ts'
+import { IdentityText, type IdentityTextSetOutcome } from './config/IdentityConfiguration.ts'
+import {
   RepositoryUrl,
   type ManagedWorktree,
   type ManagedWorktreeListEntry,
@@ -268,6 +277,15 @@ export type FridayCliAction =
       readonly userId: typeof DiscordUserId.Type
     }
   | { readonly type: 'config-admin-discord-list'; readonly json: boolean }
+  | {
+      readonly type: 'config-root-user-add' | 'config-root-user-remove'
+      readonly platform: typeof RootUserPlatform.Type
+      readonly scopeId: typeof RootUserScopeId.Type
+      readonly userId: typeof RootUserId.Type
+    }
+  | { readonly type: 'config-root-user-list'; readonly json: boolean }
+  | { readonly type: 'config-identity-get'; readonly json: boolean }
+  | { readonly type: 'config-identity-set'; readonly text: IdentityText }
   | { readonly type: 'config-discord-connection-list'; readonly json: boolean }
   | {
       readonly type: 'config-discord-connection-add'
@@ -404,6 +422,10 @@ const decodeWorkspaceCleanupProposalId = Schema.decodeUnknownEffect(WorkspaceCle
 const decodePlatformConnectionId = Schema.decodeUnknownEffect(PlatformConnectionId)
 const decodeInvocationMode = Schema.decodeUnknownEffect(InvocationMode)
 const decodeDiscordUserId = Schema.decodeUnknownEffect(DiscordUserId)
+const decodeRootUserPlatform = Schema.decodeUnknownEffect(RootUserPlatform)
+const decodeRootUserScopeId = Schema.decodeUnknownEffect(RootUserScopeId)
+const decodeRootUserId = Schema.decodeUnknownEffect(RootUserId)
+const decodeIdentityText = Schema.decodeUnknownEffect(IdentityText)
 const decodeDiscordGuildId = Schema.decodeUnknownEffect(DiscordGuildId)
 const decodeDiscordGuildChannelId = Schema.decodeUnknownEffect(DiscordGuildChannelId)
 const decodeDiscordSnowflake = Schema.decodeUnknownEffect(DiscordSnowflake)
@@ -754,6 +776,65 @@ const parseAdminDiscordList = Effect.fn('Cli.parseAdminDiscordList')(function* (
 ) {
   const json = yield* parseTrailingJson(tokens, all)
   return { type: 'config-admin-discord-list' as const, json }
+})
+
+const parseRootUserIdentity = Effect.fn('Cli.parseRootUserIdentity')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 3) return yield* discordArgumentsError(all)
+  const platform = yield* decodeRootUserPlatform(tokens[0] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const scopeId = yield* decodeRootUserScopeId(tokens[1] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const userId = yield* decodeRootUserId(tokens[2] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  return { platform, scopeId, userId }
+})
+
+const parseRootUserAdd = Effect.fn('Cli.parseRootUserAdd')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const rootUser = yield* parseRootUserIdentity(tokens, all)
+  return { type: 'config-root-user-add' as const, ...rootUser }
+})
+
+const parseRootUserRemove = Effect.fn('Cli.parseRootUserRemove')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const rootUser = yield* parseRootUserIdentity(tokens, all)
+  return { type: 'config-root-user-remove' as const, ...rootUser }
+})
+
+const parseRootUserList = Effect.fn('Cli.parseRootUserList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'config-root-user-list' as const, json }
+})
+
+const parseIdentityGet = Effect.fn('Cli.parseIdentityGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  return { type: 'config-identity-get' as const, json: yield* parseTrailingJson(tokens, all) }
+})
+
+const parseIdentitySet = Effect.fn('Cli.parseIdentitySet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 1) return yield* discordArgumentsError(all)
+  const text = yield* decodeIdentityText(tokens[0] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  return { type: 'config-identity-set' as const, text }
 })
 
 const parseActivityDescription = (enabled: boolean) =>
@@ -1419,6 +1500,48 @@ export const cliCommandSpec: CliBranchSpec = {
           ],
         },
         {
+          name: 'identity',
+          summary: 'View or set the trusted channel-agent identity text.',
+          children: [
+            {
+              name: 'get',
+              summary: 'Show the configured channel-agent identity text.',
+              arguments: ['[--json]'],
+              parse: parseIdentityGet,
+            },
+            {
+              name: 'set',
+              summary: 'Set the channel-agent identity text literally.',
+              arguments: ['<text>'],
+              parse: parseIdentitySet,
+            },
+          ],
+        },
+        {
+          name: 'root-user',
+          summary: 'Manage root users by platform plus guild/workspace scope (applies live).',
+          children: [
+            {
+              name: 'add',
+              summary: 'Register a root user for a platform scope.',
+              arguments: ['<discord|slack> <scope-id> <user-id>'],
+              parse: parseRootUserAdd,
+            },
+            {
+              name: 'remove',
+              summary: 'Remove a root user from a platform scope.',
+              arguments: ['<discord|slack> <scope-id> <user-id>'],
+              parse: parseRootUserRemove,
+            },
+            {
+              name: 'list',
+              summary: 'List configured root users.',
+              arguments: ['[--json]'],
+              parse: parseRootUserList,
+            },
+          ],
+        },
+        {
           name: 'discord',
           summary: 'Manage Discord connections, their guilds, and live activity publication.',
           children: [
@@ -1824,6 +1947,29 @@ export const renderDiscordAdminList = (userIds: ReadonlyArray<string>): string =
     ? 'No Discord administrators are configured.'
     : ['Discord administrators:', ...userIds.map((id) => `  ${id}`)].join('\n')
 
+const formatRootUserIdentity = (rootUser: RootUser): string =>
+  `${rootUser.platform} ${rootUser.scopeId} ${rootUser.userId}`
+
+/** Human-readable add outcome; root-user changes apply live on next prompt render. */
+export const formatRootUserAdd = (rootUser: RootUser, outcome: RootUserAddOutcome): string =>
+  outcome === 'added'
+    ? `Root user ${formatRootUserIdentity(rootUser)} added.`
+    : `Root user ${formatRootUserIdentity(rootUser)} is already configured.`
+
+/** Human-readable remove outcome; root-user changes apply live on next prompt render. */
+export const formatRootUserRemove = (rootUser: RootUser, outcome: RootUserRemoveOutcome): string =>
+  outcome === 'removed'
+    ? `Root user ${formatRootUserIdentity(rootUser)} removed.`
+    : `Root user ${formatRootUserIdentity(rootUser)} is not configured.`
+
+/** Human-readable root-user list in stable sorted order. */
+export const renderRootUserList = (rootUsers: ReadonlyArray<RootUser>): string =>
+  rootUsers.length === 0
+    ? 'No root users are configured.'
+    : ['Root users:', ...rootUsers.map((rootUser) => `  ${formatRootUserIdentity(rootUser)}`)].join(
+        '\n',
+      )
+
 export const renderDiscordConnectionList = (
   connections: ReadonlyArray<DiscordConnectionRecord>,
 ): string =>
@@ -2082,6 +2228,8 @@ export type FridayCliOperations<
   ActivityDescriptionError,
   GuildError,
   AdminError,
+  RootUserError,
+  IdentityConfigurationError,
   ConnectionError,
   ModelConfigError,
   ModelCatalogError,
@@ -2130,6 +2278,15 @@ export type FridayCliOperations<
     userId: typeof DiscordUserId.Type,
   ) => Effect.Effect<DiscordAdminRemoveOutcome, AdminError>
   readonly listDiscordAdmins: () => Effect.Effect<ReadonlyArray<string>, AdminError>
+  readonly addRootUser: (rootUser: RootUser) => Effect.Effect<RootUserAddOutcome, RootUserError>
+  readonly removeRootUser: (
+    rootUser: RootUser,
+  ) => Effect.Effect<RootUserRemoveOutcome, RootUserError>
+  readonly listRootUsers: () => Effect.Effect<ReadonlyArray<RootUser>, RootUserError>
+  readonly getIdentityText: () => Effect.Effect<IdentityText, IdentityConfigurationError>
+  readonly setIdentityText: (
+    text: IdentityText,
+  ) => Effect.Effect<IdentityTextSetOutcome, IdentityConfigurationError>
   readonly addDiscordConnection: (
     input: Extract<FridayCliAction, { readonly type: 'config-discord-connection-add' }>,
   ) => Effect.Effect<DiscordConnectionAddOutcome, ConnectionError>
@@ -2236,6 +2393,8 @@ type ConfigurationAction = Extract<
       | 'config-model-list'
       | 'config-model-get'
       | 'config-model-set'
+      | 'config-identity-get'
+      | 'config-identity-set'
       | ProfileAction['type']
   }
 >
@@ -2249,6 +2408,9 @@ type CatalogAction = Extract<
       | 'config-admin-discord-add'
       | 'config-admin-discord-remove'
       | 'config-admin-discord-list'
+      | 'config-root-user-add'
+      | 'config-root-user-remove'
+      | 'config-root-user-list'
       | ConnectionAction['type']
   }
 >
@@ -2271,6 +2433,8 @@ const cliActionGroups = {
   'config-model-list': 'configuration',
   'config-model-get': 'configuration',
   'config-model-set': 'configuration',
+  'config-identity-get': 'configuration',
+  'config-identity-set': 'configuration',
   'config-profile-list': 'configuration',
   'config-profile-get': 'configuration',
   'config-profile-add': 'configuration',
@@ -2282,6 +2446,9 @@ const cliActionGroups = {
   'config-admin-discord-add': 'catalog',
   'config-admin-discord-remove': 'catalog',
   'config-admin-discord-list': 'catalog',
+  'config-root-user-add': 'catalog',
+  'config-root-user-remove': 'catalog',
+  'config-root-user-list': 'catalog',
   'config-discord-connection-list': 'catalog',
   'config-discord-connection-add': 'catalog',
   'config-discord-connection-update': 'catalog',
@@ -2327,6 +2494,8 @@ export const runFridayCli = <
   ActivityDescriptionError,
   GuildError,
   AdminError,
+  RootUserError,
+  IdentityConfigurationError,
   ConnectionError,
   ModelConfigError,
   ModelCatalogError,
@@ -2339,6 +2508,8 @@ export const runFridayCli = <
     ActivityDescriptionError,
     GuildError,
     AdminError,
+    RootUserError,
+    IdentityConfigurationError,
     ConnectionError,
     ModelConfigError,
     ModelCatalogError
@@ -2354,6 +2525,8 @@ export const runFridayCli = <
   | GuildError
   | ControlSocketError
   | AdminError
+  | RootUserError
+  | IdentityConfigurationError
   | ConnectionError
   | ModelConfigError
   | ModelCatalogError
@@ -2424,6 +2597,21 @@ export const runFridayCli = <
             outcome === 'updated'
               ? `Friday ${selected.selection.name} model updated.`
               : `Friday ${selected.selection.name} model already has the requested selection.`,
+          )
+          if (outcome === 'updated') yield* reloadAfterCommit()
+          return
+        }
+        case 'config-identity-get': {
+          const identityText = yield* options.getIdentityText()
+          yield* Console.log(selected.json ? JSON.stringify(identityText) : identityText)
+          return
+        }
+        case 'config-identity-set': {
+          const outcome = yield* options.setIdentityText(selected.text)
+          yield* Console.log(
+            outcome === 'updated'
+              ? 'Identity text updated.'
+              : 'Identity text already has the requested value.',
           )
           if (outcome === 'updated') yield* reloadAfterCommit()
           return
@@ -2541,6 +2729,33 @@ export const runFridayCli = <
           const userIds = yield* options.listDiscordAdmins()
           yield* Console.log(
             selected.json ? JSON.stringify(userIds) : renderDiscordAdminList(userIds),
+          )
+          return
+        }
+        case 'config-root-user-add': {
+          const rootUser: RootUser = {
+            platform: selected.platform,
+            scopeId: selected.scopeId,
+            userId: selected.userId,
+          }
+          const outcome = yield* options.addRootUser(rootUser)
+          yield* Console.log(formatRootUserAdd(rootUser, outcome))
+          return
+        }
+        case 'config-root-user-remove': {
+          const rootUser: RootUser = {
+            platform: selected.platform,
+            scopeId: selected.scopeId,
+            userId: selected.userId,
+          }
+          const outcome = yield* options.removeRootUser(rootUser)
+          yield* Console.log(formatRootUserRemove(rootUser, outcome))
+          return
+        }
+        case 'config-root-user-list': {
+          const rootUsers = yield* options.listRootUsers()
+          yield* Console.log(
+            selected.json ? JSON.stringify(rootUsers) : renderRootUserList(rootUsers),
           )
           return
         }

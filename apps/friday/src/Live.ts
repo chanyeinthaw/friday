@@ -11,6 +11,13 @@ import { makeThreadCoordinator } from './conversation/ThreadCoordinator.ts'
 import { ThreadRuntimePoolLive } from './conversation/ThreadRuntimePool.ts'
 import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
 import { AppConfig, AppConfigLive } from './config/AppConfigLive.ts'
+import {
+  DefaultIdentityText,
+  IdentityConfiguration,
+  IdentityConfigurationLive,
+} from './config/IdentityConfiguration.ts'
+import { RootUsers, RootUsersLive } from './config/RootUsers.ts'
+import { rootUsersForBinding as selectRootUsersForBinding } from './identity/RootUsers.ts'
 import { PiModelRuntime, PiModelRuntimeLive } from './harness/pi/Live.ts'
 import { makePiTextGeneration } from './harness/pi/PiTextGeneration.ts'
 import { makePiPlatformThreadRouter } from './harness/pi/PiPlatformThreadRouter.ts'
@@ -39,6 +46,21 @@ const ThreadRuntimesLive = Layer.effect(
     const systemPromptTemplates = yield* SystemPromptTemplates
     const tasks = yield* TaskToolDispatcher
     const platforms = yield* PlatformRegistry
+    const identity = yield* IdentityConfiguration
+    const rootUsers = yield* RootUsers
+
+    // Resolve channel-only context immediately before prompt rendering. The
+    // full root-user registry never reaches templates, only the scoped subset.
+    const identityTextForChannel: NonNullable<
+      Parameters<typeof makePiThreadRuntime>[0]['identityTextForChannel']
+    > = () => identity.get().pipe(Effect.orElseSucceed(() => DefaultIdentityText))
+    const rootUsersForBinding: NonNullable<
+      Parameters<typeof makePiThreadRuntime>[0]['rootUsersForBinding']
+    > = (binding) =>
+      rootUsers.list().pipe(
+        Effect.map((registry) => selectRootUsersForBinding(registry, binding)),
+        Effect.orElseSucceed(() => [] as const),
+      )
 
     return ThreadRuntimes.of({
       open: (thread) =>
@@ -51,6 +73,8 @@ const ThreadRuntimesLive = Layer.effect(
           availableAgentModels: () => config.current().models.subagents,
           tasks,
           platforms,
+          identityTextForChannel,
+          rootUsersForBinding,
         }).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError(
@@ -90,6 +114,10 @@ const ThreadRuntimesLive = Layer.effect(
 )
 
 const AppConfigConfiguredLive = AppConfigLive.pipe(Layer.provide(FridaySqliteLive))
+const IdentityConfigurationConfiguredLive = IdentityConfigurationLive.pipe(
+  Layer.provide(FridaySqliteLive),
+)
+const RootUsersConfiguredLive = RootUsersLive.pipe(Layer.provide(FridaySqliteLive))
 const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
@@ -102,6 +130,8 @@ const CoreLive = Layer.mergeAll(
   PlatformRegistryLive,
   DiscordActivityDescriptionsConfiguredLive,
   AppConfigConfiguredLive,
+  IdentityConfigurationConfiguredLive,
+  RootUsersConfiguredLive,
   SystemPromptTemplatesLive,
   TaskToolDispatcherLive,
 )

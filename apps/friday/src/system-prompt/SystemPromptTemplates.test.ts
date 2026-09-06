@@ -8,6 +8,9 @@ import {
   SystemPromptTemplates,
   SystemPromptTemplatesLive,
 } from './SystemPromptTemplates.ts'
+import { IdentityText } from '../config/IdentityConfiguration.ts'
+
+const decodeIdentityText = Schema.decodeSync(IdentityText)
 
 const decodeModel = Schema.decodeSync(ModelSelection)
 const decodeProfileName = Schema.decodeSync(SubagentProfileName)
@@ -42,6 +45,7 @@ it.effect('renders the channel agent system prompt from thread context and confi
     const templates = yield* SystemPromptTemplates
     const prompt = yield* templates.renderChannelAgent({
       thread,
+      identityText: decodeIdentityText('Your name is Friday'),
       availableAgentModels: [
         {
           name: decodeProfileName('primary'),
@@ -58,6 +62,9 @@ it.effect('renders the channel agent system prompt from thread context and confi
       ],
     })
 
+    assert.include(prompt, '# Identity')
+    assert.include(prompt, 'Your name is Friday')
+    assert.include(prompt, '## Root users')
     assert.include(prompt, '## Runtime model')
     assert.include(prompt, 'Model: `opencode-go/deepseek-v4-flash`')
     assert.include(prompt, 'Thinking level: `max`')
@@ -111,11 +118,41 @@ it.effect('renders channel prompts without configured agent models or a descript
     const templates = yield* SystemPromptTemplates
     const prompt = yield* templates.renderChannelAgent({
       thread: { ...thread, channelContext: { ...thread.channelContext, description: '' } },
+      identityText: decodeIdentityText('Your name is Friday'),
       availableAgentModels: [],
     })
 
+    assert.include(prompt, '# Identity')
+    assert.include(prompt, 'Your name is Friday')
     assert.include(prompt, '(No channel description)')
     assert.include(prompt, '(No subagent profiles are configured.)')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('renders literal custom identity text in the channel identity block', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const identityText = decodeIdentityText(
+      'Use this exact text.\nDo not interpolate {{channelName}}.',
+    )
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+      identityText,
+    })
+    assert.include(prompt, `# Identity\n\n${identityText}`)
+    assert.include(prompt, '{{channelName}}')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('defaults the channel identity block when no identity text is provided', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+    assert.include(prompt, '# Identity\n\nYour name is Friday')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
 

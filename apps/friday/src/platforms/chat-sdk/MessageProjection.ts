@@ -7,6 +7,7 @@ import {
   PlatformConversationId,
   PlatformKind,
   PlatformMessageId,
+  PlatformScopeId,
   type ConversationBinding,
   type ImageAttachment as ImageAttachmentType,
   type InputMessage,
@@ -18,11 +19,14 @@ import * as Schema from 'effect/Schema'
 
 import type { PlatformInput } from '../PlatformAdapter.ts'
 
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- Raw Chat SDK payloads are decoded at this adapter boundary. */
+
 const decodePlatform = Schema.decodeUnknownSync(PlatformKind)
 const decodeConnectionId = Schema.decodeUnknownSync(PlatformConnectionId)
 const decodeChannelId = Schema.decodeUnknownSync(PlatformChannelId)
 const decodeMessageId = Schema.decodeUnknownSync(PlatformMessageId)
 const decodeThreadId = Schema.decodeUnknownSync(PlatformConversationId)
+const decodeScopeId = Schema.decodeUnknownOption(PlatformScopeId)
 const decodeImageAttachment = Schema.decodeUnknownOption(ImageAttachment)
 
 export interface ChatSdkThreadProjectionSource extends Pick<Thread, 'channelId' | 'id'> {
@@ -68,6 +72,17 @@ const DiscordRawMessage = Schema.Struct({
   type: Schema.Literal(19),
   referenced_message: Schema.optionalKey(Schema.NullOr(DiscordReferencedMessage)),
 })
+
+const SlackScopeStringPayload = Schema.Struct({
+  team_id: Schema.optionalKey(Schema.String),
+  team: Schema.optionalKey(Schema.String),
+})
+const SlackScopeObjectPayload = Schema.Struct({
+  team_id: Schema.optionalKey(Schema.String),
+  team: Schema.optionalKey(Schema.Struct({ id: Schema.String })),
+})
+const decodeSlackScopeStringPayload = Schema.decodeUnknownOption(SlackScopeStringPayload)
+const decodeSlackScopeObjectPayload = Schema.decodeUnknownOption(SlackScopeObjectPayload)
 
 const DiscordRawAttachments = Schema.Struct({
   attachments: Schema.optionalKey(Schema.Unknown),
@@ -247,6 +262,28 @@ const projectContent = (
   }
 }
 
+const scopeIdFrom = (
+  platform: ConversationBinding['platform'],
+  threadId: string,
+  raw: unknown,
+): ConversationBinding['scopeId'] => {
+  if (platform === 'discord') {
+    const parts = threadId.split(':')
+    const guildId = parts[0] === 'discord' ? parts[1] : undefined
+    if (guildId === undefined || guildId === '@me') return undefined
+    return Option.getOrUndefined(decodeScopeId(guildId))
+  }
+  if (platform !== 'slack') return undefined
+  const stringPayload = Option.getOrUndefined(decodeSlackScopeStringPayload(raw))
+  const objectPayload = Option.getOrUndefined(decodeSlackScopeObjectPayload(raw))
+  const teamId =
+    stringPayload?.team ??
+    objectPayload?.team?.id ??
+    stringPayload?.team_id ??
+    objectPayload?.team_id
+  return Option.getOrUndefined(decodeScopeId(teamId ?? ''))
+}
+
 const authorInput = (
   platform: ConversationBinding['platform'],
   platformUserId: string,
@@ -304,13 +341,17 @@ export const projectChatSdkMessage = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
 ): PlatformInput => {
-  const binding: ConversationBinding = {
-    platform: decodePlatform(thread.adapter.name),
+  const platform = decodePlatform(thread.adapter.name)
+  const scopeId = scopeIdFrom(platform, thread.id, message.raw)
+  const bindingBase = {
+    platform,
     connectionId: decodeConnectionId(connectionId),
     channelId: decodeChannelId(thread.channelId),
     sourceMessageId: decodeMessageId(message.id),
     conversationId: decodeThreadId(thread.id),
   }
+  const binding: ConversationBinding =
+    scopeId === undefined ? bindingBase : { ...bindingBase, scopeId }
   const projected = projectChatSdkContextMessage(binding.platform, message)
   const rawReply = Option.getOrUndefined(decodeRawReply(message.raw))
   const replyTo =

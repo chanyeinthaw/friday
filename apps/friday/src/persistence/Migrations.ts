@@ -53,6 +53,16 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
   `
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS root_users (
+      platform TEXT NOT NULL CHECK (platform IN ('discord', 'slack')),
+      scope_id TEXT NOT NULL CHECK (scope_id != ''),
+      user_id TEXT NOT NULL CHECK (user_id != ''),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (platform, scope_id, user_id)
+    )
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS agent_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       primary_provider TEXT NOT NULL,
@@ -62,8 +72,25 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       utility_model_id TEXT NOT NULL,
       utility_thinking_level TEXT NOT NULL,
       recent_message_count INTEGER NOT NULL CHECK (recent_message_count BETWEEN 0 AND 100),
+      identity_text TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
+  `
+
+  // Older databases predate the channel-agent identity text column.
+  const agentConfigColumns = yield* sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info('agent_config')
+  `
+  if (!agentConfigColumns.some((column) => column.name === 'identity_text')) {
+    yield* sql`
+      ALTER TABLE agent_config
+      ADD COLUMN identity_text TEXT NOT NULL DEFAULT 'Your name is Friday'
+    `
+  }
+  yield* sql`
+    UPDATE agent_config
+    SET identity_text = 'Your name is Friday'
+    WHERE identity_text IS NULL
   `
 
   yield* sql`
@@ -76,6 +103,7 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       utility_model_id,
       utility_thinking_level,
       recent_message_count,
+      identity_text,
       updated_at
     ) VALUES (
       1,
@@ -86,6 +114,7 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       'glm-5.3-flash',
       'low',
       20,
+      'Your name is Friday',
       CURRENT_TIMESTAMP
     )
   `
