@@ -33,6 +33,8 @@ import {
 } from './platforms/DiscordActivityDescriptions.ts'
 import { AppConfig } from './config/AppConfigLive.ts'
 import { DiscordAdmins, DiscordAdminsLive } from './config/DiscordAdmins.ts'
+import { RootUsers, RootUsersLive } from './config/RootUsers.ts'
+import { IdentityConfiguration, IdentityConfigurationLive } from './config/IdentityConfiguration.ts'
 import { ModelConfiguration, ModelConfigurationLive } from './config/ModelConfiguration.ts'
 import { getPiModel, listPiModels, reloadPiModels } from './harness/pi/PiModelCatalog.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
@@ -65,6 +67,10 @@ const DiscordConnectionsConfiguredLive = DiscordConnectionsLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
 const DiscordAdminsConfiguredLive = DiscordAdminsLive.pipe(Layer.provide(FridaySqliteLive))
+const RootUsersConfiguredLive = RootUsersLive.pipe(Layer.provide(FridaySqliteLive))
+const IdentityConfigurationConfiguredLive = IdentityConfigurationLive.pipe(
+  Layer.provide(FridaySqliteLive),
+)
 const ModelConfigurationConfiguredLive = ModelConfigurationLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
@@ -249,6 +255,31 @@ const application = Effect.scoped(
         DiscordAdmins.pipe(
           Effect.flatMap((admins) => admins.list()),
           Effect.provide(DiscordAdminsConfiguredLive),
+        ),
+      addRootUser: (rootUser) =>
+        RootUsers.pipe(
+          Effect.flatMap((rootUsers) => rootUsers.add(rootUser)),
+          Effect.provide(RootUsersConfiguredLive),
+        ),
+      removeRootUser: (rootUser) =>
+        RootUsers.pipe(
+          Effect.flatMap((rootUsers) => rootUsers.remove(rootUser)),
+          Effect.provide(RootUsersConfiguredLive),
+        ),
+      listRootUsers: () =>
+        RootUsers.pipe(
+          Effect.flatMap((rootUsers) => rootUsers.list()),
+          Effect.provide(RootUsersConfiguredLive),
+        ),
+      getIdentityText: () =>
+        IdentityConfiguration.pipe(
+          Effect.flatMap((identity) => identity.get()),
+          Effect.provide(IdentityConfigurationConfiguredLive),
+        ),
+      setIdentityText: (text) =>
+        IdentityConfiguration.pipe(
+          Effect.flatMap((identity) => identity.set(text)),
+          Effect.provide(IdentityConfigurationConfiguredLive),
         ),
       applyWorkspaceCleanup: (action, currentWorkingDirectory) =>
         WorkspaceCleanup.pipe(

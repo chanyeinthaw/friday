@@ -13,6 +13,9 @@ export const PlatformConversationId = PlatformIdentifier.pipe(
 )
 export type PlatformConversationId = typeof PlatformConversationId.Type
 
+export const PlatformScopeId = PlatformIdentifier.pipe(Schema.brand('PlatformScopeId'))
+export type PlatformScopeId = typeof PlatformScopeId.Type
+
 export const PlatformConnectionId = PlatformIdentifier.pipe(Schema.brand('PlatformConnectionId'))
 export type PlatformConnectionId = typeof PlatformConnectionId.Type
 
@@ -25,5 +28,7 @@ export const ConversationBinding = Schema.Struct({
   channelId: PlatformChannelId,
   sourceMessageId: PlatformMessageId,
   conversationId: PlatformConversationId,
+  /** Guild ID for Discord or workspace ID for Slack, when the adapter provides it. */
+  scopeId: Schema.optionalKey(PlatformScopeId),
 })
 export type ConversationBinding = typeof ConversationBinding.Type

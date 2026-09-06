@@ -396,18 +396,33 @@ test('channel prompt instructions match the delivered user-message envelope', as
   )
 })
 
+const assertChannelPrompt = (channelPrompt: string | undefined): void => {
+  expect(channelPrompt ?? '').toContain('# Identity')
+  expect(channelPrompt ?? '').toContain('Your name is Friday')
+  expect(channelPrompt ?? '').toContain('## Root users')
+  expect(channelPrompt ?? '').toContain('## Runtime model')
+  expect(channelPrompt ?? '').toContain('Model: `opencode-go/deepseek-v4-flash`')
+  expect(channelPrompt ?? '').toContain('Thinking level: `max`')
+  expect(channelPrompt ?? '').toContain('`primary`: General delegated work.')
+  expect(channelPrompt ?? '').toContain('Model: `anthropic/claude-sonnet`')
+}
+
+const assertSubagentPrompt = (loader: CreateAgentSessionOptions['resourceLoader']): void => {
+  expect(loader?.getSystemPrompt()).toBeUndefined()
+  const appendPrompt = (loader?.getAppendSystemPrompt() ?? []).join('\n')
+  expect(appendPrompt).toContain(
+    '## Runtime model\n\n- Model: `opencode-go/deepseek-v4-flash`\n- Thinking level: `max`',
+  )
+  expect(appendPrompt).not.toContain('# Identity')
+  expect(appendPrompt).not.toContain('## Root users')
+}
+
 test('sets role prompts and appends the model hint to normal subagents', async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const channelOptions: Array<CreateAgentSessionOptions> = []
       yield* open(channelThread, channelOptions)
-      const channelPrompt = channelOptions[0]?.resourceLoader?.getSystemPrompt()
-      expect(channelPrompt ?? '').toContain('# Friday channel agent')
-      expect(channelPrompt ?? '').toContain('## Runtime model')
-      expect(channelPrompt ?? '').toContain('Model: `opencode-go/deepseek-v4-flash`')
-      expect(channelPrompt ?? '').toContain('Thinking level: `max`')
-      expect(channelPrompt ?? '').toContain('`primary`: General delegated work.')
-      expect(channelPrompt ?? '').toContain('Model: `anthropic/claude-sonnet`')
+      assertChannelPrompt(channelOptions[0]?.resourceLoader?.getSystemPrompt())
       expect(channelOptions[0]?.customTools?.map((tool) => tool.name)).toEqual(['task'])
 
       const bootstrapOptions: Array<CreateAgentSessionOptions> = []
@@ -419,11 +434,7 @@ test('sets role prompts and appends the model hint to normal subagents', async (
 
       const subagentOptions: Array<CreateAgentSessionOptions> = []
       yield* open(agentThread('subagent'), subagentOptions)
-      const subagentLoader = subagentOptions[0]?.resourceLoader
-      expect(subagentLoader?.getSystemPrompt()).toBeUndefined()
-      expect(subagentLoader?.getAppendSystemPrompt()).toContain(
-        '## Runtime model\n\n- Model: `opencode-go/deepseek-v4-flash`\n- Thinking level: `max`',
-      )
+      assertSubagentPrompt(subagentOptions[0]?.resourceLoader)
       expect(subagentOptions[0]?.customTools).toBeUndefined()
     }),
   )

@@ -5,7 +5,10 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 
 import type { SubagentProfile } from '../config/AppConfig.ts'
+import { DefaultIdentityText, type IdentityText } from '../config/IdentityConfiguration.ts'
 import { FRIDAY_CLI_PATH } from '../FridayHome.ts'
+import type { RootUser } from '../config/RootUsers.ts'
+import { renderRootUsersSection } from '../identity/RootUsers.ts'
 import bootstrapAgentTemplate from './templates/bootstrap-agent.md' with { type: 'text' }
 import channelAgentTemplate from './templates/channel-agent.md' with { type: 'text' }
 
@@ -20,6 +23,10 @@ export class SystemPromptTemplateError extends Schema.Error<SystemPromptTemplate
 export interface ChannelAgentSystemPromptContext {
   readonly thread: ChannelThread
   readonly availableAgentModels: ReadonlyArray<SubagentProfile>
+  /** Trusted operator text inserted literally into the channel prompt. */
+  readonly identityText?: IdentityText
+  /** Already scoped to this channel; never pass the full root-user registry. */
+  readonly rootUsers?: ReadonlyArray<RootUser>
 }
 
 export interface SystemPromptTemplatesContract {
@@ -47,17 +54,20 @@ const renderTemplate = (
   variables: Readonly<Record<string, string>>,
 ): Effect.Effect<string, SystemPromptTemplateError> =>
   Effect.gen(function* () {
-    let rendered = source
-    for (const [variable, value] of Object.entries(variables)) {
-      rendered = rendered.replaceAll(`{{${variable}}}`, value)
-    }
-    const unresolved = unresolvedVariables(rendered)
-    if (unresolved.length > 0) {
+    // Check the source template only: identity and root-user values are
+    // trusted operator text inserted literally and must never be re-scanned
+    // for template variables or interpolated.
+    const missing = unresolvedVariables(source).filter((variable) => !(variable in variables))
+    if (missing.length > 0) {
       return yield* new SystemPromptTemplateError({
         template,
-        detail: `Missing template variables: ${unresolved.join(',')}`,
+        detail: `Missing template variables: ${missing.join(',')}`,
       })
     }
+    const rendered = source.replace(
+      TemplateVariable,
+      (match, variable: string) => variables[variable] ?? match,
+    )
     return rendered.trim()
   })
 
@@ -87,6 +97,8 @@ export const makeSystemPromptTemplates = (templates: {
         currentWorkingDirectory: context.thread.workingDirectory,
         modelHint: renderModelHint(context.thread),
         availableAgentModels: renderAvailableModels(context.availableAgentModels),
+        identity: context.identityText ?? DefaultIdentityText,
+        rootUsers: renderRootUsersSection(context.rootUsers ?? []),
         fridayCliPath: FRIDAY_CLI_PATH,
       }),
     renderBootstrapAgent: (currentWorkingDirectory) =>

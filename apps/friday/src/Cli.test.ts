@@ -13,6 +13,8 @@ import {
   FRIDAY_VERSION,
   formatDiscordAdminAdd,
   formatDiscordAdminRemove,
+  formatRootUserAdd,
+  formatRootUserRemove,
   formatDiscordConnectionAdd,
   formatDiscordConnectionDisable,
   formatDiscordConnectionEnable,
@@ -34,6 +36,7 @@ import {
   parseFridayCli,
   renderCliHelp,
   renderDiscordAdminList,
+  renderRootUserList,
   renderDiscordConnectionDetail,
   renderDiscordConnectionList,
   renderDiscordGuildList,
@@ -47,6 +50,8 @@ import { BotTokenEnvName, DiscordPublicKey } from './config/DiscordConnections.t
 import { InvocationMode } from './config/AppConfig.ts'
 import { reloadFailed, reloadSucceeded } from './config/ConfigReload.ts'
 import { DiscordUserId } from './config/DiscordAdmins.ts'
+import { RootUser, RootUserScopeId, RootUserId } from './config/RootUsers.ts'
+import { IdentityText } from './config/IdentityConfiguration.ts'
 import { ControlSocketError } from './control/ControlSocket.ts'
 import {
   ModelId,
@@ -69,6 +74,10 @@ const decodeModelId = Schema.decodeSync(ModelId)
 const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 const decodeThreadId = Schema.decodeSync(ThreadId)
 const decodeDiscordUserId = Schema.decodeSync(DiscordUserId)
+const decodeRootUser = Schema.decodeSync(RootUser)
+const decodeRootUserScopeId = Schema.decodeSync(RootUserScopeId)
+const decodeRootUserId = Schema.decodeSync(RootUserId)
+const decodeIdentityText = Schema.decodeSync(IdentityText)
 const decodeGuildId = Schema.decodeSync(DiscordGuildId)
 const decodeChannelId = Schema.decodeSync(DiscordGuildChannelId)
 const decodeMode = Schema.decodeSync(InvocationMode)
@@ -109,6 +118,11 @@ const strictRunnerStubs = {
   addDiscordAdmin: () => Effect.die('unreachable'),
   removeDiscordAdmin: () => Effect.die('unreachable'),
   listDiscordAdmins: () => Effect.die('unreachable'),
+  addRootUser: () => Effect.die('unreachable'),
+  removeRootUser: () => Effect.die('unreachable'),
+  listRootUsers: () => Effect.die('unreachable'),
+  getIdentityText: () => Effect.die('unreachable'),
+  setIdentityText: () => Effect.die('unreachable'),
   addDiscordConnection: () => Effect.die('unreachable'),
   updateDiscordConnection: () => Effect.die('unreachable'),
   removeDiscordConnection: () => Effect.die('unreachable'),
@@ -941,7 +955,7 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['config', 'wat'],
         prefix: 'friday config',
         head: 'wat',
-        known: 'reload, model, profile, admin, discord',
+        known: 'reload, model, profile, admin, identity, root-user, discord',
       },
       {
         arguments_: ['config', 'admin', 'wat'],
@@ -1019,7 +1033,7 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config'],
         prefix: 'friday config',
-        known: 'reload, model, profile, admin, discord',
+        known: 'reload, model, profile, admin, identity, root-user, discord',
       },
       {
         arguments_: ['config', 'admin'],
@@ -1401,6 +1415,141 @@ it.effect('parses Discord administrator allow-list commands', () =>
       { type: 'config-admin-discord-list', json: true },
     )
   }),
+)
+
+it.effect('parses root-user registry commands', () =>
+  Effect.gen(function* () {
+    const rootUser = decodeRootUser({
+      platform: 'discord',
+      scopeId: '111111111111111111',
+      userId: '222222222222222222',
+    })
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        'config',
+        'root-user',
+        'add',
+        'discord',
+        '111111111111111111',
+        '222222222222222222',
+      ]),
+      { type: 'config-root-user-add', ...rootUser },
+    )
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'root-user', 'remove', 'slack', 'T123', 'U123']),
+      {
+        type: 'config-root-user-remove',
+        platform: 'slack',
+        scopeId: decodeRootUserScopeId('T123'),
+        userId: decodeRootUserId('U123'),
+      },
+    )
+    assert.deepStrictEqual(yield* parseFridayCli(['config', 'root-user', 'list', '--json']), {
+      type: 'config-root-user-list',
+      json: true,
+    })
+  }),
+)
+
+it.effect('rejects malformed root-user commands', () =>
+  Effect.gen(function* () {
+    for (const arguments_ of [
+      ['config', 'root-user', 'add', 'linear', 'scope', 'user'],
+      ['config', 'root-user', 'add', 'discord', '', 'user'],
+      ['config', 'root-user', 'add', 'discord', 'scope'],
+      ['config', 'root-user', 'list', '--json', '--json'],
+      ['config', 'root-user', 'wat'],
+    ]) {
+      const error = yield* parseFridayCli(arguments_).pipe(Effect.flip)
+      assert(isFridayCliError(error), `expected failure: ${arguments_.join(' ')}`)
+    }
+  }),
+)
+
+it.effect('formats and dispatches root-user registry commands', () =>
+  Effect.gen(function* () {
+    const rootUser = decodeRootUser({
+      platform: 'discord',
+      scopeId: '111111111111111111',
+      userId: '222222222222222222',
+    })
+    assert.match(formatRootUserAdd(rootUser, 'added'), /added\./)
+    assert.match(formatRootUserRemove(rootUser, 'removed'), /removed\./)
+    assert.strictEqual(renderRootUserList([]), 'No root users are configured.')
+
+    const add = recorder('added' as const)
+    yield* runFridayCli(
+      ['config', 'root-user', 'add', 'discord', '111111111111111111', '222222222222222222'],
+      {
+        ...strictRunnerStubs,
+        addRootUser: add.operation,
+      },
+    )
+    assert.deepStrictEqual(add.calls, [[rootUser]])
+
+    const list = recorder([rootUser])
+    yield* runFridayCli(['config', 'root-user', 'list', '--json'], {
+      ...strictRunnerStubs,
+      listRootUsers: list.operation,
+    })
+    assert.deepStrictEqual(list.calls, [[]])
+    assert.strictEqual((yield* TestConsole.logLines).at(-1), JSON.stringify([rootUser]))
+  }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('parses identity text commands', () =>
+  Effect.gen(function* () {
+    assert.deepStrictEqual(yield* parseFridayCli(['config', 'identity', 'get']), {
+      type: 'config-identity-get',
+      json: false,
+    })
+    assert.deepStrictEqual(yield* parseFridayCli(['config', 'identity', 'get', '--json']), {
+      type: 'config-identity-get',
+      json: true,
+    })
+    assert.deepStrictEqual(
+      yield* parseFridayCli(['config', 'identity', 'set', 'Your name is Friday']),
+      {
+        type: 'config-identity-set',
+        text: decodeIdentityText('Your name is Friday'),
+      },
+    )
+  }),
+)
+
+it.effect('rejects malformed identity commands', () =>
+  Effect.gen(function* () {
+    for (const arguments_ of [
+      ['config', 'identity', 'get', '--json', '--json'],
+      ['config', 'identity', 'set'],
+      ['config', 'identity', 'set', 'one', 'two'],
+      ['config', 'identity', 'wat'],
+    ]) {
+      const error = yield* parseFridayCli(arguments_).pipe(Effect.flip)
+      assert(isFridayCliError(error), `expected failure: ${arguments_.join(' ')}`)
+    }
+  }),
+)
+
+it.effect('dispatches identity get and set commands', () =>
+  Effect.gen(function* () {
+    const text = decodeIdentityText('Your name is Friday')
+    const get = recorder(text)
+    yield* runFridayCli(['config', 'identity', 'get'], {
+      ...strictRunnerStubs,
+      getIdentityText: get.operation,
+    })
+    assert.deepStrictEqual(get.calls, [[]])
+    assert.strictEqual((yield* TestConsole.logLines).at(-1), text)
+
+    const set = recorder('updated' as const)
+    yield* runFridayCli(['config', 'identity', 'set', 'Your name is Friday'], {
+      ...strictRunnerStubs,
+      setIdentityText: set.operation,
+      reloadConfig: Effect.succeed(reloadSucceeded(2)),
+    })
+    assert.deepStrictEqual(set.calls, [[text]])
+  }).pipe(Effect.provide(TestConsole.layer)),
 )
 
 it.effect('rejects invalid Discord user IDs and malformed admin commands', () =>
