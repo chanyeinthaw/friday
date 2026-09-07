@@ -16,17 +16,62 @@ const decodeThread = Schema.decodeSync(ChannelThread)
 const provider = 'friday-stale-test'
 const modelId = 'stale-model'
 
-const modelsJson = (name: string, contextWindow: number) =>
+const modelsJson = (name: string, contextWindow: number, apiKey = 'test-key') =>
   JSON.stringify({
     providers: {
       [provider]: {
         baseUrl: 'http://localhost:1/v1',
         api: 'openai-completions',
-        apiKey: 'test-key',
+        apiKey,
         models: [{ id: modelId, name, contextWindow, maxTokens: 100 }],
       },
     },
   })
+
+it.effect('resolves shell-style environment references in Pi model API keys', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const directory = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'friday-pi-api-key-env-')),
+      )
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore),
+      )
+
+      const variableName = 'FRIDAY_PI_API_KEY_TEST'
+      const apiKey = 'resolved-test-key'
+      const previousValue = process.env[variableName]
+      process.env[variableName] = apiKey
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (previousValue === undefined) {
+            delete process.env[variableName]
+          } else {
+            process.env[variableName] = previousValue
+          }
+        }),
+      )
+
+      const modelsPath = join(directory, 'models.json')
+      yield* Effect.promise(() =>
+        writeFile(modelsPath, modelsJson('environment model', 1000, `$${variableName}`)),
+      )
+      const modelRuntime = yield* Effect.promise(() =>
+        ModelRuntime.create({
+          allowModelNetwork: false,
+          modelsPath,
+          modelsStorePath: join(directory, 'models-store.json'),
+          authPath: join(directory, 'auth.json'),
+        }),
+      )
+      const model = modelRuntime.getModel(provider, modelId)
+      assert.isDefined(model)
+      const auth = yield* Effect.promise(() => modelRuntime.getAuth(model))
+
+      assert.strictEqual(auth?.auth.apiKey, apiKey)
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
+)
 
 it.effect('sees updated model metadata when a new session opens after model file changes', () =>
   Effect.scoped(
