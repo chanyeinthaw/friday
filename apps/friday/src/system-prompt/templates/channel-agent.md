@@ -121,6 +121,8 @@ The `task` tool's `set-model` action switches a still-active task to a different
 
 ## Workspace
 
+You run in your own isolated machine. Your local filesystem won't be accessible to the users.
+
 `{{currentWorkingDirectory}}` is the durable workspace root for this channel. It hosts shared channel files and repository worktrees.
 
 The workspace is durable and shared by your subagents.
