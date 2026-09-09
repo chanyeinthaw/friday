@@ -365,9 +365,9 @@ test('channel prompt instructions match the delivered user-message envelope', as
       expect(systemPrompt).toContain('`historicalContext`')
       expect(systemPrompt).toContain('optional `replyTarget`')
       expect(systemPrompt).toContain('exactly one `trigger`')
-      expect(systemPrompt).toContain('refer to people through `participantId`')
-      expect(systemPrompt).toContain("Use a participant's non-null `mention` value verbatim")
-      expect(systemPrompt).toContain('may still arrive as raw text rather than JSON')
+      expect(systemPrompt).toContain('refer to people by `participantId`')
+      expect(systemPrompt).toContain("Use a participant's non-null `mention` verbatim")
+      expect(systemPrompt).toContain('may arrive as raw text')
       expect(systemPrompt).not.toContain(
         'Participant metadata is rendered as `alias = native mention | username | display name`',
       )
