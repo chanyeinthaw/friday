@@ -82,6 +82,13 @@ import {
   WorkspaceCleanupProposalId,
   type WorkspaceCleanupProposal,
 } from './workspaces/WorkspaceCleanup.ts'
+import {
+  DocumentKey,
+  type DocumentFormat,
+  type DocumentMetadata,
+  type SavedDocument,
+  type StoredDocument,
+} from './documents/Documents.ts'
 
 export const FRIDAY_VERSION = '0.0.0-nightly.25'
 
@@ -381,6 +388,18 @@ export type FridayCliAction =
       readonly json: boolean
     }
   | { readonly type: 'worktree-list'; readonly json: boolean }
+  | {
+      readonly type: 'document-save'
+      readonly key: DocumentKey
+      readonly format: DocumentFormat
+      readonly file?: string
+      readonly json: boolean
+    }
+  | { readonly type: 'document-get'; readonly key: DocumentKey; readonly json: boolean }
+  | { readonly type: 'document-list'; readonly json: boolean }
+  | { readonly type: 'document-url'; readonly key: DocumentKey; readonly json: boolean }
+  | { readonly type: 'document-revoke'; readonly key: DocumentKey; readonly json: boolean }
+  | { readonly type: 'document-remove'; readonly key: DocumentKey; readonly yes: boolean }
 
 export class ConfigReloadRejectedError extends Schema.Error<ConfigReloadRejectedError>(
   'ConfigReloadRejectedError',
@@ -413,6 +432,7 @@ const isControlSocketError = Schema.is(ControlSocketError)
 const decodeProfileDescription = Schema.decodeUnknownEffect(
   Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
 )
+const decodeDocumentKey = Schema.decodeUnknownEffect(DocumentKey)
 const decodeWorkspaceCleanupProposalId = Schema.decodeUnknownEffect(WorkspaceCleanupProposalId)
 const decodePlatformConnectionId = Schema.decodeUnknownEffect(PlatformConnectionId)
 const decodeInvocationMode = Schema.decodeUnknownEffect(InvocationMode)
@@ -1372,6 +1392,98 @@ const parseWorkspaceCleanupList = Effect.fn('Cli.parseWorkspaceCleanupList')(fun
   return { type: 'workspace-cleanup-list' as const, json }
 })
 
+type DocumentSaveAction = Extract<FridayCliAction, { readonly type: 'document-save' }>
+
+const buildDocumentSaveAction = (
+  key: DocumentKey,
+  format: DocumentFormat,
+  file: string | undefined,
+  json: boolean,
+): DocumentSaveAction => {
+  let action: DocumentSaveAction = { type: 'document-save', key, format, json }
+  if (file !== undefined) action = { ...action, file }
+  return action
+}
+
+const parseDocumentSave = Effect.fn('Cli.parseDocumentSave')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const key = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeDocumentKey),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  let format: DocumentFormat = 'markdown'
+  let file: string | undefined
+  let json = false
+  for (let index = 1; index < tokens.length; index += 1) {
+    const flag = tokens[index]
+    if (flag === '--json') {
+      json = true
+      continue
+    }
+    if (flag === '--format' || flag === '--file') {
+      const value = tokens[index + 1]
+      if (value === undefined || value.startsWith('-')) {
+        return yield* discordArgumentsError(all)
+      }
+      if (flag === '--format') {
+        if (value !== 'markdown' && value !== 'html') {
+          return yield* discordArgumentsError(all)
+        }
+        format = value
+      } else {
+        file = value
+      }
+      index += 1
+      continue
+    }
+    return yield* discordArgumentsError(all)
+  }
+  return buildDocumentSaveAction(key, format, file, json)
+})
+
+const parseDocumentKeyJson = <
+  const Type extends 'document-get' | 'document-url' | 'document-revoke',
+>(
+  type: Type,
+) =>
+  Effect.fn('Cli.parseDocumentKeyJson')(function* (
+    tokens: ReadonlyArray<string>,
+    all: ReadonlyArray<string>,
+  ) {
+    const key = yield* positionalToken(tokens, 0, all).pipe(
+      Effect.flatMap(decodeDocumentKey),
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    const json = yield* parseTrailingJson(tokens.slice(1), all)
+    return { type, key, json }
+  })
+
+const parseDocumentGet = parseDocumentKeyJson('document-get')
+const parseDocumentUrl = parseDocumentKeyJson('document-url')
+const parseDocumentRevoke = parseDocumentKeyJson('document-revoke')
+
+const parseDocumentList = Effect.fn('Cli.parseDocumentList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'document-list' as const, json }
+})
+
+const parseDocumentRemove = Effect.fn('Cli.parseDocumentRemove')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const key = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodeDocumentKey),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  if (tokens.length !== 2 || tokens[1] !== '--yes') return yield* discordArgumentsError(all)
+  return { type: 'document-remove' as const, key, yes: true }
+})
+
 /** The complete Friday CLI command tree used by parsing, validation, and help. */
 export const cliCommandSpec: CliBranchSpec = {
   name: 'friday',
@@ -1724,6 +1836,49 @@ export const cliCommandSpec: CliBranchSpec = {
       ],
     },
     {
+      name: 'document',
+      summary: 'Publish and manage private Markdown or HTML documents.',
+      children: [
+        {
+          name: 'save',
+          summary:
+            'Save stdin or --file content under a key, overwriting in place and keeping its URL.',
+          arguments: ['<key> [--format <markdown|html>] [--file <path>] [--json]'],
+          parse: parseDocumentSave,
+        },
+        {
+          name: 'get',
+          summary: 'Show one stored document without its URL.',
+          arguments: ['<key> [--json]'],
+          parse: parseDocumentGet,
+        },
+        {
+          name: 'list',
+          summary: 'List published documents without their URLs.',
+          arguments: ['[--json]'],
+          parse: parseDocumentList,
+        },
+        {
+          name: 'url',
+          summary: 'Recover the current secret URL for a key.',
+          arguments: ['<key> [--json]'],
+          parse: parseDocumentUrl,
+        },
+        {
+          name: 'revoke',
+          summary: 'Replace the access key and return a new URL; the old URL stops working.',
+          arguments: ['<key> [--json]'],
+          parse: parseDocumentRevoke,
+        },
+        {
+          name: 'remove',
+          summary: 'Delete a document; its URL stops working.',
+          arguments: ['<key> --yes'],
+          parse: parseDocumentRemove,
+        },
+      ],
+    },
+    {
       name: 'workspace',
       summary: 'Manage channel workspaces and their cleanup proposals.',
       children: [
@@ -1873,6 +2028,17 @@ export const renderWorktreeList = (worktrees: ReadonlyArray<ManagedWorktreeListE
           `  ${group.url}`,
           ...group.worktrees.map(renderWorktreeLine),
         ]),
+      ].join('\n')
+
+/** Human-readable document list without URLs; URLs come only from save, url, and revoke. */
+export const renderDocumentList = (documents: ReadonlyArray<DocumentMetadata>): string =>
+  documents.length === 0
+    ? 'No documents are published.'
+    : [
+        'Published documents:',
+        ...documents.map(
+          (document) => `  ${document.key}  ${document.format}  ${document.sizeBytes} bytes`,
+        ),
       ].join('\n')
 
 export const renderWorkspaceCleanupList = (
@@ -2197,6 +2363,7 @@ export type FridayCliOperations<
   ConnectionError,
   ModelConfigError,
   ModelCatalogError,
+  DocumentError,
 > = {
   readonly start: Effect.Effect<never, E>
   readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ControlSocketError>
@@ -2321,6 +2488,21 @@ export type FridayCliOperations<
     ReadonlyArray<ManagedWorktreeListEntry>,
     WorktreeError
   >
+  readonly readDocumentContent: (file: string | undefined) => Effect.Effect<string, DocumentError>
+  readonly saveDocument: (
+    key: DocumentKey,
+    format: DocumentFormat,
+    content: string,
+  ) => Effect.Effect<SavedDocument, DocumentError>
+  readonly getDocument: (
+    key: DocumentKey,
+  ) => Effect.Effect<Option.Option<StoredDocument>, DocumentError>
+  readonly listDocuments: () => Effect.Effect<ReadonlyArray<DocumentMetadata>, DocumentError>
+  readonly getDocumentUrl: (key: DocumentKey) => Effect.Effect<Option.Option<string>, DocumentError>
+  readonly revokeDocument: (
+    key: DocumentKey,
+  ) => Effect.Effect<Option.Option<SavedDocument>, DocumentError>
+  readonly removeDocument: (key: DocumentKey) => Effect.Effect<'removed' | 'missing', DocumentError>
   readonly applyWorkspaceCleanup: (
     action: Extract<FridayCliAction, { readonly type: 'workspace-cleanup-apply' }>,
     currentWorkingDirectory: string,
@@ -2422,6 +2604,12 @@ const cliActionGroups = {
   'workspace-cleanup-list': 'runtime',
   'worktree-ensure': 'runtime',
   'worktree-list': 'runtime',
+  'document-save': 'runtime',
+  'document-get': 'runtime',
+  'document-list': 'runtime',
+  'document-url': 'runtime',
+  'document-revoke': 'runtime',
+  'document-remove': 'runtime',
   start: 'runtime',
 } satisfies {
   readonly [ActionType in FridayCliAction['type']]: GroupFor<ActionType>
@@ -2438,6 +2626,10 @@ const isConnectionAction = (action: CatalogAction): action is ConnectionAction =
 const isGuildAction = (action: FridayCliAction): action is GuildAction =>
   cliActionGroups[action.type] === 'guild'
 
+type DocumentAction = Extract<FridayCliAction, { readonly type: `document-${string}` }>
+const isDocumentAction = (action: RuntimeAction): action is DocumentAction =>
+  action.type.startsWith('document-')
+
 export const runFridayCli = <
   E,
   WorktreeError,
@@ -2449,6 +2641,7 @@ export const runFridayCli = <
   ConnectionError,
   ModelConfigError,
   ModelCatalogError,
+  DocumentError,
 >(
   arguments_: ReadonlyArray<string>,
   options: FridayCliOperations<
@@ -2461,7 +2654,8 @@ export const runFridayCli = <
     IdentityConfigurationError,
     ConnectionError,
     ModelConfigError,
-    ModelCatalogError
+    ModelCatalogError,
+    DocumentError
   >,
 ): Effect.Effect<
   void,
@@ -2478,6 +2672,7 @@ export const runFridayCli = <
   | ConnectionError
   | ModelConfigError
   | ModelCatalogError
+  | DocumentError
 > =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
@@ -2905,6 +3100,7 @@ export const runFridayCli = <
       }
     })
     const runRuntimeAction = Effect.fn('Cli.runRuntimeAction')(function* (selected: RuntimeAction) {
+      if (isDocumentAction(selected)) return yield* runDocumentAction(selected)
       switch (selected.type) {
         case 'workspace-cleanup-apply': {
           const result = yield* options.applyWorkspaceCleanup(selected, process.cwd())
@@ -2932,6 +3128,78 @@ export const runFridayCli = <
         }
         case 'start':
           return yield* options.start
+        default: {
+          const unhandled: never = selected
+          return unhandled
+        }
+      }
+    })
+    const runDocumentAction = Effect.fn('Cli.runDocumentAction')(function* (
+      selected: DocumentAction,
+    ) {
+      switch (selected.type) {
+        case 'document-save': {
+          const content = yield* options.readDocumentContent(selected.file)
+          const saved = yield* options.saveDocument(selected.key, selected.format, content)
+          yield* Console.log(
+            selected.json
+              ? JSON.stringify({ ...saved.metadata, url: saved.url })
+              : `Document '${selected.key}' saved.\nURL: ${saved.url}`,
+          )
+          return
+        }
+        case 'document-get': {
+          const found = yield* options.getDocument(selected.key)
+          yield* Console.log(
+            Option.match(found, {
+              onNone: () => (selected.json ? 'null' : `Document '${selected.key}' was not found.`),
+              onSome: (document) =>
+                selected.json
+                  ? JSON.stringify({ ...document.metadata, content: document.content })
+                  : document.content,
+            }),
+          )
+          return
+        }
+        case 'document-list': {
+          const documents = yield* options.listDocuments()
+          yield* Console.log(
+            selected.json ? JSON.stringify(documents) : renderDocumentList(documents),
+          )
+          return
+        }
+        case 'document-url': {
+          const found = yield* options.getDocumentUrl(selected.key)
+          yield* Console.log(
+            Option.match(found, {
+              onNone: () => (selected.json ? 'null' : `Document '${selected.key}' was not found.`),
+              onSome: (url) => (selected.json ? JSON.stringify({ key: selected.key, url }) : url),
+            }),
+          )
+          return
+        }
+        case 'document-revoke': {
+          const found = yield* options.revokeDocument(selected.key)
+          yield* Console.log(
+            Option.match(found, {
+              onNone: () => (selected.json ? 'null' : `Document '${selected.key}' was not found.`),
+              onSome: (revoked) =>
+                selected.json
+                  ? JSON.stringify({ ...revoked.metadata, url: revoked.url })
+                  : `Document '${selected.key}' access revoked.\nNew URL: ${revoked.url}`,
+            }),
+          )
+          return
+        }
+        case 'document-remove': {
+          const outcome = yield* options.removeDocument(selected.key)
+          yield* Console.log(
+            outcome === 'removed'
+              ? `Document '${selected.key}' removed.`
+              : `Document '${selected.key}' was not found.`,
+          )
+          return
+        }
         default: {
           const unhandled: never = selected
           return unhandled

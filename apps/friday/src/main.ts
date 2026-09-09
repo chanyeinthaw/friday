@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/process-env, effecttsgo/strict-effect-provide -- This executable is the application entry point, provides the complete live layer once, and selects the bootstrap log level from NODE_ENV. */
+/* oxlint-disable effecttsgo/process-env, effecttsgo/strict-effect-provide, effecttsgo/node-builtin-import -- This executable is the application entry point, provides the complete live layer once, selects the bootstrap log level from NODE_ENV, and reads piped document content from stdin. */
 
 import { BunRuntime } from '@effect/platform-bun'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
@@ -7,6 +7,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
+import { readFile } from 'node:fs/promises'
 
 import {
   FRIDAY_BIN_DIRECTORY,
@@ -34,6 +35,9 @@ import { RootUsers, RootUsersLive } from './config/RootUsers.ts'
 import { IdentityConfiguration, IdentityConfigurationLive } from './config/IdentityConfiguration.ts'
 import { ModelConfiguration, ModelConfigurationLive } from './config/ModelConfiguration.ts'
 import { getPiModel, listPiModels, reloadPiModels } from './harness/pi/PiModelCatalog.ts'
+import { Documents, DocumentsLive, DocumentError } from './documents/Documents.ts'
+import { ensureDocumentSkill } from './documents/DocumentSkill.ts'
+import { startDocumentServer } from './documents/DocumentServer.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
@@ -56,6 +60,9 @@ const WorkspaceCleanupNotificationsConfiguredLive = WorkspaceCleanupNotification
   ),
 )
 
+const DocumentsConfiguredLive = DocumentsLive.pipe(
+  Layer.provide(Layer.mergeAll(FridaySqliteLive, BunFileSystem.layer, BunCrypto.layer)),
+)
 const DiscordGuildsConfiguredLive = DiscordGuildsLive.pipe(Layer.provide(FridaySqliteLive))
 const DiscordConnectionsConfiguredLive = DiscordConnectionsLive.pipe(
   Layer.provide(FridaySqliteLive),
@@ -86,6 +93,8 @@ const start = Effect.scoped(
       reload: reloadApplicationConfig(config),
     })
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
+    yield* ensureDocumentSkill()
+    yield* startDocumentServer().pipe(Effect.provide(DocumentsConfiguredLive))
     const cleanupNotifications = yield* WorkspaceCleanupNotifications
     yield* cleanupNotifications.run.pipe(Effect.forkScoped)
     yield* Effect.logInfo('application.started').pipe(
@@ -285,6 +294,72 @@ const application = Effect.scoped(
           Effect.provide(BunCrypto.layer),
         ),
       listWorktrees: () => listManagedWorktrees(),
+      readDocumentContent: (file) =>
+        Effect.gen(function* () {
+          if (file !== undefined) {
+            return yield* Effect.tryPromise({
+              try: () => readFile(file, 'utf8'),
+              catch: (cause) =>
+                new DocumentError({
+                  operation: 'read-input',
+                  detail: `Could not read document input file '${file}'.`,
+                  cause,
+                }),
+            })
+          }
+          if (process.stdin.isTTY === true) {
+            return yield* new DocumentError({
+              operation: 'read-input',
+              detail: 'Document content is empty; pipe content on stdin or pass --file <path>.',
+            })
+          }
+          const stdin = yield* Effect.tryPromise({
+            try: () => readFile('/dev/stdin', 'utf8'),
+            catch: (cause) =>
+              new DocumentError({
+                operation: 'read-input',
+                detail: 'Could not read document content from stdin.',
+                cause,
+              }),
+          })
+          if (stdin.trim().length === 0) {
+            return yield* new DocumentError({
+              operation: 'read-input',
+              detail: 'Document content is empty; pipe content on stdin or pass --file <path>.',
+            })
+          }
+          return stdin
+        }),
+      saveDocument: (key, format, content) =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.save(key, format, content)),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
+      getDocument: (key) =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.get(key)),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
+      listDocuments: () =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.list()),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
+      getDocumentUrl: (key) =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.url(key)),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
+      revokeDocument: (key) =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.revoke(key)),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
+      removeDocument: (key) =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.remove(key)),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
       ensureWorktree: (action) => {
         const workspaceRoot = action.workspace ?? process.env.FRIDAY_WORKSPACE_ROOT ?? process.cwd()
         let input: EnsureRepositoryWorktreeInput = { url: action.url, workspaceRoot }
