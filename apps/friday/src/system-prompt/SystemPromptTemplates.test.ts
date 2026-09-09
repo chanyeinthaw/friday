@@ -234,3 +234,46 @@ it.effect('renders the bootstrap prompt without replacing Pi for normal subagent
     assert.include(prompt, 'reuses that worktree')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
+
+it.effect('guides durable branch selection and temporary isolation branches', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const channelPrompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+
+    assert.include(channelPrompt, 'pass a concise `branch` following')
+    assert.include(channelPrompt, '`feat/`')
+    assert.include(channelPrompt, 'Omit `branch` for clearly read-only investigation')
+    assert.include(channelPrompt, 'Branches under `friday/task/*` are temporary local isolation')
+    assert.include(channelPrompt, 'Never push them and never use them as PR head branches')
+    assert.include(channelPrompt, 'must use the durable branch selected at bootstrap')
+
+    const bootstrapPrompt = yield* templates.renderBootstrapAgent('/tmp/friday/bootstrap')
+    assert.include(
+      bootstrapPrompt,
+      'When the bootstrap instruction explicitly supplies a durable branch, pass it exactly',
+    )
+    assert.include(bootstrapPrompt, '--branch <name>')
+    assert.include(bootstrapPrompt, 'using the supplied name verbatim')
+    assert.include(
+      bootstrapPrompt,
+      'When the bootstrap instruction omits a durable branch, omit `--branch` entirely',
+    )
+    assert.include(bootstrapPrompt, 'never infer, choose, or invent a branch name')
+    assert.include(
+      bootstrapPrompt,
+      'You may resolve the repository URL and requested revision from the task and channel context',
+    )
+    assert.include(
+      bootstrapPrompt,
+      'Pass `--branch <name>` only when the bootstrap instruction explicitly supplied',
+    )
+    assert.include(bootstrapPrompt, 'exactly as supplied')
+    assert.notInclude(bootstrapPrompt, 'resolve the repository URL, durable branch,')
+    assert.include(bootstrapPrompt, 'Branches under `friday/task/*` are temporary local isolation')
+    assert.include(bootstrapPrompt, 'never push them and never use them as PR head branches')
+    assert.include(bootstrapPrompt, 'must use the durable branch selected at bootstrap')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)

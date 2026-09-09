@@ -3,6 +3,7 @@
 import {
   InspectTaskLimit,
   SubagentProfileName,
+  TaskBranchName,
   TaskId,
   TaskInspectCursor,
   TaskStatusFilter,
@@ -34,6 +35,7 @@ const TaskToolInput = Schema.Union([
   Schema.Struct({
     action: Schema.Literal('bootstrap'),
     task: Schema.String,
+    branch: Schema.optionalKey(TaskBranchName),
     profile: Schema.optionalKey(SubagentProfileName),
   }),
   Schema.Struct({ action: Schema.Literal('steer'), taskId: TaskId, message: Schema.String }),
@@ -78,6 +80,14 @@ const TaskToolParameters = Type.Union([
   Type.Object({
     action: Type.Literal('bootstrap'),
     task: Type.String({ description: 'Workspace preparation objective.' }),
+    branch: Type.Optional(
+      Type.String({
+        minLength: 1,
+        pattern: '^\\S(?:[\\s\\S]*\\S)?$',
+        description:
+          'Durable branch for the managed worktree (for example feat/add-login). Provide for write-capable repository work; omit for read-only investigation or when context is insufficient.',
+      }),
+    ),
     profile: Type.Optional(
       Type.String({ description: "Configured subagent profile name. Defaults to 'primary'." }),
     ),
@@ -238,8 +248,10 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
             parentTurnId: await options.runPromise(decodeTurnId(activeTurnId)),
             task: input.task,
           }
+          const withBranch: BootstrapRequest =
+            input.branch === undefined ? base : { ...base, branch: input.branch }
           const request: BootstrapRequest =
-            input.profile === undefined ? base : { ...base, profile: input.profile }
+            input.profile === undefined ? withBranch : { ...withBranch, profile: input.profile }
           return output(await options.runPromise(options.tasks.bootstrap(request)))
         }
         case 'steer':

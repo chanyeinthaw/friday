@@ -383,6 +383,7 @@ export type FridayCliAction =
       readonly url: RepositoryUrl
       readonly workspace?: string
       readonly ref?: string
+      readonly branch?: string
       readonly json: boolean
     }
   | { readonly type: 'worktree-list'; readonly json: boolean }
@@ -1316,6 +1317,22 @@ const parseConfigDiscordGuildChannelSet = Effect.fn('Cli.parseConfigDiscordGuild
   },
 )
 
+type WorktreeEnsureAction = Extract<FridayCliAction, { readonly type: 'worktree-ensure' }>
+
+const buildWorktreeEnsureAction = (
+  url: RepositoryUrl,
+  workspace: string | undefined,
+  ref: string | undefined,
+  branch: string | undefined,
+  json: boolean,
+): WorktreeEnsureAction => {
+  let action: WorktreeEnsureAction = { type: 'worktree-ensure', url, json }
+  if (workspace !== undefined) action = { ...action, workspace }
+  if (ref !== undefined) action = { ...action, ref }
+  if (branch !== undefined) action = { ...action, branch }
+  return action
+}
+
 const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
   tokens: ReadonlyArray<string>,
   all: ReadonlyArray<string>,
@@ -1326,6 +1343,7 @@ const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
   )
   let workspace: string | undefined
   let ref: string | undefined
+  let branch: string | undefined
   let json = false
   for (let index = 1; index < tokens.length; index += 1) {
     const flag = tokens[index]
@@ -1333,24 +1351,20 @@ const parseWorktreeEnsure = Effect.fn('Cli.parseWorktreeEnsure')(function* (
       json = true
       continue
     }
-    if (flag === '--workspace' || flag === '--ref') {
+    if (flag === '--workspace' || flag === '--ref' || flag === '--branch') {
       const value = tokens[index + 1]
       if (!value || value.startsWith('-')) {
         return yield* discordArgumentsError(all)
       }
       if (flag === '--workspace') workspace = value
-      else ref = value
+      else if (flag === '--ref') ref = value
+      else branch = value
       index += 1
       continue
     }
     return yield* discordArgumentsError(all)
   }
-  if (workspace !== undefined && ref !== undefined) {
-    return { type: 'worktree-ensure' as const, url, workspace, ref, json }
-  }
-  if (workspace !== undefined) return { type: 'worktree-ensure' as const, url, workspace, json }
-  if (ref !== undefined) return { type: 'worktree-ensure' as const, url, ref, json }
-  return { type: 'worktree-ensure' as const, url, json }
+  return buildWorktreeEnsureAction(url, workspace, ref, branch, json)
 })
 
 const parseWorktreeList = Effect.fn('Cli.parseWorktreeList')(function* (
@@ -1738,7 +1752,9 @@ export const cliCommandSpec: CliBranchSpec = {
         {
           name: 'ensure',
           summary: 'Ensure a reusable repository worktree for the current channel workspace.',
-          arguments: ['<repository-url> [--ref <ref>] [--workspace <path>] [--json]'],
+          arguments: [
+            '<repository-url> [--ref <ref>] [--branch <branch>] [--workspace <path>] [--json]',
+          ],
           parse: parseWorktreeEnsure,
         },
         {

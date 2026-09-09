@@ -2682,7 +2682,7 @@ it.effect('renders help per topic: full tree, branch children, leaf usage, and f
       'config discord guild channel reset <connection-id> <guild-id> <channel-id>',
       'config discord activity-description set <connection-id>',
       'config discord activity-description reset <connection-id>',
-      'worktree ensure <repository-url> [--ref <ref>] [--workspace <path>] [--json]',
+      'worktree ensure <repository-url> [--ref <ref>] [--branch <branch>] [--workspace <path>] [--json]',
       'worktree list [--json]',
       'workspace cleanup apply <proposal-id> [--json]',
       'workspace cleanup list [--json]',
@@ -3071,12 +3071,47 @@ it.effect('parses every worktree ensure flag combination', () =>
     const invalid = [
       [...base, '--workspace'], // missing value
       [...base, '--ref', '--json'], // flag-like ref
+      [...base, '--branch'], // missing value
+      [...base, '--branch', '--json'], // flag-like branch
       ['worktree', 'ensure', '--json'], // flag-like url
     ]
     for (const arguments_ of invalid) {
       const error = yield* parseFridayCli(arguments_).pipe(Effect.flip)
       assert(isFridayCliError(error), `expected failure: ${arguments_.join(' ')}`)
     }
+  }),
+)
+
+it.effect('parses worktree ensure branch combinations', () =>
+  Effect.gen(function* () {
+    const url = decodeRepositoryUrl('git@github.com:one-terrace/timezone-relay-bot.git')
+    const base = ['worktree', 'ensure', 'git@github.com:one-terrace/timezone-relay-bot.git']
+    assert.deepStrictEqual(yield* parseFridayCli([...base, '--branch', 'feat/add-login']), {
+      type: 'worktree-ensure',
+      url,
+      branch: 'feat/add-login',
+      json: false,
+    })
+    assert.deepStrictEqual(
+      yield* parseFridayCli([
+        ...base,
+        '--branch',
+        'feat/add-login',
+        '--workspace',
+        '/tmp/channel',
+        '--ref',
+        'main',
+        '--json',
+      ]),
+      {
+        type: 'worktree-ensure',
+        url,
+        workspace: '/tmp/channel',
+        ref: 'main',
+        branch: 'feat/add-login',
+        json: true,
+      },
+    )
   }),
 )
 

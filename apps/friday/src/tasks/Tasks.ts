@@ -37,6 +37,7 @@ import * as Semaphore from 'effect/Semaphore'
 import { isAbsolute } from 'node:path'
 
 import { Friday, type FridayContract } from '../Friday.ts'
+import { quoteShellArgument } from './ShellQuote.ts'
 import {
   ConversationTitles,
   type ConversationTitlesContract,
@@ -702,10 +703,21 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
         ),
       ),
     )
+    // The channel agent owns the durable branch name. Carry it in the
+    // bootstrap instruction so the bootstrap agent passes it to
+    // `friday worktree ensure --branch <name>`. Omit it unchanged when the
+    // channel agent did not choose one (read-only work or low context).
+    // Quote as one POSIX shell word so metacharacters cannot split or expand.
+    const quotedBranch =
+      request.branch === undefined ? undefined : quoteShellArgument(request.branch)
+    const task =
+      request.branch === undefined || quotedBranch === undefined
+        ? request.task
+        : `${request.task}\n\nUse durable branch ${quotedBranch} for the managed worktree: pass --branch ${quotedBranch} to \`friday worktree ensure\`.`
     return yield* launchTask({
       parent,
       parentTurnId: request.parentTurnId,
-      task: request.task,
+      task,
       workingDirectory,
       mayWrite: true,
       profile: request.profile,

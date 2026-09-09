@@ -5,6 +5,7 @@ import {
   ChannelThread,
   ModelSelection,
   SubagentProfileName,
+  TaskBranchName,
   TaskId,
   TaskInspectCursor,
   TurnId,
@@ -19,6 +20,7 @@ import { TaskError, type TasksContract } from './Tasks.ts'
 const decodeChannelThread = Schema.decodeSync(ChannelThread)
 const decodeModel = Schema.decodeSync(ModelSelection)
 const decodeProfileName = Schema.decodeSync(SubagentProfileName)
+const decodeBranchName = Schema.decodeSync(TaskBranchName)
 const decodeTaskId = Schema.decodeSync(TaskId)
 const decodeCursor = Schema.decodeSync(TaskInspectCursor)
 const decodeTurnId = Schema.decodeSync(TurnId)
@@ -387,4 +389,122 @@ it('rejects blank set-model identifiers and profiles at the tool boundary', asyn
   await expect(
     executeModelSet({ action: 'set-model', taskId: 'task-owned', profile: '  ' }),
   ).rejects.toThrow()
+})
+
+it('passes an explicit bootstrap branch through to the bootstrap request', async () => {
+  const calls: Array<unknown> = []
+  const tool = makePiTaskTool({
+    thread: channelThread,
+    tasks: {
+      ...taskOperations(calls),
+      bootstrap: (request) =>
+        Effect.sync(() => calls.push(request)).pipe(
+          Effect.as({ taskId: decodeTaskId('task-bootstrapped'), status: 'pending' as const }),
+        ),
+    },
+    activeTurnId: () => decodeTurnId('turn-active'),
+    runPromise: Effect.runPromise,
+  })
+
+  await tool.execute(
+    'call-bootstrap-branch',
+    { action: 'bootstrap', task: 'Prepare the repository.', branch: 'feat/add-login' },
+    undefined,
+    undefined,
+    // SAFETY: The task tool does not read ExtensionContext for this operation.
+    {} as never,
+  )
+  assert.deepStrictEqual(calls, [
+    {
+      parentThreadId: channelThread.id,
+      parentTurnId: decodeTurnId('turn-active'),
+      task: 'Prepare the repository.',
+      branch: 'feat/add-login',
+    },
+  ])
+})
+
+it('omits the bootstrap branch when the channel agent does not choose one', async () => {
+  const calls: Array<unknown> = []
+  const tool = makePiTaskTool({
+    thread: channelThread,
+    tasks: {
+      ...taskOperations(calls),
+      bootstrap: (request) =>
+        Effect.sync(() => calls.push(request)).pipe(
+          Effect.as({ taskId: decodeTaskId('task-bootstrapped'), status: 'pending' as const }),
+        ),
+    },
+    activeTurnId: () => decodeTurnId('turn-active'),
+    runPromise: Effect.runPromise,
+  })
+
+  await tool.execute(
+    'call-bootstrap-no-branch',
+    { action: 'bootstrap', task: 'Investigate the repository read-only.' },
+    undefined,
+    undefined,
+    // SAFETY: The task tool does not read ExtensionContext for this operation.
+    {} as never,
+  )
+  assert.deepStrictEqual(calls, [
+    {
+      parentThreadId: channelThread.id,
+      parentTurnId: decodeTurnId('turn-active'),
+      task: 'Investigate the repository read-only.',
+    },
+  ])
+})
+
+it('rejects blank bootstrap branches at the tool boundary', async () => {
+  const tool = makePiTaskTool({
+    thread: channelThread,
+    tasks: taskOperations([]),
+    activeTurnId: () => decodeTurnId('turn-active'),
+    runPromise: Effect.runPromise,
+  })
+  const executeBootstrap = (input: unknown) =>
+    tool.execute(
+      'call-bootstrap-constraints',
+      input,
+      undefined,
+      undefined,
+      // SAFETY: The task tool does not read ExtensionContext for this operation.
+      {} as never,
+    )
+
+  await expect(
+    executeBootstrap({ action: 'bootstrap', task: 'Prepare the repository.', branch: '  ' }),
+  ).rejects.toThrow()
+})
+
+it('keeps bootstrap branch validation in parity across TypeBox and Effect', () => {
+  const tool = makePiTaskTool({
+    thread: channelThread,
+    tasks: taskOperations([]),
+    activeTurnId: () => decodeTurnId('turn-active'),
+    runPromise: Effect.runPromise,
+  })
+  const validateBootstrap = (input: { action: 'bootstrap'; task: string; branch: string }) =>
+    validateToolArguments(tool, {
+      type: 'toolCall',
+      id: 'call-bootstrap-parity',
+      name: 'task',
+      arguments: input,
+    })
+  const branch = 'feat/add-login'
+
+  expect(validateBootstrap({ action: 'bootstrap', task: 'Prepare.', branch })).toEqual({
+    action: 'bootstrap',
+    task: 'Prepare.',
+    branch,
+  })
+  expect(decodeBranchName(branch)).toBe(branch)
+
+  for (const value of ['', ' ', ' feat/x', 'feat/x ']) {
+    expect(() =>
+      validateBootstrap({ action: 'bootstrap', task: 'Prepare.', branch: value }),
+    ).toThrow()
+    expect(() => decodeBranchName(value)).toThrow()
+  }
 })

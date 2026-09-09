@@ -1,4 +1,4 @@
-/* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/async-function, effecttsgo/node-builtin-import, effecttsgo/strict-effect-provide, eslint/no-underscore-dangle -- Bun filesystem integration tests run through bun:test; Effect schemas use the canonical _tag discriminator. */
+/* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/async-function, effecttsgo/node-builtin-import, effecttsgo/strict-effect-provide, eslint/no-await-in-loop, eslint/no-underscore-dangle -- Bun filesystem integration tests run through bun:test; Effect schemas use the canonical _tag discriminator; metacharacter branch cases run sequentially to reuse temp dirs. */
 
 import { expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
@@ -9,6 +9,7 @@ import {
   IsoDateTime,
   ModelSelection,
   SubagentProfileName,
+  TaskBranchName,
   TaskId,
   TurnId,
   WorkingDirectory,
@@ -30,12 +31,14 @@ import type { ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
 import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
 import type { ThreadPersistenceContract } from '../conversation/ThreadPersistence.ts'
 import { makeTaskModels } from './TaskModels.ts'
+import { quoteShellArgument } from './ShellQuote.ts'
 import { makeTasks } from './Tasks.ts'
 
 const decodeAgentThread = Schema.decodeSync(AgentThread)
 const decodeIsoDateTime = Schema.decodeSync(IsoDateTime)
 const decodeModelSelection = Schema.decodeSync(ModelSelection)
 const decodeProfileName = Schema.decodeSync(SubagentProfileName)
+const decodeBranchName = Schema.decodeSync(TaskBranchName)
 const decodeTaskId = Schema.decodeSync(TaskId)
 const decodeTurnId = Schema.decodeSync(TurnId)
 const decodeWorkingDirectory = Schema.decodeSync(WorkingDirectory)
@@ -447,6 +450,93 @@ test('starts a bootstrap task in the channel workspace with the bootstrap role',
   expect(promptedTurns[0]?.input.content.text).toBe(
     'Prepare /tmp/project for a separate implementation agent.',
   )
+})
+
+test('carries a requested durable branch into the bootstrap instruction', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'friday-bootstrap-branch-test-'))
+  const channelWorkspace = join(root, 'channel')
+  await Bun.write(join(channelWorkspace, '.keep'), '')
+
+  const parent = parentThread(channelWorkspace)
+  const createdThreads: Array<Thread> = []
+  const promptedTurns: Array<Turn> = []
+  const identifiers = ['bootstrap-id', 'bootstrap-turn']
+  const program = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem
+    const tasks = makeTasks({
+      persistence: makePersistence(parent, createdThreads),
+      friday: makeFriday(promptedTurns),
+      models: makeTaskModels(() => profilesFor(parent)),
+      channelTurns: noChannelTurns,
+      fileSystem,
+      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+      fork: () => Effect.void,
+    })
+
+    return yield* tasks.bootstrap({
+      parentThreadId: parent.id,
+      parentTurnId: decodeTurnId('turn-parent'),
+      task: 'Prepare the repository for login work.',
+      branch: decodeBranchName('feat/add-login'),
+    })
+  }).pipe(Effect.provide(BunFileSystem.layer))
+
+  await Effect.runPromise(program)
+  await rm(root, { recursive: true, force: true })
+
+  const text = promptedTurns[0]?.input.content.text ?? ''
+  expect(text).toContain('Prepare the repository for login work.')
+  expect(text).toContain(`--branch 'feat/add-login'`)
+  expect(text).toContain(`Use durable branch 'feat/add-login'`)
+  expect(text).toContain('friday worktree ensure')
+})
+
+test('quotes shell-metacharacter durable branches as one argument', async () => {
+  for (const branch of ['fix/foo;bar', 'fix/$money', `fix/o'clock`]) {
+    const root = await mkdtemp(join(tmpdir(), 'friday-bootstrap-quote-test-'))
+    const channelWorkspace = join(root, 'channel')
+    await Bun.write(join(channelWorkspace, '.keep'), '')
+
+    const parent = parentThread(channelWorkspace)
+    const promptedTurns: Array<Turn> = []
+    const identifiers = ['bootstrap-id', 'bootstrap-turn']
+    const program = Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem
+      const tasks = makeTasks({
+        persistence: makePersistence(parent, []),
+        friday: makeFriday(promptedTurns),
+        models: makeTaskModels(() => profilesFor(parent)),
+        channelTurns: noChannelTurns,
+        fileSystem,
+        randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
+        now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
+        fork: () => Effect.void,
+      })
+
+      return yield* tasks.bootstrap({
+        parentThreadId: parent.id,
+        parentTurnId: decodeTurnId('turn-parent'),
+        task: 'Prepare the repository.',
+        branch: decodeBranchName(branch),
+      })
+    }).pipe(Effect.provide(BunFileSystem.layer))
+
+    await Effect.runPromise(program)
+    await rm(root, { recursive: true, force: true })
+
+    const text = promptedTurns[0]?.input.content.text ?? ''
+    const quoted = quoteShellArgument(branch)
+    expect(text).toContain('--branch ' + quoted)
+    expect(text).toContain('Use durable branch ' + quoted)
+    if (branch === 'fix/foo;bar') {
+      expect(text).toContain("--branch 'fix/foo;bar'")
+    }
+    if (branch === 'fix/$money') {
+      expect(text).toContain("--branch 'fix/$money'")
+    }
+    expect(text).not.toContain('--branch ' + branch)
+  }
 })
 
 test('delivers a completed task back to the parent channel Thread', async () => {
