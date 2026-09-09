@@ -275,6 +275,7 @@ const makePersistence = (operations: Array<RecordedOperation>): ThreadPersistenc
   listAgentThreads: () => Effect.succeed([]),
   closeThread: () => Effect.void,
   setThreadHarnessSession: () => Effect.void,
+  setThreadModel: () => Effect.void,
   createTurn: (value) => Effect.sync(() => operations.push({ type: 'create-turn', value })),
   getTurn: () => Effect.succeedNone,
   getFirstTurn: () => Effect.succeedNone,

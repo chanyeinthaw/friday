@@ -107,6 +107,7 @@ const tasks: PiTaskOperations = {
   list: () => Effect.die('not exercised'),
   cancel: () => Effect.die('not exercised'),
   inspect: () => Effect.die('not exercised'),
+  setModel: () => Effect.die('not exercised'),
 }
 
 const open = (thread: Thread, captured: Array<CreateAgentSessionOptions>) =>

@@ -6,6 +6,9 @@ import {
   AgentThread,
   ChannelThread,
   HarnessSession,
+  IsoDateTime,
+  ModelSelection,
+  SubagentProfileName,
   ToolResultActivity,
   Turn,
 } from '@friday/contracts/conversation'
@@ -20,6 +23,9 @@ import { join } from 'node:path'
 import { makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
 
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
+const decodeIsoDateTime = Schema.decodeSync(IsoDateTime)
+const decodeModelSelection = Schema.decodeSync(ModelSelection)
+const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 const decodeToolResultActivity = Schema.decodeSync(ToolResultActivity)
 const decodeTurn = Schema.decodeSync(Turn)
 const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
@@ -325,6 +331,42 @@ test('persists a harness session cursor on its Thread', async () => {
   await rm(directory, { recursive: true, force: true })
 
   expect(persisted).toEqual({ ...thread, harnessSession })
+})
+
+test('updates an agent Thread model while keeping its identity and workspace', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const model = decodeModelSelection({
+    provider: 'anthropic',
+    modelId: 'claude-opus',
+  })
+  const program = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+
+    yield* persistence.createThread(agentThread)
+    yield* persistence.setThreadModel({
+      threadId: agentThread.id,
+      model,
+      thinkingLevel: 'low',
+      subagentProfile: decodeProfileName('review'),
+      updatedAt: decodeIsoDateTime('2026-03-21T12:00:00.000Z'),
+    })
+    return Option.getOrThrow(yield* persistence.getThread(agentThread.id))
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+
+  const persisted = await Effect.runPromise(program)
+  await rm(directory, { recursive: true, force: true })
+
+  expect(persisted.id).toBe(agentThread.id)
+  expect(persisted.workingDirectory).toBe(agentThread.workingDirectory)
+  if (persisted.audience === 'agent') {
+    expect(persisted.model).toEqual(model)
+    expect(persisted.thinkingLevel).toBe('low')
+    expect(String(persisted.subagentProfile)).toBe('review')
+    expect(persisted.updatedAt).toBe('2026-03-21T12:00:00.000Z')
+  } else {
+    expect.unreachable('expected an agent Thread')
+  }
 })
 
 test('creates and retrieves an agent Thread', async () => {

@@ -57,7 +57,15 @@ interface ThreadRuntimeEntry {
   readonly coordinator: ThreadCoordinator
   readonly scope: Scope.Closeable
   readonly tracking: ThreadRuntimeTracking
+  /** Model selection the pooled harness session was opened with. */
+  readonly model: Thread['model']
+  readonly thinkingLevel: Thread['thinkingLevel']
 }
+
+const threadModelMatches = (entry: ThreadRuntimeEntry, thread: Thread): boolean =>
+  entry.model.provider === thread.model.provider &&
+  entry.model.modelId === thread.model.modelId &&
+  entry.thinkingLevel === thread.thinkingLevel
 
 const closeEntry = (entry: ThreadRuntimeEntry) => Scope.close(entry.scope, Exit.void)
 
@@ -131,6 +139,8 @@ const openRuntimeEntry = <R>(
       coordinator: trackCoordinator(coordinator, tracking, scope),
       scope,
       tracking,
+      model: thread.model,
+      thinkingLevel: thread.thinkingLevel,
     }
   })
 
@@ -196,7 +206,22 @@ export const ThreadRuntimePoolLive = <R>(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis
           const existing = entries.get(thread.id)
-          if (existing !== undefined) return yield* reuseRuntimeEntry(thread, existing, now)
+          if (existing !== undefined) {
+            // A running Turn keeps its harness session so in-progress work is
+            // never interrupted; an idle session opened for another model is
+            // recycled so subsequent execution uses the current selection.
+            if (existing.tracking.activeTurns > 0 || threadModelMatches(existing, thread)) {
+              return yield* reuseRuntimeEntry(thread, existing, now)
+            }
+            entries.delete(thread.id)
+            yield* closeEntry(existing)
+            yield* Effect.logInfo('thread.runtime.recycled').pipe(
+              Effect.annotateLogs({
+                component: 'runtime-pool',
+                threadId: thread.id,
+              }),
+            )
+          }
 
           const entry = yield* openRuntimeEntry(openThread, context, thread, now)
           entries.set(thread.id, entry)

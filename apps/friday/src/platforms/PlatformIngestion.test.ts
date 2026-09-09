@@ -549,6 +549,7 @@ const makePersistence = (
     listAgentThreads: () => Effect.succeed([]),
     closeThread: () => Effect.void,
     setThreadHarnessSession: () => Effect.void,
+    setThreadModel: () => Effect.void,
     createTurn: (turn) => Effect.sync(() => void (storedTurn = turn)),
     getTurn: () =>
       Effect.sync(() =>

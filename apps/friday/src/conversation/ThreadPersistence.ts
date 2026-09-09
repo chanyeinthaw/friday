@@ -7,6 +7,9 @@ import type {
   HarnessSession,
   HarnessTurnId,
   IsoDateTime,
+  ModelSelection,
+  SubagentProfileName,
+  ThinkingLevel,
   Thread,
   ThreadId,
   TokenUsage,
@@ -39,6 +42,14 @@ export interface ThreadClosedUpdate {
 export interface ThreadHarnessSessionUpdate {
   readonly threadId: ThreadId
   readonly harnessSession: HarnessSession
+}
+
+export interface ThreadModelUpdate {
+  readonly threadId: ThreadId
+  readonly model: ModelSelection
+  readonly thinkingLevel: ThinkingLevel
+  readonly subagentProfile: SubagentProfileName
+  readonly updatedAt: IsoDateTime
 }
 
 export interface TurnStartedUpdate {
@@ -81,6 +92,9 @@ export interface ThreadPersistenceContract {
   readonly closeThread: (update: ThreadClosedUpdate) => Effect.Effect<void, ThreadPersistenceError>
   readonly setThreadHarnessSession: (
     update: ThreadHarnessSessionUpdate,
+  ) => Effect.Effect<void, ThreadPersistenceError>
+  readonly setThreadModel: (
+    update: ThreadModelUpdate,
   ) => Effect.Effect<void, ThreadPersistenceError>
   readonly createTurn: (turn: Turn) => Effect.Effect<void, ThreadPersistenceError>
   readonly getTurn: (turnId: TurnId) => Effect.Effect<Option.Option<Turn>, ThreadPersistenceError>

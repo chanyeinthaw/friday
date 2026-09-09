@@ -4,6 +4,8 @@ import type {
   InspectTaskRequest,
   InspectTaskResult,
   ListTasksRequest,
+  SetTaskModelRequest,
+  SetTaskModelResult,
   StartedTask,
   StartTaskRequest,
   SteerTaskRequest,
@@ -38,6 +40,9 @@ export interface TaskToolDispatcherContract {
   readonly inspect: (
     request: InspectTaskRequest,
   ) => Effect.Effect<InspectTaskResult, TaskToolDispatchError>
+  readonly setModel: (
+    request: SetTaskModelRequest,
+  ) => Effect.Effect<SetTaskModelResult, TaskToolDispatchError>
   readonly bind: (tasks: TasksContract) => Effect.Effect<void>
 }
 
@@ -58,6 +63,7 @@ export const TaskToolDispatcherLive = Layer.sync(TaskToolDispatcher, () => {
     list: (request) => dispatch((service) => service.list(request)),
     cancel: (request) => dispatch((service) => service.cancel(request)),
     inspect: (request) => dispatch((service) => service.inspect(request)),
+    setModel: (request) => dispatch((service) => service.setModel(request)),
     bind: (service) => Effect.sync(() => void (tasks = service)),
   })
 })

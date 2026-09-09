@@ -3,6 +3,7 @@
 import { assert, it } from '@effect/vitest'
 import {
   ChannelThread,
+  ModelSelection,
   SteeringActivity,
   Turn,
   type Turn as TurnType,
@@ -477,3 +478,74 @@ const completedTurn = (completed: TurnType): TerminalTurn => ({
   agentMessage: 'Done.',
   usage: null,
 })
+
+const decodeModelSelection = Schema.decodeSync(ModelSelection)
+const switchedModelThread = Schema.decodeSync(ChannelThread)({
+  ...thread,
+  model: decodeModelSelection({
+    provider: 'opencode-go',
+    modelId: 'switched-model',
+  }),
+  thinkingLevel: 'low',
+})
+
+it.effect('recycles an idle runtime when the thread model changes', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let opened = 0
+      let released = 0
+      const pool = yield* ThreadRuntimePool.pipe(
+        Effect.provide(
+          testLayer(() =>
+            Effect.gen(function* () {
+              opened += 1
+              yield* Scope.addFinalizer(
+                yield* Effect.scope,
+                Effect.sync(() => {
+                  released += 1
+                }),
+              )
+              return makeCoordinator(opened)
+            }),
+          ),
+        ),
+      )
+
+      const first = yield* pool.acquire(thread)
+      const second = yield* pool.acquire(switchedModelThread)
+
+      assert.notStrictEqual(first, second)
+      assert.strictEqual(opened, 2)
+      assert.strictEqual(released, 1)
+      assert.strictEqual(yield* pool.acquire(switchedModelThread), second)
+      assert.strictEqual(opened, 2)
+    }),
+  ).pipe(Effect.provide(TestClock.layer())),
+)
+
+it.effect('keeps the active runtime while its Turn runs despite a model change', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const terminal = yield* Deferred.make<TerminalTurn>()
+      let opened = 0
+      const pool = yield* ThreadRuntimePool.pipe(
+        Effect.provide(
+          testLayer(() => Effect.sync(() => makeCoordinator(++opened, Deferred.await(terminal)))),
+        ),
+      )
+
+      const coordinator = yield* pool.acquire(thread)
+      const handle = yield* coordinator.prompt(turn)
+      assert.strictEqual(yield* pool.acquire(switchedModelThread), coordinator)
+      assert.strictEqual(opened, 1)
+
+      yield* Deferred.succeed(terminal, completedTurn(turn))
+      yield* handle.awaitTerminal
+      yield* TestClock.adjust('1 minute')
+      const recycled = yield* pool.acquire(switchedModelThread)
+
+      assert.notStrictEqual(recycled, coordinator)
+      assert.strictEqual(opened, 2)
+    }),
+  ).pipe(Effect.provide(TestClock.layer())),
+)

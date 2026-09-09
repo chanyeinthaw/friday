@@ -126,6 +126,7 @@ it.effect('keeps root-user identities out of every normal task content surface',
         ),
       closeThread: () => Effect.void,
       setThreadHarnessSession: () => Effect.void,
+      setThreadModel: () => Effect.void,
       createTurn: (turn) =>
         Effect.sync(() => {
           persistedTurns.push(turn)
@@ -240,6 +241,7 @@ it.effect('keeps root-user identities out of every normal task content surface',
         list: () => Effect.succeed(listed),
         cancel: () => Effect.die('not used'),
         inspect: () => Effect.die('not used'),
+        setModel: () => Effect.die('not used'),
       },
       activeTurnId: () => decodeTurnId('turn-root-user-task-surface-parent'),
       runPromise: Effect.runPromise,
