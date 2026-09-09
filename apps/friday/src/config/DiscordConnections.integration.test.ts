@@ -57,7 +57,6 @@ test('adds, reads, lists, toggles, and removes a Discord connection', async () =
         publicKey: '0123456789abcdef'.repeat(4),
         botTokenEnv: 'FRIDAY_DISCORD_MAIN_TOKEN',
         respondToGlobalMentions: true,
-        activityDescription: false,
       })
       assert.deepStrictEqual(yield* store.listConnections(), [
         { connectionId: 'discord-main', name: 'Main bot', enabled: true },

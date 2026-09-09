@@ -54,7 +54,6 @@ describe('DiscordConnections', () => {
         publicKey: '0123456789abcdef'.repeat(4),
         botTokenEnv: 'FRIDAY_DISCORD_MAIN_TOKEN',
         respondToGlobalMentions: true,
-        activityDescription: false,
       })
       assert.deepStrictEqual(yield* store.listConnections(), [
         { connectionId: 'discord-main', name: 'Main bot', enabled: true },
@@ -316,29 +315,6 @@ describe('DiscordConnections', () => {
         }),
         'missing',
       )
-    }).pipe(Effect.provide(Layer.mergeAll(SqlClientLive, TestLive))),
-  )
-
-  it.effect('reports stored disabled and activity-description flags through reads', () =>
-    Effect.gen(function* () {
-      const store = yield* DiscordConnections
-      const sql = yield* SqlClient.SqlClient
-      assert.strictEqual(yield* store.addConnection(connection), 'added')
-      assert.strictEqual(yield* store.disableConnection(connection.connectionId), 'disabled')
-      yield* sql`
-          UPDATE discord_connections
-          SET activity_description_public = 1
-          WHERE connection_id = 'discord-main'
-        `
-
-      const listed = yield* store.listConnections()
-      assert.deepStrictEqual(listed, [
-        { connectionId: 'discord-main', name: 'Main bot', enabled: false },
-      ])
-      const detail = yield* store.getConnection(connection.connectionId)
-      assert(Option.isSome(detail))
-      assert.strictEqual(detail.value.enabled, false)
-      assert.strictEqual(detail.value.activityDescription, true)
     }).pipe(Effect.provide(Layer.mergeAll(SqlClientLive, TestLive))),
   )
 

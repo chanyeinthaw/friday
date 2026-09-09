@@ -28,10 +28,6 @@ import { reloadApplicationConfig } from './config/ConfigReload.ts'
 import { sendControlRequest, serveControlSocket } from './control/ControlSocket.ts'
 import { DiscordGuilds, DiscordGuildsLive } from './config/DiscordGuilds.ts'
 import { DiscordConnections, DiscordConnectionsLive } from './config/DiscordConnections.ts'
-import {
-  DiscordActivityDescriptions,
-  DiscordActivityDescriptionsLive,
-} from './platforms/DiscordActivityDescriptions.ts'
 import { AppConfig } from './config/AppConfigLive.ts'
 import { DiscordAdmins, DiscordAdminsLive } from './config/DiscordAdmins.ts'
 import { RootUsers, RootUsersLive } from './config/RootUsers.ts'
@@ -60,9 +56,6 @@ const WorkspaceCleanupNotificationsConfiguredLive = WorkspaceCleanupNotification
   ),
 )
 
-const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLive.pipe(
-  Layer.provide(FridaySqliteLive),
-)
 const DiscordGuildsConfiguredLive = DiscordGuildsLive.pipe(Layer.provide(FridaySqliteLive))
 const DiscordConnectionsConfiguredLive = DiscordConnectionsLive.pipe(
   Layer.provide(FridaySqliteLive),
@@ -153,15 +146,6 @@ const application = Effect.scoped(
       listPiModels,
       getPiModel,
       reloadPiModels,
-      setDiscordActivityDescription: (action, enabled) =>
-        DiscordActivityDescriptions.pipe(
-          Effect.flatMap((descriptions) =>
-            enabled
-              ? descriptions.set(action.connectionId)
-              : descriptions.reset(action.connectionId),
-          ),
-          Effect.provide(DiscordActivityDescriptionsConfiguredLive),
-        ),
       updateDiscordConnection: (action) =>
         DiscordConnections.pipe(
           Effect.flatMap((connections) => connections.updateConnection(action)),

@@ -1,167 +1,208 @@
-import type { DiscordAdapter } from '@chat-adapter/discord'
-import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
-import * as Option from 'effect/Option'
-import * as Queue from 'effect/Queue'
-import * as Schema from 'effect/Schema'
-import type * as Scope from 'effect/Scope'
+import * as Fiber from 'effect/Fiber'
+import * as Schedule from 'effect/Schedule'
 import * as Semaphore from 'effect/Semaphore'
+import type * as Duration from 'effect/Duration'
 
 import type { PlatformAgentActivity } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 
-const activitySuffix = / ⚡️(?:x\d+)?$/u
-const discordApiBase = 'https://discord.com/api/v10'
-const descriptionPrefix = 'Friday task activity ['
-const DescriptionDebounce: Duration.Input = '2 seconds'
-const RetryDelay: Duration.Input = '1 second'
-const ConservativeRetryDelayMs = 5_000
-const MaximumPatchAttempts = 4
+/** Discord presence derived from the global aggregate of active tasks. */
+export interface DiscordPresence {
+  /** Online when idle, idle while any task is active. */
+  readonly status: 'online' | 'idle'
+  /** Generic aggregate text; undefined shows no activity. Never task content. */
+  readonly activity: string | undefined
+  /** Count behind the derived state, kept for safe diagnostics. */
+  readonly activeTaskCount: number
+}
 
-const logCleanupFailure = (cause: unknown) =>
-  Effect.logWarning('discord.application-description.cleanup-failed').pipe(
-    Effect.annotateLogs({ cause: String(cause) }),
-  )
+/** Single-attempt gateway update. The activity lifecycle owns retry policy. */
+export interface DiscordPresenceGateway {
+  readonly setPresence: (presence: DiscordPresence) => Effect.Effect<void, ChatSdkPublicationError>
+}
 
-/** Discord's documented application-description character limit. */
-export const ApplicationDescriptionLimit = 400
-/** Caps for the public, global application description's sanitized labels. */
-export const ActivityLabelLimit = 64
-export const ActivityChannelLimit = 32
+/** One shared presence lifecycle: task updates and reconnect re-applies funnel
+ * through the same versioned retry pipeline, so newer desired state always wins. */
+export interface DiscordAgentActivityHandle {
+  /** Maps a task transition to aggregate presence and dispatches it with retry. */
+  readonly setAgentActivity: (
+    input: PlatformAgentActivity,
+  ) => Effect.Effect<void, ChatSdkPublicationError>
+  /**
+   * Re-applies the current aggregate through the same pipeline, forcing a write
+   * even when the derived key matches the last applied one. Gateway (re)connects
+   * lose server-side presence, so the stored desired state must converge again
+   * with the same exponential backoff, attempt budget, and safe failure log.
+   */
+  readonly resyncPresence: () => Effect.Effect<void>
+}
 
 export interface DiscordAgentActivityOptions {
-  /**
-   * Opt in to a global, public Discord application description containing sanitized
-   * channel names and task labels. Disabled by default.
-   */
-  readonly activityDescription?: boolean | undefined
-  readonly watchActivityDescription?:
-    | ((
-        onChange: (enabled: boolean) => Effect.Effect<void>,
-      ) => Effect.Effect<void, never, Scope.Scope>)
-    | undefined
-  readonly installationId?: string | undefined
-  readonly descriptionDebounce?: Duration.Input | undefined
-  readonly retryDelay?: Duration.Input | undefined
-  readonly cleanupTimeout?: Duration.Input | undefined
+  /** Base delay for exponential presence retry. TestClock covers it in tests. */
+  readonly retryBaseDelay?: Duration.Input | undefined
+  /** Total update attempts including the initial one. Defaults to 5. */
+  readonly maxAttempts?: number | undefined
 }
-
-interface ActiveTask {
-  readonly channelId: string
-  readonly label: string
-}
-
-class DescriptionPatchError extends Schema.Error<DescriptionPatchError>('DescriptionPatchError')({
-  _tag: Schema.tag('DescriptionPatchError'),
-  status: Schema.Number,
-  transient: Schema.Boolean,
-  retryAfterMs: Schema.optional(Schema.Number),
-}) {}
-
-const CurrentApplication = Schema.Struct({ id: Schema.String, description: Schema.String })
-const RateLimitBody = Schema.Struct({ retry_after: Schema.Number })
-const ChannelResponse = Schema.Struct({ name: Schema.NullOr(Schema.String) })
-const CurrentUserResponse = Schema.Struct({ id: Schema.String })
-const GuildMemberResponse = Schema.Struct({
-  nick: Schema.optional(Schema.NullOr(Schema.String)),
-  user: Schema.optional(Schema.Struct({ username: Schema.optional(Schema.String) })),
-})
-const decodeCurrentApplication = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(CurrentApplication),
-)
-const decodeChannelResponse = Schema.decodeEffect(Schema.fromJsonString(ChannelResponse))
-const decodeRateLimitBody = Schema.decodeUnknownOption(Schema.fromJsonString(RateLimitBody))
-const decodeCurrentUserResponse = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(CurrentUserResponse),
-)
-const decodeGuildMemberResponse = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(GuildMemberResponse),
-)
-const isChatSdkPublicationError = Schema.is(ChatSdkPublicationError)
-
-const activityError = (cause: unknown): ChatSdkPublicationError =>
-  new ChatSdkPublicationError({ operation: 'set-agent-activity', cause })
-
-const toActivityError = (cause: unknown): ChatSdkPublicationError =>
-  isChatSdkPublicationError(cause) ? cause : activityError(cause)
-
-const truncateCodePoints = (value: string, maxLength: number): string =>
-  Array.from(value).slice(0, maxLength).join('')
 
 /**
- * Derives a concise single-line public label from delegated task text. It removes
- * code blocks, Discord mentions, timestamps, and Markdown markers before truncation.
- * Ordinary text can remain unchanged, so enabling publication must be an explicit choice.
+ * Maps the aggregate count to global presence. Zero tasks is online with no
+ * activity; any tasks is idle with a generic count. Task names, channels,
+ * guilds, and user content never reach this shape.
  */
-export const sanitizeTaskLabel = (task: string, maxLength: number = ActivityLabelLimit): string => {
-  const prepared = task
-    .replace(/```[\s\S]*?(?:```|$)/gu, ' ')
-    .replace(/<(?:@!?|@&|#)\d+>/gu, ' ')
-    .replace(/<t:\d+:[tTdDfFR]>/gu, ' ')
-  const line =
-    prepared
-      .split('\n')
-      .map((candidate) => candidate.trim())
-      .find((candidate) => candidate.length > 0) ?? ''
-  const label = line
-    .replace(/`+/gu, '')
-    .replace(/^[#>*\-–\s]+/u, '')
-    .replace(/\s+/gu, ' ')
-    .trim()
-  if (Array.from(label).length <= maxLength) return label
-  return `${truncateCodePoints(label, maxLength - 1).trimEnd()}…`
-}
+export const deriveDiscordPresence = (activeTaskCount: number): DiscordPresence =>
+  activeTaskCount <= 0
+    ? { status: 'online', activity: undefined, activeTaskCount: 0 }
+    : {
+        status: 'idle',
+        activity:
+          activeTaskCount === 1 ? 'Working on 1 task' : `Working on ${activeTaskCount} tasks`,
+        activeTaskCount,
+      }
 
-const overflowText = (hidden: number): string =>
-  hidden === 1 ? '... 1 more task.' : `... ${hidden} more tasks.`
+const presenceKey = (presence: DiscordPresence): string =>
+  presence.activity === undefined ? presence.status : `${presence.status}\n${presence.activity}`
 
-const renderedLength = (lines: ReadonlyArray<string>): number =>
-  lines.reduce((total, line) => total + Array.from(line).length + 1, -1)
+/**
+ * Tracks every active task known by the platform activity lifecycle and keeps
+ * one global Discord presence in sync with the aggregate count.
+ *
+ * Updates run on forked fibers so task completion never waits out backoff.
+ * Each dispatch carries a version: a superseded loop ends quietly and never
+ * marks its state applied, so newer states always win and a later change
+ * attempts normally after exhaustion. Task transitions and reconnect resyncs
+ * share this one pipeline: both dispatch through the same version counter,
+ * mutex, fiber slot, exponential schedule, and safe exhaustion log.
+ */
+export const makeDiscordAgentActivity = Effect.fn('DiscordAgentActivity.make')(function* (
+  gateway: DiscordPresenceGateway,
+  options: DiscordAgentActivityOptions = {},
+) {
+  const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 5))
+  const retrySchedule = Schedule.exponential(options.retryBaseDelay ?? '1 second').pipe(
+    Schedule.upTo({ times: maxAttempts - 1 }),
+  )
+  const scope = yield* Effect.scope
+  const applyMutex = yield* Semaphore.make(1)
+  const activeTaskIds = new Set<string>()
+  // Discord sessions start online with no activity; the gateway also
+  // re-applies the stored desired state on every (re)connect.
+  let appliedKey = presenceKey(deriveDiscordPresence(0))
+  let version = 0
+  let inflight:
+    | {
+        readonly key: string
+        readonly version: number
+        readonly fiber: Fiber.Fiber<void>
+      }
+    | undefined
 
-/** Packs complete activity lines within Discord's code-point limit. */
-export const packApplicationDescription = (
-  lines: ReadonlyArray<string>,
-  limit: number = ApplicationDescriptionLimit,
-): string => {
-  const overflowSegment = (hidden: number): ReadonlyArray<string> =>
-    hidden > 0 ? [overflowText(hidden)] : []
-  const lengthFor = (kept: number): number =>
-    renderedLength([...lines.slice(0, kept), ...overflowSegment(lines.length - kept)])
+  const applyWithRetry = (
+    snapshot: DiscordPresence,
+    key: string,
+    attemptVersion: number,
+  ): Effect.Effect<void> =>
+    applyMutex
+      .withPermit(
+        Effect.gen(function* () {
+          // The mutex serializes gateway writes while the version check runs
+          // inside it, so the newest dispatched state always lands last.
+          if (attemptVersion !== version) return yield* Effect.interrupt
+          yield* gateway.setPresence(snapshot)
+          if (attemptVersion === version) appliedKey = key
+        }),
+      )
+      .pipe(
+        Effect.retryOrElse(retrySchedule, (error) =>
+          // Only the current generation reports exhaustion. Stale loops stay
+          // silent and never cache their state, so exhaustion cannot poison
+          // later changes. The final log carries only safe aggregate context
+          // plus the typed error classification; the underlying defect is
+          // never serialized.
+          attemptVersion === version
+            ? Effect.logError('discord.presence.update-failed').pipe(
+                Effect.annotateLogs({
+                  status: snapshot.status,
+                  activeTaskCount: snapshot.activeTaskCount,
+                  attempts: maxAttempts,
+                  errorTag: error._tag,
+                  operation: error.operation,
+                }),
+              )
+            : Effect.void,
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (inflight?.version === attemptVersion) inflight = undefined
+          }),
+        ),
+      )
 
-  let kept = 0
-  while (kept < lines.length && lengthFor(kept + 1) <= limit) kept += 1
-  while (kept > 0 && lengthFor(kept) > limit) kept -= 1
-  return [...lines.slice(0, kept), ...overflowSegment(lines.length - kept)].join('\n')
-}
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      version += 1
+      const pending = inflight
+      inflight = undefined
+      activeTaskIds.clear()
+      if (pending !== undefined) yield* Fiber.interrupt(pending.fiber)
+      const online = deriveDiscordPresence(0)
+      if (presenceKey(online) !== appliedKey) {
+        yield* gateway.setPresence(online).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              Effect.logWarning('discord.presence.cleanup-failed').pipe(
+                Effect.annotateLogs({
+                  status: online.status,
+                  errorTag: error._tag,
+                  operation: error.operation,
+                }),
+              ),
+            onSuccess: () => Effect.void,
+          }),
+        )
+      }
+    }),
+  )
 
-const parseRetryAfterHeader = (value: string | null, now: number): number | undefined => {
-  if (value === null) return undefined
-  const seconds = Number(value)
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000
-  const date = Date.parse(value)
-  return Number.isNaN(date) ? undefined : Math.max(0, date - now)
-}
+  const dispatch = (snapshot: DiscordPresence, key: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      version += 1
+      const current = version
+      const previous = inflight
+      const fiber = yield* Effect.forkIn(applyWithRetry(snapshot, key, current), scope)
+      inflight = { key, version: current, fiber }
+      if (previous !== undefined) yield* Fiber.interrupt(previous.fiber)
+    })
 
-export const retryAfterMilliseconds = (
-  header: string | null,
-  body: string,
-  now: number = Date.now(),
-): number => {
-  const headerDelay = parseRetryAfterHeader(header, now)
-  const decodedBody = decodeRateLimitBody(body)
-  const bodyDelay =
-    Option.isSome(decodedBody) && decodedBody.value.retry_after >= 0
-      ? decodedBody.value.retry_after * 1_000
-      : undefined
-  const valid = [headerDelay, bodyDelay].filter((delay): delay is number => delay !== undefined)
-  return valid.length === 0 ? ConservativeRetryDelayMs : Math.max(...valid)
-}
+  const setAgentActivity = (
+    input: PlatformAgentActivity,
+  ): Effect.Effect<void, ChatSdkPublicationError> =>
+    Effect.suspend(() => {
+      if (input.active) activeTaskIds.add(input.taskId)
+      else activeTaskIds.delete(input.taskId)
+      const snapshot = deriveDiscordPresence(activeTaskIds.size)
+      const key = presenceKey(snapshot)
+      if (key === appliedKey && (inflight === undefined || inflight.key === appliedKey)) {
+        return Effect.void
+      }
+      if (inflight !== undefined && inflight.key === key) return Effect.void
+      return dispatch(snapshot, key)
+    })
 
-const ownershipMarker = (installationId: string): string =>
-  `${descriptionPrefix}${truncateCodePoints(installationId, 64)}]:\n`
+  const resyncPresence = (): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const snapshot = deriveDiscordPresence(activeTaskIds.size)
+      const key = presenceKey(snapshot)
+      // Reconnects lose server-side presence, so force a write even when the
+      // key matches the last applied one. An identical in-flight loop is
+      // already converging, so only it is skipped; every other dispatch goes
+      // through the shared versioned pipeline so newer states still win.
+      if (inflight !== undefined && inflight.key === key) return Effect.void
+      return dispatch(snapshot, key)
+    })
 
-export const hasOwnedDescription = (description: string, installationId: string): boolean =>
-  description.startsWith(ownershipMarker(installationId))
+  return { setAgentActivity, resyncPresence }
+})
 
 export const findDuplicateDiscordApplications = (
   connections: ReadonlyArray<{
@@ -188,318 +229,3 @@ export const findDuplicateDiscordApplications = (
   )
   return [...unique.values()].toSorted((left, right) => left.join().localeCompare(right.join()))
 }
-
-export const makeDiscordAgentActivity = (
-  discord: Pick<DiscordAdapter, 'decodeThreadId'>,
-  botToken: string,
-  options: DiscordAgentActivityOptions = {},
-): Effect.Effect<
-  (input: PlatformAgentActivity) => Effect.Effect<void, ChatSdkPublicationError>,
-  never,
-  Scope.Scope
-> =>
-  Effect.gen(function* () {
-    const baseNames = new Map<string, string>()
-    const activeTaskIds = new Map<string, Set<string>>()
-    const channelNames = new Map<string, string>()
-    const activeTasks = new Map<string, ActiveTask>()
-    let describeActivity = options.activityDescription === true
-    const installationId = options.installationId ?? 'unknown-installation'
-    const marker = ownershipMarker(installationId)
-    const changes = yield* Queue.sliding<void>(1)
-    const descriptionWrites = yield* Semaphore.make(1)
-    let botUserId: string | null = null
-    let lastDescription: string | null = null
-
-    const channelName = Effect.fn('DiscordAgentActivity.channelName')(function* (
-      channelId: string,
-    ) {
-      const cached = channelNames.get(channelId)
-      if (cached !== undefined) return cached
-      const response = yield* Effect.tryPromise({
-        try: (signal) =>
-          fetch(`${discordApiBase}/channels/${channelId}`, {
-            signal,
-            headers: { Authorization: `Bot ${botToken}` },
-          }),
-        catch: (cause) => new ChatSdkPublicationError({ operation: 'lookup-channel', cause }),
-      })
-      if (!response.ok) {
-        return yield* new ChatSdkPublicationError({
-          operation: 'lookup-channel',
-          cause: new Error(`Discord channel lookup failed: HTTP ${response.status}`),
-        })
-      }
-      const body = yield* Effect.tryPromise({
-        try: () => response.text(),
-        catch: (cause) => new ChatSdkPublicationError({ operation: 'lookup-channel', cause }),
-      })
-      const channel = yield* decodeChannelResponse(body).pipe(
-        Effect.mapError(
-          (cause) => new ChatSdkPublicationError({ operation: 'lookup-channel', cause }),
-        ),
-      )
-      const name = channel.name ?? channelId
-      channelNames.set(channelId, name)
-      return name
-    })
-
-    const currentApplication = Effect.fn('DiscordAgentActivity.currentApplication')(function* () {
-      const response = yield* Effect.tryPromise({
-        try: (signal) =>
-          fetch(`${discordApiBase}/applications/@me`, {
-            signal,
-            headers: { Authorization: `Bot ${botToken}` },
-          }),
-        catch: (cause) =>
-          new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-      })
-      if (!response.ok) {
-        return yield* new ChatSdkPublicationError({
-          operation: 'set-application-description',
-          cause: new Error(`Discord application lookup failed: HTTP ${response.status}`),
-        })
-      }
-      const body = yield* Effect.tryPromise({
-        try: () => response.text(),
-        catch: (cause) =>
-          new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-      })
-      return yield* decodeCurrentApplication(body).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-        ),
-      )
-    })
-
-    const patchDescription = Effect.fn('DiscordAgentActivity.patchDescription')(function* (
-      description: string,
-    ) {
-      const current = yield* currentApplication().pipe(
-        Effect.mapError(() => new DescriptionPatchError({ status: 0, transient: true })),
-      )
-      const owned = hasOwnedDescription(current.description, installationId)
-      if (description.length === 0 ? !owned : current.description.length > 0 && !owned) {
-        return yield* new DescriptionPatchError({ status: 409, transient: false })
-      }
-      const response = yield* Effect.tryPromise({
-        try: (signal) =>
-          fetch(`${discordApiBase}/applications/@me`, {
-            signal,
-            method: 'PATCH',
-            headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ description }),
-          }),
-        catch: () => new DescriptionPatchError({ status: 0, transient: true }),
-      })
-      if (response.ok) return
-      const body =
-        response.status === 429
-          ? yield* Effect.tryPromise({
-              try: () => response.text(),
-              catch: () => new DescriptionPatchError({ status: 429, transient: true }),
-            }).pipe(Effect.orElseSucceed(() => ''))
-          : ''
-      return yield* new DescriptionPatchError({
-        status: response.status,
-        transient: response.status === 429 || response.status >= 500,
-        retryAfterMs:
-          response.status === 429
-            ? retryAfterMilliseconds(response.headers.get('Retry-After'), body)
-            : undefined,
-      })
-    })
-
-    const desiredDescription = Effect.fn('DiscordAgentActivity.desiredDescription')(function* () {
-      const names = new Map<string, string>()
-      for (const channelId of new Set([...activeTasks.values()].map((task) => task.channelId))) {
-        const name = yield* Effect.catch(channelName(channelId), () => Effect.succeed(channelId))
-        names.set(channelId, name)
-      }
-      const lines = [...activeTasks.values()].map((task) => {
-        const channel = truncateCodePoints(
-          names.get(task.channelId) ?? task.channelId,
-          ActivityChannelLimit,
-        )
-        return `[#${channel}] ${task.label}`
-      })
-      const available = ApplicationDescriptionLimit - Array.from(marker).length
-      const activity = packApplicationDescription(lines, available)
-      return activity.length === 0 ? '' : `${marker}${activity}`
-    })
-
-    const publishLatest = Effect.fn('DiscordAgentActivity.publishLatest')(() =>
-      descriptionWrites.withPermit(
-        Effect.gen(function* () {
-          let attempt = 0
-          while (attempt < MaximumPatchAttempts) {
-            if (!describeActivity) return true
-            const desired = yield* desiredDescription()
-            if (desired === lastDescription) return true
-            const result = yield* patchDescription(desired).pipe(
-              Effect.matchEffect({
-                onFailure: (error) => Effect.succeed({ success: false as const, error }),
-                onSuccess: () => Effect.succeed({ success: true as const }),
-              }),
-            )
-            if (result.success) {
-              lastDescription = desired
-              return true
-            }
-            attempt += 1
-            if (!result.error.transient || attempt >= MaximumPatchAttempts) {
-              yield* Effect.logWarning('discord.application-description.failed').pipe(
-                Effect.annotateLogs({ status: result.error.status, attempt }),
-              )
-              return false
-            }
-            yield* Effect.sleep(
-              result.error.retryAfterMs === undefined
-                ? (options.retryDelay ?? RetryDelay)
-                : Duration.millis(result.error.retryAfterMs),
-            )
-          }
-          return false
-        }),
-      ),
-    )
-
-    const cleanupOwnedDescription = Effect.fn('DiscordAgentActivity.cleanupOwnedDescription')(() =>
-      descriptionWrites.withPermit(
-        Effect.gen(function* () {
-          const application = yield* currentApplication()
-          if (!hasOwnedDescription(application.description, installationId)) {
-            lastDescription = application.description
-            return
-          }
-          yield* patchDescription('').pipe(
-            Effect.mapError(
-              (cause) =>
-                new ChatSdkPublicationError({ operation: 'set-application-description', cause }),
-            ),
-          )
-          lastDescription = ''
-        }),
-      ),
-    )
-
-    const cleanup = cleanupOwnedDescription().pipe(Effect.catch(logCleanupFailure))
-
-    yield* cleanup
-    yield* Effect.addFinalizer(() =>
-      cleanup.pipe(
-        Effect.timeoutOption(options.cleanupTimeout ?? '3 seconds'),
-        Effect.flatMap((result) =>
-          Option.isSome(result)
-            ? Effect.void
-            : Effect.logWarning('discord.application-description.cleanup-timeout'),
-        ),
-      ),
-    )
-
-    const awaitTrailingEdge = Effect.fn('DiscordAgentActivity.awaitTrailingEdge')(function* () {
-      while (true) {
-        const next = yield* Queue.take(changes).pipe(
-          Effect.timeoutOption(options.descriptionDebounce ?? DescriptionDebounce),
-        )
-        if (Option.isNone(next)) return
-      }
-    })
-    yield* Effect.gen(function* () {
-      while (true) {
-        yield* Queue.take(changes)
-        yield* awaitTrailingEdge()
-        yield* publishLatest()
-      }
-    }).pipe(Effect.forkScoped)
-
-    if (options.watchActivityDescription !== undefined) {
-      yield* options.watchActivityDescription((enabled) =>
-        Effect.gen(function* () {
-          if (enabled === describeActivity) return
-          describeActivity = enabled
-          if (!enabled) yield* cleanup
-          yield* Queue.offer(changes, undefined)
-        }),
-      )
-    }
-
-    return (input: PlatformAgentActivity): Effect.Effect<void, ChatSdkPublicationError> =>
-      Effect.gen(function* () {
-        const location = yield* Effect.try(() =>
-          discord.decodeThreadId(String(input.binding.conversationId)),
-        )
-        if (input.active) {
-          const existing = activeTasks.get(input.taskId)
-          const label =
-            input.task !== undefined
-              ? sanitizeTaskLabel(input.task) || 'Working...'
-              : (existing?.label ?? 'Working...')
-          activeTasks.set(input.taskId, { channelId: location.channelId, label })
-        } else {
-          activeTasks.delete(input.taskId)
-        }
-        if (!location.guildId) return null
-        if (botUserId === null) {
-          const response = yield* Effect.tryPromise(() =>
-            fetch(`${discordApiBase}/users/@me`, {
-              headers: { Authorization: `Bot ${botToken}` },
-            }),
-          )
-          if (!response.ok) {
-            return yield* activityError(
-              new Error(`Discord bot user lookup failed: HTTP ${response.status}`),
-            )
-          }
-          const body = yield* Effect.tryPromise(() => response.text())
-          const user = yield* decodeCurrentUserResponse(body)
-          botUserId = user.id
-        }
-        let baseName = baseNames.get(location.guildId)
-        if (!baseName) {
-          const response = yield* Effect.tryPromise(() =>
-            fetch(`${discordApiBase}/guilds/${location.guildId}/members/${botUserId}`, {
-              headers: { Authorization: `Bot ${botToken}` },
-            }),
-          )
-          if (!response.ok) {
-            return yield* activityError(
-              new Error(`Discord bot member lookup failed: HTTP ${response.status}`),
-            )
-          }
-          const body = yield* Effect.tryPromise(() => response.text())
-          const member = yield* decodeGuildMemberResponse(body)
-          baseName = (member.nick ?? member.user?.username ?? 'Friday').replace(activitySuffix, '')
-          baseNames.set(location.guildId, baseName)
-        }
-        const tasks = activeTaskIds.get(location.guildId) ?? new Set<string>()
-        if (input.active) tasks.add(input.taskId)
-        else tasks.delete(input.taskId)
-        activeTaskIds.set(location.guildId, tasks)
-        const count = tasks.size
-        const suffix = count === 0 ? '' : count === 1 ? ' ⚡️' : ` ⚡️x${count}`
-        const nickname = truncateCodePoints(`${baseName}${suffix}`, 32)
-        const response = yield* Effect.tryPromise(() =>
-          fetch(`${discordApiBase}/guilds/${location.guildId}/members/@me`, {
-            method: 'PATCH',
-            headers: { Authorization: `Bot ${botToken}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nick: nickname }),
-          }),
-        )
-        if (!response.ok) {
-          return yield* activityError(
-            new Error(`Discord bot nickname update failed: HTTP ${response.status}`),
-          )
-        }
-        return { guildId: location.guildId, nickname, activeTaskCount: count }
-      }).pipe(
-        Effect.tap((result) =>
-          result === null
-            ? Effect.void
-            : Effect.logInfo('discord.agent-activity.updated').pipe(Effect.annotateLogs(result)),
-        ),
-        Effect.ensuring(Queue.offer(changes, undefined)),
-        Effect.mapError(toActivityError),
-      )
-  })

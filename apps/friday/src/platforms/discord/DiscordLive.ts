@@ -5,7 +5,6 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
-import { DiscordActivityDescriptions } from '../DiscordActivityDescriptions.ts'
 import { PlatformIngestion } from '../PlatformIngestion.ts'
 import { PlatformThreadRouter } from '../PlatformThreadRouter.ts'
 import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
@@ -67,7 +66,6 @@ const decodePlatformConversationId = Schema.decodeOption(PlatformConversationId)
 
 export const startDiscord = Effect.fn('startDiscord')(function* () {
   const platforms = yield* PlatformRegistry
-  const activityDescriptions = yield* DiscordActivityDescriptions
   const ingestion = yield* PlatformIngestion
   const threadRouter = yield* PlatformThreadRouter
   const config = yield* AppConfig
@@ -170,19 +168,24 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
           resolveChannelPolicy,
         })
         const botToken = String(discordConfig.credentials.botToken)
-        const setAgentActivity = yield* makeDiscordAgentActivity(discord, botToken, {
-          activityDescription: discordConfig.activityDescription,
-          watchActivityDescription: (onChange) =>
-            activityDescriptions.watch(discordConfig.connectionId, onChange),
-          installationId: startup.installationId,
+        const activity = yield* makeDiscordAgentActivity(discord)
+        // Reconnects funnel through the same versioned retry pipeline as task
+        // transitions: the adapter only notifies, the shared lifecycle owns
+        // backoff, attempt budget, safe logging, and newer-wins. The captured
+        // runtime lets the gateway callback trigger the Effect resync.
+        const effectContext = yield* Effect.context()
+        const runResync = Effect.runPromiseWith(effectContext)
+        const unsubscribeReconnect = discord.onReconnect(() => {
+          void runResync(activity.resyncPresence())
         })
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribeReconnect))
         const chatSdkPlatform = yield* makeChatSdkPlatform(
           discordConfig.connectionId,
           'discord',
           chat,
           {
             setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
-            setAgentActivity,
+            setAgentActivity: activity.setAgentActivity,
             searchMessages: (query) => searchDiscordMessages(discord, query),
           },
         )

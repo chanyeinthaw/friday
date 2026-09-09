@@ -33,11 +33,6 @@ the startup snapshot and ignored by reload:
 
 Changes to these require a Friday restart.
 
-One connection setting is not restart-based: `config discord
-activity-description set/reset` flips the stored flag and the running Discord
-adapter picks the change up through its ~1 second watch loop, without a reload
-or restart.
-
 Connection field updates via `config discord connection update` (name,
 application ID, public key, bot token environment variable, global-mention
 behavior) are part of the startup-pinned topology and require a restart like
@@ -125,10 +120,7 @@ to startup. If no Friday process is listening (`ENOENT` or `ECONNREFUSED`), the
 saved change applies on next startup. A structured `{ ok: false }` response means
 the running process rejected the reload. Timeouts, malformed or oversized
 responses, and disconnects after sending leave live application unconfirmed;
-the CLI preserves the transport detail. The exception is
-`config discord activity-description set/reset`, which the running process
-picks up live through its watch loop within about a second, with no reload or
-restart.
+the CLI preserves the transport detail. All Discord connection changes require a restart; no connection setting applies live.
 
 ## Harness reload
 

@@ -1,8 +1,11 @@
 import { DiscordAdapter, type DiscordAdapterConfig } from '@chat-adapter/discord'
+import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
 import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
+import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
+import type { DiscordPresence } from './DiscordAgentActivity.ts'
 import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 
 /** Location and author fields of a discord.js gateway message needed for policy gating. */
@@ -23,6 +26,10 @@ interface DiscordGatewayMessage {
     readonly parentId?: string | null
   }
 }
+
+/** discord.js gateway client, typed through the adapter's own declarations. */
+type DiscordGatewayClient = Parameters<DiscordAdapter['setupLegacyGatewayHandlers']>[0]
+type DiscordGatewayShutdown = Parameters<DiscordAdapter['setupLegacyGatewayHandlers']>[1]
 
 export type FridayDiscordAdapterConfig = DiscordAdapterConfig & {
   /**
@@ -73,6 +80,68 @@ export class FridayDiscordAdapter extends DiscordAdapter {
     return this.replyInChannelIdList.includes(channelId)
       ? Promise.resolve({ id: channelId, name: channelId })
       : super.createDiscordThread(channelId, messageId)
+  }
+
+  private gatewayClient: DiscordGatewayClient | undefined
+  private readonly reconnectListeners = new Set<() => void>()
+
+  /**
+   * Single-attempt global presence write. The activity lifecycle owns the
+   * retry policy (exponential backoff, 5 total attempts, safe exhaustion log,
+   * newer-wins versioning), so this never retries itself: it throws as a typed
+   * `set-agent-activity` failure for the shared pipeline to schedule, and it
+   * no-ops before connect with the reconnect resync converging afterwards.
+   * Only aggregate counts cross this boundary.
+   */
+  readonly setPresence = (
+    presence: DiscordPresence,
+  ): Effect.Effect<void, ChatSdkPublicationError> =>
+    Effect.try({
+      try: () => {
+        this.applyPresence(presence)
+      },
+      catch: (cause) => new ChatSdkPublicationError({ operation: 'set-agent-activity', cause }),
+    })
+
+  /**
+   * Registers a gateway (re)connect listener invoked on every `clientReady`.
+   * DiscordLive wires this to the shared activity resync, so reconnect writes
+   * funnel through the same versioned retry pipeline as task transitions
+   * instead of duplicating retry logic. Returns an unsubscribe function.
+   */
+  readonly onReconnect = (listener: () => void): (() => void) => {
+    this.reconnectListeners.add(listener)
+    return () => {
+      this.reconnectListeners.delete(listener)
+    }
+  }
+
+  /** One gateway write. No-ops before connect; throws on failure for retry. */
+  private applyPresence(presence: DiscordPresence): void {
+    const user = this.gatewayClient?.user
+    // No gateway user before connect. The update is a no-op success; the
+    // reconnect resync converges the current desired state afterwards.
+    if (user === null || user === undefined) return
+    user.setPresence({
+      status: presence.status,
+      // Numeric ActivityType.Playing keeps discord.js transitive. The client
+      // type still flows from the adapter's own declarations.
+      activities: presence.activity === undefined ? [] : [{ name: presence.activity, type: 0 }],
+    })
+  }
+
+  protected override setupLegacyGatewayHandlers(
+    client: DiscordGatewayClient,
+    isShuttingDown: DiscordGatewayShutdown,
+  ): void {
+    super.setupLegacyGatewayHandlers(client, isShuttingDown)
+    this.gatewayClient = client
+    client.on('clientReady', () => {
+      // Outside Effect here. Listeners trigger the shared activity resync,
+      // which owns backoff, attempt budget, safe logging, and newer-wins.
+      // No presence payload or failure cause is logged at this boundary.
+      for (const listener of this.reconnectListeners) listener()
+    })
   }
 
   /**

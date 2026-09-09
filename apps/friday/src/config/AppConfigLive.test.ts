@@ -70,7 +70,6 @@ const fakeSqlClient = (state: ConfigState): SqlClient.SqlClient => {
           public_key: 'public-key',
           bot_token_env: INJECTED_TOKEN_ENV,
           respond_to_global_mentions: 0,
-          activity_description_public: 0,
         },
       ]
     }

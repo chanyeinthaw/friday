@@ -112,7 +112,6 @@ const strictRunnerStubs = {
   reloadPiModels: () => Effect.die('unreachable'),
   ensureWorktree: () => Effect.die('unreachable'),
   listWorktrees: () => Effect.die('unreachable'),
-  setDiscordActivityDescription: () => Effect.die('unreachable'),
   applyWorkspaceCleanup: () => Effect.die('unreachable'),
   listWorkspaceCleanupProposals: () => Effect.die('unreachable'),
   addDiscordAdmin: () => Effect.die('unreachable'),
@@ -697,42 +696,6 @@ it.effect('parses permission policy specifications', () =>
   }),
 )
 
-it.effect('parses Discord activity-description updates and rejects the removed platform form', () =>
-  Effect.gen(function* () {
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['config', 'discord', 'activity-description', 'set', 'discord']),
-      {
-        type: 'config-discord-activity-description-set',
-        connectionId: decodeConnectionId('discord'),
-      },
-    )
-    assert.deepStrictEqual(
-      yield* parseFridayCli(['config', 'discord', 'activity-description', 'reset', 'discord']),
-      {
-        type: 'config-discord-activity-description-reset',
-        connectionId: decodeConnectionId('discord'),
-      },
-    )
-    for (const removed of [
-      ['platform', 'activity-description', 'set', 'discord'],
-      ['platform', 'activity-description', 'reset', 'discord'],
-      ['config', 'discord', 'activity-description', 'set'],
-      ['config', 'discord', 'activity-description', 'toggle', 'discord'],
-    ]) {
-      const error = yield* parseFridayCli(removed).pipe(Effect.flip)
-      assert(isFridayCliError(error), `expected failure: ${removed.join(' ')}`)
-    }
-    const removedError = yield* parseFridayCli([
-      'platform',
-      'activity-description',
-      'set',
-      'discord',
-    ]).pipe(Effect.flip)
-    assert.match(removedError.message, /was removed/)
-    assert.match(removedError.message, /config discord activity-description/)
-  }),
-)
-
 it.effect('parses partial Discord connection updates', () =>
   Effect.gen(function* () {
     const connectionId = decodeConnectionId('discord-main')
@@ -973,7 +936,7 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['config', 'discord', 'wat'],
         prefix: 'friday config discord',
         head: 'wat',
-        known: 'connection, guild, activity-description',
+        known: 'connection, guild',
       },
       {
         arguments_: ['config', 'discord', 'connection', 'wat'],
@@ -1048,7 +1011,7 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config', 'discord'],
         prefix: 'friday config discord',
-        known: 'connection, guild, activity-description',
+        known: 'connection, guild',
       },
       {
         arguments_: ['config', 'discord', 'connection'],
@@ -1887,7 +1850,6 @@ it.effect('formats Discord connection lifecycle outcomes with exact restart guid
         publicKey: '0123456789abcdef'.repeat(4),
         botTokenEnv: 'FRIDAY_DISCORD_TOKEN',
         respondToGlobalMentions: true,
-        activityDescription: false,
       }),
       [
         'Discord connection discord-main:',
@@ -1897,7 +1859,6 @@ it.effect('formats Discord connection lifecycle outcomes with exact restart guid
         `  Public key: ${'0123456789abcdef'.repeat(4)}`,
         '  Bot token env: FRIDAY_DISCORD_TOKEN',
         '  Responds to global mentions: yes',
-        '  Public activity description: no',
       ].join('\n'),
     )
   }),
@@ -2325,7 +2286,6 @@ it.effect('dispatches help and version to the console', () =>
     assert.match(help, /config discord connection update <connection-id>/)
     assert.match(help, /config discord guild set-invocation <connection-id>/)
     assert.match(help, /config discord guild set-users <connection-id>/)
-    assert.match(help, /config discord activity-description set <connection-id>/)
     assert.match(help, /worktree list \[--json\]/)
     assert.match(help, /workspace cleanup list \[--json\]/)
     assert(!help.includes('platform activity-description'))
@@ -2623,7 +2583,6 @@ it.effect('dispatches listings to exactly one read with the json flag honored', 
       publicKey: '0123456789abcdef'.repeat(4),
       botTokenEnv: 'FRIDAY_DISCORD_TOKEN',
       respondToGlobalMentions: false,
-      activityDescription: false,
     }
     const get = recorder(Option.some(detail))
     yield* runFridayCli(['config', 'discord', 'connection', 'get', 'discord-main', '--json'], {
@@ -2680,8 +2639,6 @@ it.effect('renders help per topic: full tree, branch children, leaf usage, and f
       'config discord guild set-users <connection-id> <guild-id>',
       'config discord guild channel set <connection-id> <guild-id> <channel-id>',
       'config discord guild channel reset <connection-id> <guild-id> <channel-id>',
-      'config discord activity-description set <connection-id>',
-      'config discord activity-description reset <connection-id>',
       'worktree ensure <repository-url> [--ref <ref>] [--branch <branch>] [--workspace <path>] [--json]',
       'worktree list [--json]',
       'workspace cleanup apply <proposal-id> [--json]',
@@ -2719,7 +2676,7 @@ it.effect('renders help per topic: full tree, branch children, leaf usage, and f
 
     // A branch topic lists only its direct children, with usage for leaves.
     const discordHelp = renderCliHelp(['config', 'discord'])
-    for (const entry of ['connection', 'guild', 'activity-description']) {
+    for (const entry of ['connection', 'guild']) {
       assert(discordHelp.includes(`  ${entry}`), `expected '${entry}' in config discord help`)
     }
     assert(!discordHelp.includes('worktree'))
@@ -2786,17 +2743,6 @@ it.effect('names known subcommands and removals with exact guidance', () =>
     assert.strictEqual(
       unknownWorktree.message,
       "Unknown 'friday worktree' subcommand 'dance'. Known subcommands: ensure, list.",
-    )
-
-    const removedPlatform = yield* parseFridayCli([
-      'platform',
-      'activity-description',
-      'set',
-      'discord',
-    ]).pipe(Effect.flip)
-    assert.strictEqual(
-      removedPlatform.message,
-      "The 'platform activity-description set|reset' command was removed; use 'friday config discord activity-description set|reset <connection-id>' instead.",
     )
 
     const removedInvocation = yield* parseFridayCli([
@@ -2933,45 +2879,6 @@ it.effect('rejects malformed connection updates precisely', () =>
   }),
 )
 
-it.effect('dispatches activity-description updates exactly once with live-apply guidance', () =>
-  Effect.gen(function* () {
-    const set = recorder(undefined)
-    yield* runFridayCli(['config', 'discord', 'activity-description', 'set', 'discord'], {
-      ...strictRunnerStubs,
-      setDiscordActivityDescription: set.operation,
-    })
-    assert.deepStrictEqual(set.calls, [
-      [
-        {
-          type: 'config-discord-activity-description-set',
-          connectionId: decodeConnectionId('discord'),
-        },
-        true,
-      ],
-    ])
-    const setLine = yield* lastLine
-    assert.match(setLine, /discord enabled\./)
-    assert.match(setLine, /within about a second/)
-    assert(!setLine.includes('Restart Friday'))
-
-    const reset = recorder(undefined)
-    yield* runFridayCli(['config', 'discord', 'activity-description', 'reset', 'discord'], {
-      ...strictRunnerStubs,
-      setDiscordActivityDescription: reset.operation,
-    })
-    assert.deepStrictEqual(reset.calls, [
-      [
-        {
-          type: 'config-discord-activity-description-reset',
-          connectionId: decodeConnectionId('discord'),
-        },
-        false,
-      ],
-    ])
-    assert.match(yield* lastLine, /Friday-owned text will be cleared\./)
-  }).pipe(Effect.provide(TestConsole.layer)),
-)
-
 it.effect('refuses guild removal before any dispatch without --yes', () =>
   Effect.gen(function* () {
     const remove = recorder('removed' as const)
@@ -3028,7 +2935,6 @@ it.effect('rejects removed-flag and arity mistakes across lifecycle commands', (
         '--respond-to-global-mentions',
         '--respond-to-global-mentions',
       ],
-      ['config', 'discord', 'activity-description', 'set', 'discord', 'extra'],
       ['config', 'discord', 'connection', 'get', 'discord-main', 'extra'],
       ['config', 'discord', 'connection', 'get', 'discord-main', '--json', '--json'],
       ['config', 'discord', 'guild', 'remove', 'discord'],
@@ -3221,7 +3127,6 @@ it.effect('renders connection details across the boolean combinations', () =>
         ...base,
         enabled: false,
         respondToGlobalMentions: false,
-        activityDescription: true,
       }),
       [
         'Discord connection discord-main:',
@@ -3231,7 +3136,6 @@ it.effect('renders connection details across the boolean combinations', () =>
         `  Public key: ${'0123456789abcdef'.repeat(4)}`,
         '  Bot token env: FRIDAY_DISCORD_TOKEN',
         '  Responds to global mentions: no',
-        '  Public activity description: yes',
       ].join('\n'),
     )
   }),

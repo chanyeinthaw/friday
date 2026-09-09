@@ -5,8 +5,8 @@ Friday's Discord configuration has three levels with distinct jobs.
 ## Connections
 
 A connection identifies one Discord bot: its credentials (bot token environment
-variable, application ID, public key), name, mention roles, global-mention
-behavior, and activity-description publication. The bot token itself is never
+variable, application ID, public key), name, mention roles, and global-mention
+behavior. The bot token itself is never
 stored; configuration only records the environment variable name and Friday
 resolves the secret at load time.
 
@@ -17,9 +17,7 @@ only changes on restart. Stored connection fields can be edited with
 variable, global-mention behavior); unspecified fields are preserved,
 application IDs stay unique across connections, and the bot token itself is
 never stored — only the environment variable name. Any applied change requires
-a restart. Setting or resetting the activity-description flag is the one
-exception: the running process watches that flag and applies it live within
-about a second.
+a restart.
 
 ## Guilds
 
@@ -148,8 +146,6 @@ friday config discord guild channel set <connection-id> <guild-id> <channel-id>
     [--invocation <mention-only|all-messages>] [--users <policy>]
     [--reply-in-thread|--reply-in-channel]
 friday config discord guild channel reset <connection-id> <guild-id> <channel-id>
-friday config discord activity-description set <connection-id>
-friday config discord activity-description reset <connection-id>
 ```
 
 Connection add stores the bot token environment variable name, never the token.
@@ -162,13 +158,8 @@ list only read stored configuration.
 
 Guild removal also deletes the guild's channel overrides, so it requires `--yes`
 before it dispatches. The old `config discord guild invocation set` and
-`config discord guild users set` forms and the old
-`platform activity-description set|reset` form were removed and are rejected
+`config discord guild users set` forms were removed and are rejected
 with a pointer to their replacements.
-
-Activity-description changes apply live: the running Discord adapter watches
-the stored flag on a ~1 second loop, so `set` and `reset` take effect without a
-reload or restart. `reset` additionally clears Friday-owned description text.
 
 Guild, channel, and user IDs are validated as Discord snowflakes. Permission
 policies are `all`, `allow=<id>[,<id>...]`, or `deny=<id>[,<id>...]`.

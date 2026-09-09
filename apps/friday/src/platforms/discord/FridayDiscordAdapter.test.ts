@@ -80,6 +80,13 @@ class RecordingFridayDiscordAdapter extends FridayDiscordAdapter {
     return Promise.resolve(new Response(JSON.stringify({ id: 'message-1' }), { status: 200 }))
   }
 
+  /** Exposes the protected gateway setup entry point for the test. */
+  runGatewaySetup(client: unknown): void {
+    // SAFETY: the gateway passes its discord.js client here; the recording stub
+    // carries every field the adapter's gateway path touches.
+    super.setupLegacyGatewayHandlers(client as never, () => false)
+  }
+
   /** Exposes the protected gateway message entry point for the test. */
   runGatewayMessage(message: unknown, isMentioned: boolean): Promise<void> {
     // SAFETY: the gateway dispatches discord.js messages; the recording stub
@@ -392,5 +399,109 @@ it.effect('dispatches application commands inside enabled guilds', () =>
       { guildId: GUILD, channelId: CHANNEL },
       { guildId: GUILD, channelId: CHANNEL },
     ])
+  }),
+)
+
+const makePresenceClient = () => {
+  const handlers = new Map<string, () => void>()
+  const presenceCalls: Array<unknown> = []
+  let throwOnPresence = false
+  return {
+    presenceCalls,
+    setThrowOnPresence: (throwing: boolean): void => {
+      throwOnPresence = throwing
+    },
+    fire: (event: string): void => {
+      handlers.get(event)?.()
+    },
+    client: {
+      on: (event: string, handler: () => void): void => {
+        handlers.set(event, handler)
+      },
+      user: {
+        setPresence: (presence: unknown): void => {
+          if (throwOnPresence) throw new Error('presence write failed')
+          presenceCalls.push(presence)
+        },
+      },
+    },
+  }
+}
+
+it.effect('writes presence once when connected and no-ops before connect for resync', () =>
+  Effect.gen(function* () {
+    const discord = new RecordingFridayDiscordAdapter({
+      resolveChannelPolicy: () => allowAll,
+      replyInChannelChannelIds: () => [],
+    })
+    const presence = makePresenceClient()
+
+    // No gateway client yet, so the single-attempt write no-ops successfully;
+    // the shared activity resync converges the current state after connect.
+    yield* discord.setPresence({
+      status: 'idle',
+      activity: 'Working on 1 task',
+      activeTaskCount: 1,
+    })
+    assert.deepStrictEqual(presence.presenceCalls, [])
+
+    discord.runGatewaySetup(presence.client)
+    yield* discord.setPresence({
+      status: 'idle',
+      activity: 'Working on 1 task',
+      activeTaskCount: 1,
+    })
+    assert.deepStrictEqual(presence.presenceCalls, [
+      { status: 'idle', activities: [{ name: 'Working on 1 task', type: 0 }] },
+    ])
+    // Only aggregate counts cross the boundary, never task content.
+    assert.notMatch(JSON.stringify(presence.presenceCalls), /SECRET/u)
+  }),
+)
+
+it.effect('notifies reconnect listeners on clientReady without writing directly', () =>
+  Effect.sync(() => {
+    const discord = new RecordingFridayDiscordAdapter({
+      resolveChannelPolicy: () => allowAll,
+      replyInChannelChannelIds: () => [],
+    })
+    const presence = makePresenceClient()
+    discord.runGatewaySetup(presence.client)
+
+    let notifications = 0
+    const unsubscribe = discord.onReconnect(() => {
+      notifications += 1
+    })
+    presence.fire('clientReady')
+    assert.strictEqual(notifications, 1)
+    // The adapter never writes on reconnect itself; the shared activity
+    // resync owns backoff, attempts, safe logging, and newer-wins.
+    assert.deepStrictEqual(presence.presenceCalls, [])
+
+    unsubscribe()
+    presence.fire('clientReady')
+    assert.strictEqual(notifications, 1)
+  }),
+)
+
+it.effect('reports gateway write failures as typed errors for the shared retry', () =>
+  Effect.gen(function* () {
+    const discord = new RecordingFridayDiscordAdapter({
+      resolveChannelPolicy: () => allowAll,
+      replyInChannelChannelIds: () => [],
+    })
+    const presence = makePresenceClient()
+    discord.runGatewaySetup(presence.client)
+    presence.setThrowOnPresence(true)
+
+    const failure = yield* Effect.flip(
+      discord.setPresence({
+        status: 'idle',
+        activity: 'Working on 1 task',
+        activeTaskCount: 1,
+      }),
+    )
+    assert.strictEqual(failure.operation, 'set-agent-activity')
+    assert.deepStrictEqual(presence.presenceCalls, [])
   }),
 )
