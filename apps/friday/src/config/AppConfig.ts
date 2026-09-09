@@ -95,11 +95,6 @@ export const DiscordPlatformConfig = Schema.Struct({
   }),
   respondToGlobalMentions: Schema.Boolean,
   mentionRoleIds: IdentifierArray,
-  /**
-   * Explicit opt-in for a global, public Discord application description containing
-   * sanitized channel names and task labels.
-   */
-  activityDescription: Schema.Boolean,
   /** Connection-wide user permission default; DMs resolve against it directly. */
   users: AccessPolicy,
   guilds: Schema.Array(DiscordGuildConfig),
@@ -176,15 +171,13 @@ export type DiscordConnectionTopology = Pick<
   | 'credentials'
   | 'respondToGlobalMentions'
   | 'mentionRoleIds'
-  | 'activityDescription'
 >
 
 /**
  * Merges a freshly validated configuration into the running snapshot for reload.
  *
- * Discord connection topology (identity, credentials, mention roles, application
- * description) is pinned to the running snapshot because Discord resources are built
- * once at startup; access policies, invocation policies, system channels, models,
+ * Discord connection topology (identity, credentials, and mention roles) is pinned
+ * to the running snapshot because Discord resources are built once at startup; access policies, invocation policies, system channels, models,
  * and agent settings come from the loaded configuration. Discord connections that
  * are not currently running are ignored until restart, and the admin allow-list is
  * pinned so a database edit cannot lock administrators out of running reloads.
@@ -205,7 +198,6 @@ export const mergeReloadedAppConfig = (running: AppConfig, loaded: AppConfig): A
         credentials: connection.credentials,
         respondToGlobalMentions: connection.respondToGlobalMentions,
         mentionRoleIds: connection.mentionRoleIds,
-        activityDescription: connection.activityDescription,
       }
       return { ...reloaded, ...topology }
     }),
@@ -263,7 +255,6 @@ const DiscordConnectionRow = Schema.Struct({
   public_key: Schema.String,
   bot_token_env: Schema.String,
   respond_to_global_mentions: Schema.Number,
-  activity_description_public: Schema.Number,
 })
 
 const DiscordMentionRoleRow = Schema.Struct({
@@ -394,8 +385,7 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
       discord_connections.application_id,
       discord_connections.public_key,
       discord_connections.bot_token_env,
-      discord_connections.respond_to_global_mentions,
-      discord_connections.activity_description_public
+      discord_connections.respond_to_global_mentions
     FROM platform_connections
     JOIN discord_connections USING (connection_id)
     WHERE platform_connections.platform = 'discord'
@@ -559,7 +549,6 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
             },
             users: policyFor(connection.connection_id, 'user', rows.policies, rows.subjects),
             respondToGlobalMentions: connection.respond_to_global_mentions === 1,
-            activityDescription: connection.activity_description_public === 1,
             mentionRoleIds: rows.mentionRoles
               .filter((role) => role.connection_id === connection.connection_id)
               .map((role) => role.role_id),

@@ -46,7 +46,6 @@ const discordConnection = (overrides: {
     users: overrides.users ?? { mode: 'all', ids: [] },
     respondToGlobalMentions: true,
     mentionRoleIds: overrides.mentionRoleIds ?? ['role-1'],
-    activityDescription: false,
     guilds: overrides.guilds ?? [guild()],
   })
 

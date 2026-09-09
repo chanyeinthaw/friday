@@ -42,7 +42,6 @@ export interface DiscordConnectionDetail {
   readonly publicKey: string
   readonly botTokenEnv: string
   readonly respondToGlobalMentions: boolean
-  readonly activityDescription: boolean
 }
 
 /** Everything the add command persists. */
@@ -152,7 +151,6 @@ const DiscordConnectionRow = Schema.Struct({
   public_key: Schema.String,
   bot_token_env: Schema.String,
   respond_to_global_mentions: Schema.Number,
-  activity_description_public: Schema.Number,
 })
 const decodeDiscordConnectionRows = Schema.decodeUnknownEffect(Schema.Array(DiscordConnectionRow))
 const DiscordConnectionListRow = Schema.Struct({
@@ -246,8 +244,7 @@ export const DiscordConnectionsLive = Layer.effect(
             discord_connections.application_id,
             discord_connections.public_key,
             discord_connections.bot_token_env,
-            discord_connections.respond_to_global_mentions,
-            discord_connections.activity_description_public
+            discord_connections.respond_to_global_mentions
           FROM platform_connections
           JOIN discord_connections USING (connection_id)
           WHERE platform_connections.connection_id = ${connectionId}
@@ -271,7 +268,6 @@ export const DiscordConnectionsLive = Layer.effect(
                           publicKey: row.public_key,
                           botTokenEnv: row.bot_token_env,
                           respondToGlobalMentions: row.respond_to_global_mentions === 1,
-                          activityDescription: row.activity_description_public === 1,
                         }
                   })(),
                 ),

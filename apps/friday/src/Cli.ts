@@ -367,12 +367,6 @@ export type FridayCliAction =
       readonly channelId: typeof DiscordGuildChannelId.Type
     }
   | {
-      readonly type:
-        | 'config-discord-activity-description-set'
-        | 'config-discord-activity-description-reset'
-      readonly connectionId: typeof PlatformConnectionId.Type
-    }
-  | {
       readonly type: 'workspace-cleanup-apply'
       readonly proposalId: WorkspaceCleanupProposalId
       readonly json: boolean
@@ -837,23 +831,6 @@ const parseIdentitySet = Effect.fn('Cli.parseIdentitySet')(function* (
   )
   return { type: 'config-identity-set' as const, text }
 })
-
-const parseActivityDescription = (enabled: boolean) =>
-  Effect.fn('Cli.parseActivityDescription')(function* (
-    tokens: ReadonlyArray<string>,
-    all: ReadonlyArray<string>,
-  ) {
-    if (tokens.length !== 1) return yield* discordArgumentsError(all)
-    const connectionId = yield* decodePlatformConnectionId(tokens[0] ?? '').pipe(
-      Effect.mapError(() => discordArgumentsError(all)),
-    )
-    return {
-      type: enabled
-        ? ('config-discord-activity-description-set' as const)
-        : ('config-discord-activity-description-reset' as const),
-      connectionId,
-    }
-  })
 
 const parseConnectionList = Effect.fn('Cli.parseConnectionList')(function* (
   tokens: ReadonlyArray<string>,
@@ -1557,7 +1534,7 @@ export const cliCommandSpec: CliBranchSpec = {
         },
         {
           name: 'discord',
-          summary: 'Manage Discord connections, their guilds, and live activity publication.',
+          summary: 'Manage Discord connections and their guilds.',
           children: [
             {
               name: 'connection',
@@ -1699,25 +1676,6 @@ export const cliCommandSpec: CliBranchSpec = {
                 },
               ],
             },
-            {
-              name: 'activity-description',
-              summary:
-                'Publish current task activity publicly; the running process watches this live.',
-              children: [
-                {
-                  name: 'set',
-                  summary: 'Enable public activity description for a connection now.',
-                  arguments: ['<connection-id>'],
-                  parse: parseActivityDescription(true),
-                },
-                {
-                  name: 'reset',
-                  summary: 'Disable it and clear Friday-owned description text now.',
-                  arguments: ['<connection-id>'],
-                  parse: parseActivityDescription(false),
-                },
-              ],
-            },
           ],
         },
       ],
@@ -1788,11 +1746,6 @@ export const cliCommandSpec: CliBranchSpec = {
           ],
         },
       ],
-    },
-    {
-      name: 'platform',
-      removed: 'platform activity-description set|reset',
-      replacement: 'friday config discord activity-description set|reset <connection-id>',
     },
   ],
 }
@@ -2008,7 +1961,6 @@ export const renderDiscordConnectionDetail = (detail: DiscordConnectionDetail): 
     `  Public key: ${detail.publicKey}`,
     `  Bot token env: ${detail.botTokenEnv}`,
     `  Responds to global mentions: ${detail.respondToGlobalMentions ? 'yes' : 'no'}`,
-    `  Public activity description: ${detail.activityDescription ? 'yes' : 'no'}`,
   ].join('\n')
 
 const restartNote = 'Restart Friday to apply it: connection topology is pinned at startup.'
@@ -2227,9 +2179,6 @@ export const formatDiscordGuildChannelReset = (
     ? `Channel ${channelId} overrides removed; guild defaults apply.`
     : `No overrides are configured for channel ${channelId}.`
 
-const activityDescriptionNote =
-  'The running Friday publishes this live; the change takes effect within about a second, without a reload or restart.'
-
 const renderWorktree = (worktree: ManagedWorktree): string => `Repository worktree ready
   URL: ${worktree.url}
   Path: ${worktree.path}
@@ -2241,7 +2190,6 @@ export type FridayCliOperations<
   E,
   WorktreeError,
   CleanupError,
-  ActivityDescriptionError,
   GuildError,
   AdminError,
   RootUserError,
@@ -2373,17 +2321,6 @@ export type FridayCliOperations<
     ReadonlyArray<ManagedWorktreeListEntry>,
     WorktreeError
   >
-  readonly setDiscordActivityDescription: (
-    action: Extract<
-      FridayCliAction,
-      {
-        readonly type:
-          | 'config-discord-activity-description-set'
-          | 'config-discord-activity-description-reset'
-      }
-    >,
-    enabled: boolean,
-  ) => Effect.Effect<void, ActivityDescriptionError>
   readonly applyWorkspaceCleanup: (
     action: Extract<FridayCliAction, { readonly type: 'workspace-cleanup-apply' }>,
     currentWorkingDirectory: string,
@@ -2481,8 +2418,6 @@ const cliActionGroups = {
   'config-discord-guild-set-channels': 'guild',
   'config-discord-guild-channel-set': 'guild',
   'config-discord-guild-channel-reset': 'guild',
-  'config-discord-activity-description-set': 'runtime',
-  'config-discord-activity-description-reset': 'runtime',
   'workspace-cleanup-apply': 'runtime',
   'workspace-cleanup-list': 'runtime',
   'worktree-ensure': 'runtime',
@@ -2507,7 +2442,6 @@ export const runFridayCli = <
   E,
   WorktreeError,
   CleanupError,
-  ActivityDescriptionError,
   GuildError,
   AdminError,
   RootUserError,
@@ -2521,7 +2455,6 @@ export const runFridayCli = <
     E,
     WorktreeError,
     CleanupError,
-    ActivityDescriptionError,
     GuildError,
     AdminError,
     RootUserError,
@@ -2537,7 +2470,6 @@ export const runFridayCli = <
   | E
   | WorktreeError
   | CleanupError
-  | ActivityDescriptionError
   | GuildError
   | ControlSocketError
   | AdminError
@@ -2974,17 +2906,6 @@ export const runFridayCli = <
     })
     const runRuntimeAction = Effect.fn('Cli.runRuntimeAction')(function* (selected: RuntimeAction) {
       switch (selected.type) {
-        case 'config-discord-activity-description-set':
-        case 'config-discord-activity-description-reset': {
-          const enabled = selected.type === 'config-discord-activity-description-set'
-          yield* options.setDiscordActivityDescription(selected, enabled)
-          yield* Console.log(
-            enabled
-              ? `Discord activity description for ${selected.connectionId} enabled. ${activityDescriptionNote}`
-              : `Discord activity description for ${selected.connectionId} disabled. Friday-owned text will be cleared. ${activityDescriptionNote}`,
-          )
-          return
-        }
         case 'workspace-cleanup-apply': {
           const result = yield* options.applyWorkspaceCleanup(selected, process.cwd())
           yield* Console.log(selected.json ? JSON.stringify(result) : renderCleanup(result))

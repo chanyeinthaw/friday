@@ -26,7 +26,6 @@ import { PlatformThreadRouter } from './platforms/PlatformThreadRouter.ts'
 import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
-import { DiscordActivityDescriptionsLive } from './platforms/DiscordActivityDescriptions.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
 import {
@@ -118,9 +117,6 @@ const IdentityConfigurationConfiguredLive = IdentityConfigurationLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
 const RootUsersConfiguredLive = RootUsersLive.pipe(Layer.provide(FridaySqliteLive))
-const DiscordActivityDescriptionsConfiguredLive = DiscordActivityDescriptionsLive.pipe(
-  Layer.provide(FridaySqliteLive),
-)
 
 const CoreLive = Layer.mergeAll(
   ThreadPersistenceLive,
@@ -128,7 +124,6 @@ const CoreLive = Layer.mergeAll(
   BunCrypto.layer,
   BunFileSystem.layer,
   PlatformRegistryLive,
-  DiscordActivityDescriptionsConfiguredLive,
   AppConfigConfiguredLive,
   IdentityConfigurationConfiguredLive,
   RootUsersConfiguredLive,

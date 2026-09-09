@@ -161,8 +161,6 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
       public_key TEXT NOT NULL,
       bot_token_env TEXT NOT NULL,
       respond_to_global_mentions INTEGER NOT NULL CHECK (respond_to_global_mentions IN (0, 1)),
-      activity_description_public INTEGER NOT NULL DEFAULT 0
-        CHECK (activity_description_public IN (0, 1)),
       FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
     )
   `
@@ -172,14 +170,17 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
     ON discord_connections (application_id)
   `
 
+  // Forward migration for the removed public activity-description feature:
+  // existing databases still carry the column, so drop it when present.
+  // Fresh databases never create it (see CREATE TABLE above). SQLite supports
+  // DROP COLUMN, and the guard keeps the migration idempotent.
   const columns = yield* sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info('discord_connections')
   `
-  if (!columns.some((column) => column.name === 'activity_description_public')) {
+  if (columns.some((column) => column.name === 'activity_description_public')) {
     yield* sql`
       ALTER TABLE discord_connections
-      ADD COLUMN activity_description_public INTEGER NOT NULL DEFAULT 0
-        CHECK (activity_description_public IN (0, 1))
+      DROP COLUMN activity_description_public
     `
   }
 
