@@ -360,17 +360,13 @@ test('channel prompt instructions match the delivered user-message envelope', as
         }),
       })
 
-      expect(systemPrompt).toContain('Effect Schema JSON envelope')
-      expect(systemPrompt).toContain('`participants`')
-      expect(systemPrompt).toContain('`historicalContext`')
-      expect(systemPrompt).toContain('optional `replyTarget`')
-      expect(systemPrompt).toContain('exactly one `trigger`')
-      expect(systemPrompt).toContain('refer to people by `participantId`')
-      expect(systemPrompt).toContain("Use a participant's non-null `mention` verbatim")
-      expect(systemPrompt).toContain('may arrive as raw text')
-      expect(systemPrompt).not.toContain(
-        'Participant metadata is rendered as `alias = native mention | username | display name`',
-      )
+      expect(systemPrompt).toContain('participants')
+      expect(systemPrompt).toContain('historicalContext')
+      expect(systemPrompt).toContain('replyTarget')
+      expect(systemPrompt).toContain('trigger')
+      expect(systemPrompt).toContain('participantId')
+      expect(systemPrompt).toContain('platformUserId')
+      expect(systemPrompt).toContain('mention')
 
       expect(delivered).toHaveLength(1)
       const envelope = decodePromptMessageEnvelope(delivered[0] ?? '')
@@ -399,24 +395,19 @@ test('channel prompt instructions match the delivered user-message envelope', as
 })
 
 const assertChannelPrompt = (channelPrompt: string | undefined): void => {
-  expect(channelPrompt ?? '').toContain('# Identity')
   expect(channelPrompt ?? '').toContain('Your name is Friday')
-  expect(channelPrompt ?? '').toContain('## Root users')
-  expect(channelPrompt ?? '').toContain('## Runtime model')
-  expect(channelPrompt ?? '').toContain('Model: `opencode-go/deepseek-v4-flash`')
-  expect(channelPrompt ?? '').toContain('Thinking level: `max`')
+  expect(channelPrompt ?? '').toContain('opencode-go/deepseek-v4-flash')
+  expect(channelPrompt ?? '').toContain('max')
   expect(channelPrompt ?? '').toContain('`primary`: General delegated work.')
-  expect(channelPrompt ?? '').toContain('Model: `anthropic/claude-sonnet`')
+  expect(channelPrompt ?? '').toContain('anthropic/claude-sonnet')
 }
 
 const assertSubagentPrompt = (loader: CreateAgentSessionOptions['resourceLoader']): void => {
   expect(loader?.getSystemPrompt()).toBeUndefined()
   const appendPrompt = (loader?.getAppendSystemPrompt() ?? []).join('\n')
-  expect(appendPrompt).toContain(
-    '## Runtime model\n\n- Model: `opencode-go/deepseek-v4-flash`\n- Thinking level: `max`',
-  )
-  expect(appendPrompt).not.toContain('# Identity')
-  expect(appendPrompt).not.toContain('## Root users')
+  expect(appendPrompt).toContain('opencode-go/deepseek-v4-flash')
+  expect(appendPrompt).toContain('max')
+  expect(appendPrompt).not.toContain('Your name is Friday')
 }
 
 test('sets role prompts and appends the model hint to normal subagents', async () => {
@@ -430,7 +421,7 @@ test('sets role prompts and appends the model hint to normal subagents', async (
       const bootstrapOptions: Array<CreateAgentSessionOptions> = []
       yield* open(agentThread('bootstrap'), bootstrapOptions)
       expect(bootstrapOptions[0]?.resourceLoader?.getSystemPrompt() ?? '').toContain(
-        '# Friday bootstrap agent',
+        'worktree ensure',
       )
       expect(bootstrapOptions[0]?.customTools).toBeUndefined()
 

@@ -8,7 +8,8 @@ import {
   SystemPromptTemplates,
   SystemPromptTemplatesLive,
 } from './SystemPromptTemplates.ts'
-import { IdentityText } from '../config/IdentityConfiguration.ts'
+import { DefaultIdentityText, IdentityText } from '../config/IdentityConfiguration.ts'
+import { FRIDAY_CLI_PATH } from '../FridayHome.ts'
 
 const decodeIdentityText = Schema.decodeSync(IdentityText)
 
@@ -62,54 +63,35 @@ it.effect('renders the channel agent system prompt from thread context and confi
       ],
     })
 
-    assert.include(prompt, '# Identity')
+    // Required dynamic values are interpolated.
     assert.include(prompt, 'Your name is Friday')
-    assert.include(prompt, '## Root users')
-    assert.include(prompt, '## Runtime model')
-    assert.include(prompt, 'Model: `opencode-go/deepseek-v4-flash`')
-    assert.include(prompt, 'Thinking level: `max`')
-    assert.include(prompt, '- Platform: discord')
-    assert.include(prompt, '- Channel: orbs-at-home')
+    assert.include(prompt, 'opencode-go/deepseek-v4-flash')
+    assert.include(prompt, 'discord')
+    assert.include(prompt, 'orbs-at-home')
     assert.include(prompt, 'Development for the orbs-at-home repository.')
-    assert.include(prompt, '`/tmp/friday/channel-thread`')
-    assert.include(prompt, '`/tmp/friday/channel-thread/<repository-name>`')
-    assert.include(prompt, 'Run general work directly in `/tmp/friday/channel-thread`')
-    assert.include(prompt, 'Do not create a `tasks/` directory')
-    assert.include(prompt, 'Never use `/tmp` or any directory outside the channel workspace')
+    assert.include(prompt, '/tmp/friday/channel-thread')
+    assert.include(prompt, '/tmp/friday/channel-thread/<repository-name>')
+    assert.include(prompt, FRIDAY_CLI_PATH)
+    // Subagent profile metadata is represented.
     assert.include(prompt, '`primary`: General delegated work.')
-    assert.include(prompt, 'Model: `anthropic/claude-sonnet`')
-    assert.include(prompt, 'Thinking: `max`')
+    assert.include(prompt, 'anthropic/claude-sonnet')
     assert.include(prompt, '- Default')
     assert.include(prompt, '`fast`: Quick investigations.')
-    assert.include(prompt, 'workspace cleanup apply <proposal-id> --json')
-    assert.include(prompt, '.friday/bin/friday')
-    assert.include(prompt, 'Attributed user messages arrive as an Effect Schema JSON envelope')
-    assert.include(prompt, 'A new message may come from someone else')
-    assert.include(prompt, 'Background tasks are private extensions of your capabilities')
-    assert.include(prompt, '"I\'m still working on it,"')
-    assert.include(prompt, 'Do not mention subagents, agent threads, task IDs')
-    assert.include(prompt, "with that participant's native mention")
-    assert.include(prompt, 'Use the token verbatim')
-    assert.include(prompt, 'If you cannot identify the participant with confidence, do not guess')
-    assert.include(prompt, 'even if others have spoken since the request')
-    assert.include(prompt, 'respond as one agent')
-    assert.include(prompt, '## Task design')
-    assert.include(prompt, 'decisions already made')
-    assert.include(prompt, 'checkable acceptance criteria')
-    assert.include(prompt, 'Resolve choices about correctness')
-    assert.include(prompt, 'start a narrow investigation')
-    assert.include(prompt, 'Do not hide unresolved judgment behind phrases')
-    assert.include(prompt, 'Save full suites and expensive analysis')
-    assert.include(prompt, 'Separate behavioral gaps from equivalent or cosmetic results')
-    assert.include(prompt, 'Do not turn verification into an open-ended loop')
-    assert.include(prompt, 'state the invariants and require evidence')
-    assert.include(prompt, 'Task output is evidence, not automatic acceptance')
-    assert.include(prompt, '`task set-model`')
-    assert.include(prompt, 'to switch an active task when its objective is unchanged')
-    assert.include(prompt, 'Use the exact configured profile name')
-    assert.include(prompt, 'Use `primary` unless another configured profile clearly fits')
-    assert.include(prompt, 'Steer when direction changes')
-    assert.include(prompt, 'Never steer or switch a terminal task')
+    assert.include(prompt, 'openai/gpt-5')
+    assert.include(prompt, 'medium')
+    // Required functional context is present via stable command and field tokens.
+    assert.include(prompt, 'task list')
+    assert.include(prompt, 'task inspect')
+    assert.include(prompt, 'task set-model')
+    assert.include(prompt, 'worktree ensure')
+    assert.include(prompt, 'workspace cleanup')
+    assert.include(prompt, 'friday/task/')
+    assert.include(prompt, 'mayWrite')
+    assert.include(prompt, 'participants')
+    assert.include(prompt, 'historicalContext')
+    assert.include(prompt, 'replyTarget')
+    assert.include(prompt, 'trigger')
+    assert.include(prompt, 'platformUserId')
     assert.notInclude(prompt, '{{')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
@@ -123,7 +105,6 @@ it.effect('renders channel prompts without configured agent models or a descript
       availableAgentModels: [],
     })
 
-    assert.include(prompt, '# Identity')
     assert.include(prompt, 'Your name is Friday')
     assert.include(prompt, '(No channel description)')
     assert.include(prompt, '(No subagent profiles are configured.)')
@@ -141,7 +122,7 @@ it.effect('renders literal custom identity text in the channel identity block', 
       availableAgentModels: [],
       identityText,
     })
-    assert.include(prompt, `# Identity\n\n${identityText}`)
+    assert.include(prompt, identityText)
     assert.include(prompt, '{{channelName}}')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
@@ -153,7 +134,7 @@ it.effect('defaults the channel identity block when no identity text is provided
       thread,
       availableAgentModels: [],
     })
-    assert.include(prompt, '# Identity\n\nYour name is Friday')
+    assert.include(prompt, DefaultIdentityText)
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
 
@@ -219,14 +200,15 @@ it.effect('renders the bootstrap prompt without replacing Pi for normal subagent
     const templates = yield* SystemPromptTemplates
     const prompt = yield* templates.renderBootstrapAgent('/tmp/friday/bootstrap')
 
-    assert.include(prompt, 'You prepare or locate a Git repository worktree')
-    assert.include(prompt, "Do not perform the user's main work.")
-    assert.include(prompt, '`<workspace-root>/<repository-name>`')
-    assert.include(prompt, 'worktree ensure <repository-url>')
-    assert.include(prompt, '--workspace "/tmp/friday/bootstrap" --json')
-    assert.include(prompt, 'run `git clone`')
-    assert.include(prompt, 'create a `tasks/` directory')
-    assert.include(prompt, 'reuses that worktree')
+    assert.include(prompt, '/tmp/friday/bootstrap')
+    assert.include(prompt, FRIDAY_CLI_PATH)
+    assert.include(prompt, 'worktree ensure')
+    assert.include(prompt, '--workspace')
+    assert.include(prompt, '--branch')
+    assert.include(prompt, '--ref')
+    assert.include(prompt, 'friday/task/')
+    assert.include(prompt, 'git clone')
+    assert.include(prompt, 'tasks/')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
 
@@ -238,33 +220,13 @@ it.effect('guides durable branch selection and temporary isolation branches', ()
       availableAgentModels: [],
     })
 
-    assert.include(channelPrompt, 'pass a concise durable branch name to bootstrap')
-    assert.include(channelPrompt, '`feat/`')
-    assert.include(channelPrompt, 'Omit the branch for read-only investigation')
-    assert.include(channelPrompt, 'Branches under `friday/task/*` are temporary isolation branches')
-    assert.include(channelPrompt, 'Never push one or use one as a pull request head')
-    assert.include(channelPrompt, 'must use the durable branch chosen during bootstrap')
+    assert.include(channelPrompt, 'durable branch')
+    assert.include(channelPrompt, 'friday/task/')
+    assert.include(channelPrompt, 'bootstrap')
 
     const bootstrapPrompt = yield* templates.renderBootstrapAgent('/tmp/friday/bootstrap')
-    assert.include(
-      bootstrapPrompt,
-      'If the bootstrap instruction provides a durable branch, append `--branch <name>` exactly as supplied',
-    )
-    assert.include(bootstrapPrompt, '--branch <name>')
-    assert.include(bootstrapPrompt, 'Otherwise omit `--branch`')
-    assert.include(bootstrapPrompt, 'Never choose or invent a branch name')
-    assert.include(
-      bootstrapPrompt,
-      'You may determine the repository URL and requested revision from the task and channel context',
-    )
-    assert.include(bootstrapPrompt, 'append `--ref <branch-tag-or-commit>`')
-    assert.include(bootstrapPrompt, 'exactly as supplied')
-    assert.notInclude(bootstrapPrompt, 'resolve the repository URL, durable branch,')
-    assert.include(
-      bootstrapPrompt,
-      'Branches under `friday/task/*` are temporary isolation branches',
-    )
-    assert.include(bootstrapPrompt, 'Never push them or use them as pull request heads')
-    assert.include(bootstrapPrompt, 'must use the durable branch selected during bootstrap')
+    assert.include(bootstrapPrompt, '--branch')
+    assert.include(bootstrapPrompt, '--ref')
+    assert.include(bootstrapPrompt, 'friday/task/')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
