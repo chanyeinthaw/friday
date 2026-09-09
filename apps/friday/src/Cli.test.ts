@@ -112,6 +112,13 @@ const strictRunnerStubs = {
   reloadPiModels: () => Effect.die('unreachable'),
   ensureWorktree: () => Effect.die('unreachable'),
   listWorktrees: () => Effect.die('unreachable'),
+  readDocumentContent: () => Effect.die('unreachable'),
+  saveDocument: () => Effect.die('unreachable'),
+  getDocument: () => Effect.die('unreachable'),
+  listDocuments: () => Effect.die('unreachable'),
+  getDocumentUrl: () => Effect.die('unreachable'),
+  revokeDocument: () => Effect.die('unreachable'),
+  removeDocument: () => Effect.die('unreachable'),
   applyWorkspaceCleanup: () => Effect.die('unreachable'),
   listWorkspaceCleanupProposals: () => Effect.die('unreachable'),
   addDiscordAdmin: () => Effect.die('unreachable'),
@@ -912,7 +919,7 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['wat'],
         prefix: 'friday',
         head: 'wat',
-        known: 'start, config, model, worktree, workspace',
+        known: 'start, config, model, worktree, document, workspace',
       },
       {
         arguments_: ['config', 'wat'],
@@ -1116,7 +1123,10 @@ it.effect('names known subcommands and removals in validation errors', () =>
 
     const unknownTop = yield* parseFridayCli(['wat']).pipe(Effect.flip)
     assert.match(unknownTop.message, /Unknown 'friday' subcommand 'wat'/)
-    assert.match(unknownTop.message, /Known subcommands: start, config, model, worktree, workspace/)
+    assert.match(
+      unknownTop.message,
+      /Known subcommands: start, config, model, worktree, document, workspace/,
+    )
   }),
 )
 

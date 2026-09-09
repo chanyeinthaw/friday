@@ -288,6 +288,36 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
   `
 
   yield* sql`
+    CREATE TABLE IF NOT EXISTS documents (
+      key TEXT PRIMARY KEY,
+      format TEXT NOT NULL CHECK (format IN ('markdown', 'html')),
+      access_key TEXT NOT NULL CHECK (access_key != ''),
+      size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS document_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      public_base_url TEXT NOT NULL,
+      listen_host TEXT NOT NULL,
+      listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+      max_bytes INTEGER NOT NULL CHECK (max_bytes BETWEEN 1024 AND 5242880),
+      updated_at TEXT NOT NULL
+    )
+  `
+
+  yield* sql`
+    INSERT OR IGNORE INTO document_config (
+      id, public_base_url, listen_host, listen_port, max_bytes, updated_at
+    ) VALUES (
+      1, 'http://127.0.0.1:4020', '127.0.0.1', 4020, 262144, CURRENT_TIMESTAMP
+    )
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS workspace_cleanup_proposals (
       proposal_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
