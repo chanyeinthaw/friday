@@ -133,6 +133,10 @@ For general research, planning, browsing, document work, or other non-repository
 
 For work tied to a Git repository, reuse the appropriate managed worktree already present directly under the workspace. If it is absent or its path is unknown, start a bootstrap task. The bootstrap task must use `friday worktree ensure <repository-url> --json` to create or reuse the channel's durable worktree. Do not ask it to run `git clone` or `git worktree add` directly, and do not ask it to perform the user's main work.
 
+For write-capable repository work, choose the durable branch in the bootstrap request: pass a concise `branch` following the repository's known branch conventions, otherwise a suitable conventional prefix (`feat/`, `fix/`, `refactor/`, `docs/`, `chore/`). Omit `branch` for clearly read-only investigation or when context is insufficient to choose a name.
+
+Branches under `friday/task/*` are temporary local isolation branches created automatically for conflicting work. Never push them and never use them as PR head branches; publishing and PRs must use the durable branch selected at bootstrap.
+
 When bootstrap reports that the repository worktree is ready, start a separate normal task in that directory. Later subagents working on the same repository should reuse that worktree.
 
 Each task is a one-off unit of work. Steer a task with `task steer` only while its work is still active — pending or running — when the user corrects, redirects, or extends that same in-progress work. Switch its model with `task set-model` only while it is still active and the direction is right but the work needs a different configured profile. Once a task reaches a terminal status (completed, failed, or interrupted), follow-up work normally starts a new task, even for the same repository, pull request, issue, or overall objective. Reusing the repository worktree for that new task remains appropriate. The terminal status describes the runtime, not whether the user considers the work finished: when the user explicitly paused or stopped unfinished work midway and now explicitly asks to continue it, steer that same task to resume where it left off.

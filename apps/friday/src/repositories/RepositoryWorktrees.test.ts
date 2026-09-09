@@ -970,6 +970,128 @@ describe('RepositoryWorktrees', () => {
     }).pipe(Effect.scoped),
   )
 
+  it.effect('creates a new durable worktree on the exact requested branch', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-worktree-branch-')))
+      const home = join(root, 'friday-home')
+      const workspace = join(root, 'workspace')
+      const { url } = yield* makeSourceRepository(root, 'branch-repository')
+
+      const created = yield* ensureRepositoryWorktree(
+        { url, workspaceRoot: workspace, branch: 'feat/add-login' },
+        home,
+      )
+      assert.strictEqual(created.reused, false)
+      assert.strictEqual(created.branch, 'feat/add-login')
+      const current = yield* Effect.promise(() =>
+        exec('git', ['-C', created.path, 'branch', '--show-current']).then((v) => v.stdout.trim()),
+      )
+      assert.strictEqual(current, 'feat/add-login')
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('rejects invalid requested branches without sanitizing them', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'friday-worktree-bad-branch-')),
+      )
+      const home = join(root, 'friday-home')
+      const workspace = join(root, 'workspace')
+      const { url } = yield* makeSourceRepository(root, 'bad-branch-repository')
+
+      for (const branch of ['bad..name', 'bad branch', '~bad', 'bad.lock', '']) {
+        const error = yield* ensureRepositoryWorktree(
+          { url, workspaceRoot: workspace, branch },
+          home,
+        ).pipe(Effect.flip)
+        assert(isWorktreeError(error))
+        assert.strictEqual(error.operation, 'validate')
+        assert.strictEqual(
+          error.message,
+          `Requested branch '${branch}' is not a valid Git branch name.`,
+        )
+      }
+      // No worktree was created for the rejected names.
+      assert.strictEqual(
+        yield* Effect.promise(() => pathExistsForTest(join(workspace, 'bad-branch-repository'))),
+        false,
+      )
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('reuses an existing worktree without switching to a mismatched branch', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-worktree-reuse-')))
+      const home = join(root, 'friday-home')
+      const workspace = join(root, 'workspace')
+      const { url } = yield* makeSourceRepository(root, 'reuse-repository')
+
+      const created = yield* ensureRepositoryWorktree(
+        { url, workspaceRoot: workspace, branch: 'feat/original' },
+        home,
+      )
+      assert.strictEqual(created.branch, 'feat/original')
+
+      const reused = yield* ensureRepositoryWorktree(
+        { url, workspaceRoot: workspace, branch: 'feat/mismatch' },
+        home,
+      )
+      assert.strictEqual(reused.reused, true)
+      assert.strictEqual(reused.path, created.path)
+      // The no-switch invariant keeps the existing branch unchanged.
+      assert.strictEqual(reused.branch, 'feat/original')
+      const current = yield* Effect.promise(() =>
+        exec('git', ['-C', reused.path, 'branch', '--show-current']).then((v) => v.stdout.trim()),
+      )
+      assert.strictEqual(current, 'feat/original')
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('falls back to the deterministic branch when no branch is requested', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-worktree-fallback-')))
+      const home = join(root, 'friday-home')
+      const workspace = join(root, 'workspace')
+      const { url } = yield* makeSourceRepository(root, 'fallback-repository')
+
+      const created = yield* ensureRepositoryWorktree({ url, workspaceRoot: workspace }, home)
+      assert.strictEqual(created.reused, false)
+      assert.match(created.branch, /^friday\//)
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect('keeps automatic isolated branch naming unchanged', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), 'friday-worktree-isolated-keep-')),
+      )
+      const home = join(root, 'friday-home')
+      const primary = join(root, 'primary')
+      const origin = join(root, 'origin.git')
+      yield* Effect.promise(() => exec('git', ['init', '--initial-branch=main', primary]))
+      yield* Effect.promise(() => exec('git', ['init', '--bare', origin]))
+      yield* Effect.promise(() => exec('git', ['-C', primary, 'remote', 'add', 'origin', origin]))
+      yield* Effect.promise(() => writeFile(join(primary, 'README.md'), 'primary\n', 'utf8'))
+      yield* Effect.promise(() => commitAll(primary, 'initial'))
+      const isolated = yield* createIsolatedWorktree(
+        { primaryWorktree: primary, taskId: 'task-keep123' },
+        home,
+      )
+      assert.strictEqual(isolated.branch, 'friday/task/keep123')
+      assert.strictEqual(isolated.reused, false)
+
+      yield* Effect.promise(() => rm(root, { recursive: true, force: true }))
+    }).pipe(Effect.scoped),
+  )
+
   it.effect('fails typed when the registry file is malformed', () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-worktree-corrupt-')))

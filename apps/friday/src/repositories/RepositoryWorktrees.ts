@@ -819,7 +819,31 @@ export interface EnsureRepositoryWorktreeInput {
   readonly url: RepositoryUrl
   readonly workspaceRoot: string
   readonly ref?: string
+  /**
+   * Intentional exact branch name for a newly created durable worktree.
+   * Validated strictly with `git check-ref-format`; never sanitized.
+   * An already-existing worktree is reused without switching or resetting,
+   * so a mismatched request returns the existing branch unchanged.
+   */
+  readonly branch?: string
 }
+
+/**
+ * Validates an explicitly requested durable branch name with Git's own
+ * ref-format rules. Requested names are intentional and exact: invalid
+ * names fail with a typed error instead of being sanitized.
+ */
+const validateRequestedBranch = Effect.fn('RepositoryWorktrees.validateRequestedBranch')(function* (
+  branch: string,
+) {
+  const checked = yield* runGit(['check-ref-format', '--branch', branch])
+  if (checked.exitCode !== 0 || checked.stdout !== branch) {
+    return yield* new RepositoryWorktreeError({
+      operation: 'validate',
+      detail: `Requested branch '${branch}' is not a valid Git branch name.`,
+    })
+  }
+})
 
 export interface CreateIsolatedWorktreeInput {
   readonly primaryWorktree: string
@@ -983,6 +1007,7 @@ export const ensureRepositoryWorktree = Effect.fn('RepositoryWorktrees.ensure')(
   input: EnsureRepositoryWorktreeInput,
   home: string = FRIDAY_HOME,
 ) {
+  if (input.branch !== undefined) yield* validateRequestedBranch(input.branch)
   const workspaceRoot = resolve(input.workspaceRoot)
   const destination = join(workspaceRoot, repositoryName(input.url))
   const cacheDirectory = join(home, 'repositories', cacheName(input.url))
@@ -1054,7 +1079,9 @@ export const ensureRepositoryWorktree = Effect.fn('RepositoryWorktrees.ensure')(
   }
   yield* runGit(['--git-dir', cacheDirectory, 'remote', 'set-head', 'origin', '--auto'])
   const baseRef = yield* resolveBaseRef(cacheDirectory, input.ref)
-  const branch = branchName(workspaceRoot)
+  // A requested branch is used exactly for new worktrees. Existing worktrees
+  // above are reused without switching, so a mismatch keeps the existing branch.
+  const branch = input.branch ?? branchName(workspaceRoot)
   const branchExists = yield* runGit([
     '--git-dir',
     cacheDirectory,

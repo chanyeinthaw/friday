@@ -19,6 +19,7 @@ import {
 import {
   ensureRepositoryWorktree,
   listManagedWorktrees,
+  type EnsureRepositoryWorktreeInput,
 } from './repositories/RepositoryWorktrees.ts'
 import { runFridayCli } from './Cli.ts'
 import { FridayLive } from './Live.ts'
@@ -302,9 +303,10 @@ const application = Effect.scoped(
       listWorktrees: () => listManagedWorktrees(),
       ensureWorktree: (action) => {
         const workspaceRoot = action.workspace ?? process.env.FRIDAY_WORKSPACE_ROOT ?? process.cwd()
-        return action.ref === undefined
-          ? ensureRepositoryWorktree({ url: action.url, workspaceRoot })
-          : ensureRepositoryWorktree({ url: action.url, workspaceRoot, ref: action.ref })
+        let input: EnsureRepositoryWorktreeInput = { url: action.url, workspaceRoot }
+        if (action.ref !== undefined) input = { ...input, ref: action.ref }
+        if (action.branch !== undefined) input = { ...input, branch: action.branch }
+        return ensureRepositoryWorktree(input)
       },
     }).pipe(
       Effect.tapCause((cause) =>

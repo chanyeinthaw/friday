@@ -33,10 +33,17 @@ export const StartTaskRequest = Schema.Struct({
 })
 export type StartTaskRequest = typeof StartTaskRequest.Type
 
+export const TaskBranchName = Schema.String.pipe(
+  Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()),
+  Schema.brand('TaskBranchName'),
+)
+export type TaskBranchName = typeof TaskBranchName.Type
+
 export const BootstrapTaskRequest = Schema.Struct({
   parentThreadId: ThreadId,
   parentTurnId: TurnId,
   task: Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+  branch: Schema.optionalKey(TaskBranchName),
   profile: Schema.optionalKey(SubagentProfileName),
 })
 export type BootstrapTaskRequest = typeof BootstrapTaskRequest.Type
