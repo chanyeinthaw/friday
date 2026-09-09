@@ -11,6 +11,8 @@ import {
   type ChannelThread,
   type InspectTaskResult,
   type ListTasksRequest,
+  type SetTaskModelRequest,
+  type SetTaskModelResult,
   type TaskSummary,
 } from '@friday/contracts/conversation'
 import { Type } from '@earendil-works/pi-ai'
@@ -42,6 +44,11 @@ const TaskToolInput = Schema.Union([
     taskId: TaskId,
     cursor: Schema.optionalKey(TaskInspectCursor),
     limit: Schema.optionalKey(InspectTaskLimit),
+  }),
+  Schema.Struct({
+    action: Schema.Literal('set-model'),
+    taskId: TaskId,
+    profile: SubagentProfileName,
   }),
 ])
 
@@ -83,6 +90,18 @@ const TaskToolParameters = Type.Union([
     ),
   }),
   Type.Object({ action: Type.Literal('cancel'), taskId: Type.String(), reason: Type.String() }),
+  Type.Object({
+    action: Type.Literal('set-model'),
+    taskId: Type.String({
+      minLength: 1,
+      pattern: '^\\S(?:[\\s\\S]*\\S)?$',
+      description: 'Task identifier returned by a previous start.',
+    }),
+    profile: Type.String({
+      description:
+        'Exact configured subagent profile name the task will use from now on. Only configured profiles are accepted; arbitrary model identifiers are rejected.',
+    }),
+  }),
   Type.Object({
     action: Type.Literal('inspect'),
     taskId: Type.String({
@@ -172,6 +191,9 @@ export interface PiTaskOperations {
   readonly inspect: (
     request: InspectRequest,
   ) => Effect.Effect<InspectTaskResult, TaskToolDispatchError>
+  readonly setModel: (
+    request: SetTaskModelRequest,
+  ) => Effect.Effect<SetTaskModelResult, TaskToolDispatchError>
 }
 
 export interface MakePiTaskToolOptions {
@@ -186,7 +208,7 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
     name: 'task',
     label: 'Task',
     description:
-      'Start background agent tasks, prepare workspaces, steer or cancel existing tasks, list tasks for this channel thread, and inspect one known task with a safe outline and activity summaries.',
+      'Start background agent tasks, prepare workspaces, steer, cancel, or switch the model of existing tasks, list tasks for this channel thread, and inspect one known task with a safe outline and activity summaries. Model switches only accept configured subagent profile names.',
     promptSnippet: 'Use `task` to run delegated work in background agent threads.',
     parameters: TaskToolParameters,
     executionMode: 'parallel',
@@ -246,6 +268,16 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =
             }),
           )
           return output({ taskId: input.taskId, status: 'cancelled' })
+        case 'set-model':
+          return output(
+            await options.runPromise(
+              options.tasks.setModel({
+                parentThreadId: options.thread.id,
+                taskId: input.taskId,
+                profile: input.profile,
+              }),
+            ),
+          )
         case 'inspect': {
           const base = {
             parentThreadId: options.thread.id,

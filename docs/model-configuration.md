@@ -26,6 +26,10 @@ friday config profile remove <name> --yes
 
 The subagent profile named `primary` is the default for delegated tasks. It is not the channel-agent `primary` selection above. Friday allows updates to this profile but protects it from removal.
 
+## Switching an active task to another profile
+
+While a task is still active (pending or running), the channel agent can switch it to another configured subagent profile with the `task` tool's `set-model` action, passing the task ID and the exact configured profile name. Only configured profile names are accepted; arbitrary model identifiers are rejected and there are no implicit aliases. The switch keeps the task's identity, workspace, and history: a running turn finishes on its current model, and subsequent execution uses the new profile's model and thinking level. Terminal tasks (completed, interrupted, failed) cannot be switched; follow-up work starts a new task.
+
 After a successful SQLite mutation, the CLI requests a configuration reload from the running Friday process. The request happens after the database operation commits. If Friday is stopped, the write still succeeds and the next start loads it. Reload swaps the validated configuration snapshot without interrupting active turns. Existing tasks, threads, and open runtimes keep the models they already resolved.
 
 Friday stores provider IDs, model IDs, thinking levels, profile names, and descriptions. It never stores provider credentials in these tables.

@@ -117,6 +117,7 @@ const makePersistence = (operations: Array<string>): ThreadPersistenceContract =
     Effect.sync(() => {
       operations.push('set-harness-session')
     }),
+  setThreadModel: () => Effect.void,
   createTurn: () =>
     Effect.sync(() => {
       operations.push('create-turn')

@@ -61,6 +61,21 @@ export const CancelTaskRequest = Schema.Struct({
 })
 export type CancelTaskRequest = typeof CancelTaskRequest.Type
 
+export const SetTaskModelRequest = Schema.Struct({
+  parentThreadId: ThreadId,
+  taskId: TaskId,
+  profile: SubagentProfileName,
+})
+export type SetTaskModelRequest = typeof SetTaskModelRequest.Type
+
+export const SetTaskModelResult = Schema.Struct({
+  taskId: TaskId,
+  profile: SubagentProfileName,
+  model: ModelSelection,
+  thinkingLevel: ThinkingLevel,
+})
+export type SetTaskModelResult = typeof SetTaskModelResult.Type
+
 export const StartedTask = Schema.Struct({
   taskId: TaskId,
   status: Schema.Literal('pending'),

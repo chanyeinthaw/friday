@@ -1,7 +1,14 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, effecttsgo/async-function -- The Pi tool contract accepts unknown input and is Promise-based. */
 
 import { assert, expect, it } from '@effect/vitest'
-import { ChannelThread, TaskId, TaskInspectCursor, TurnId } from '@friday/contracts/conversation'
+import {
+  ChannelThread,
+  ModelSelection,
+  SubagentProfileName,
+  TaskId,
+  TaskInspectCursor,
+  TurnId,
+} from '@friday/contracts/conversation'
 import { validateToolArguments } from '@earendil-works/pi-ai'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -10,6 +17,8 @@ import { makePiTaskTool } from './PiTaskTool.ts'
 import { TaskError, type TasksContract } from './Tasks.ts'
 
 const decodeChannelThread = Schema.decodeSync(ChannelThread)
+const decodeModel = Schema.decodeSync(ModelSelection)
+const decodeProfileName = Schema.decodeSync(SubagentProfileName)
 const decodeTaskId = Schema.decodeSync(TaskId)
 const decodeCursor = Schema.decodeSync(TaskInspectCursor)
 const decodeTurnId = Schema.decodeSync(TurnId)
@@ -47,6 +56,7 @@ const taskOperations = (calls: Array<unknown>): TasksContract => ({
   list: () => Effect.die('not expected'),
   cancel: () => Effect.die('not expected'),
   inspect: () => Effect.die('not expected'),
+  setModel: () => Effect.die('not expected'),
 })
 
 const execute = async (calls: Array<unknown>, input: unknown) => {
@@ -310,4 +320,71 @@ it('scopes task start calls to the current channel Thread and active Turn', asyn
     String(result?.content[0]?.type === 'text' ? result.content[0].text : ''),
     'task-started',
   )
+})
+
+it('scopes set-model calls to the channel thread and passes the configured profile through', async () => {
+  const calls: Array<unknown> = []
+  const tool = makePiTaskTool({
+    thread: channelThread,
+    tasks: {
+      ...taskOperations(calls),
+      setModel: (request) =>
+        Effect.sync(() => calls.push(request)).pipe(
+          Effect.as({
+            taskId: request.taskId,
+            profile: request.profile,
+            model: decodeModel({ provider: 'opencode-go', modelId: 'muse13-free-model' }),
+            thinkingLevel: 'low' as const,
+          }),
+        ),
+    },
+    activeTurnId: () => null,
+    runPromise: Effect.runPromise,
+  })
+
+  const result = await tool.execute(
+    'call-set-model',
+    { action: 'set-model', taskId: 'task-owned', profile: 'muse13-free' },
+    undefined,
+    undefined,
+    // SAFETY: The task tool does not read ExtensionContext for this operation.
+    {} as never,
+  )
+
+  assert.deepStrictEqual(calls, [
+    {
+      parentThreadId: channelThread.id,
+      taskId: decodeTaskId('task-owned'),
+      profile: decodeProfileName('muse13-free'),
+    },
+  ])
+  assert.include(
+    String(result?.content[0]?.type === 'text' ? result.content[0].text : ''),
+    'muse13-free',
+  )
+})
+
+it('rejects blank set-model identifiers and profiles at the tool boundary', async () => {
+  const tool = makePiTaskTool({
+    thread: channelThread,
+    tasks: taskOperations([]),
+    activeTurnId: () => decodeTurnId('turn-active'),
+    runPromise: Effect.runPromise,
+  })
+  const executeModelSet = (input: unknown) =>
+    tool.execute(
+      'call-set-model-constraints',
+      input,
+      undefined,
+      undefined,
+      // SAFETY: The task tool does not read ExtensionContext for this operation.
+      {} as never,
+    )
+
+  await expect(
+    executeModelSet({ action: 'set-model', taskId: '  ', profile: 'primary' }),
+  ).rejects.toThrow()
+  await expect(
+    executeModelSet({ action: 'set-model', taskId: 'task-owned', profile: '  ' }),
+  ).rejects.toThrow()
 })

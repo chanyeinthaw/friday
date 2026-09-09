@@ -109,6 +109,12 @@ it.effect('renders the channel agent system prompt from thread context and confi
     assert.include(prompt, 'Do not turn verification into an open-ended loop')
     assert.include(prompt, 'name the invariants to verify and require evidence')
     assert.include(prompt, 'Treat task output as evidence, not automatic acceptance')
+    assert.include(prompt, '`set-model`')
+    assert.include(prompt, 'switches a still-active task to a different configured profile')
+    assert.include(prompt, 'only configured profiles are accepted')
+    assert.include(prompt, 'never an arbitrary model identifier')
+    assert.include(prompt, 'Steer a task when its direction changes')
+    assert.include(prompt, '`task set-model` only while it is still active')
     assert.notInclude(prompt, '{{')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )

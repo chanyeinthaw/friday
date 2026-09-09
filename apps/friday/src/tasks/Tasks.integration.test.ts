@@ -77,6 +77,7 @@ const makePersistence = (
   listAgentThreads: () => Effect.succeed([]),
   closeThread: () => Effect.void,
   setThreadHarnessSession: () => Effect.void,
+  setThreadModel: () => Effect.void,
   createTurn: () => Effect.void,
   getTurn: () => Effect.succeedNone,
   getFirstTurn: () => Effect.succeedNone,
@@ -1456,4 +1457,208 @@ test('allows a normal non-repository task at the channel workspace root', async 
 
   await Effect.runPromise(program)
   await rm(root, { recursive: true, force: true })
+})
+
+test('switches an active task to a configured profile while keeping its identity and workspace', async () => {
+  const parent = parentThread('/tmp/channel')
+  const thread = taskThread(parent)
+  const active = taskTurn(thread, 'turn-active', 1, 'running', 'Original task')
+  let current = thread
+  const modelUpdates: Array<unknown> = []
+  const base = taskPersistence(parent, thread, active, active)
+  const tasks = makeTasks({
+    persistence: {
+      ...base,
+      getThread: (threadId) =>
+        Effect.succeed(
+          threadId === parent.id
+            ? Option.some(parent)
+            : threadId === current.id
+              ? Option.some(current)
+              : Option.none(),
+        ),
+      setThreadModel: (update) =>
+        Effect.sync(() => {
+          modelUpdates.push(update)
+          current = {
+            ...current,
+            model: update.model,
+            thinkingLevel: update.thinkingLevel,
+            subagentProfile: update.subagentProfile,
+            updatedAt: update.updatedAt,
+          }
+        }),
+    },
+    friday: makeFriday([]),
+    models: makeTaskModels(() => [
+      ...profilesFor(parent),
+      {
+        name: decodeProfileName('muse13-free'),
+        description: 'Free tier work.',
+        model: decodeModelSelection({ provider: 'opencode-go', modelId: 'muse13-free-model' }),
+        thinkingLevel: 'low',
+      },
+    ]),
+    channelTurns: noChannelTurns,
+    fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+    randomUUID: Effect.succeed('unused'),
+    now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
+    fork: () => Effect.void,
+  })
+
+  const result = await Effect.runPromise(
+    tasks.setModel({
+      parentThreadId: parent.id,
+      taskId: decodeTaskId(thread.id),
+      profile: decodeProfileName('muse13-free'),
+    }),
+  )
+
+  expect(result).toEqual({
+    taskId: decodeTaskId(thread.id),
+    profile: decodeProfileName('muse13-free'),
+    model: decodeModelSelection({ provider: 'opencode-go', modelId: 'muse13-free-model' }),
+    thinkingLevel: 'low',
+  })
+  expect(modelUpdates).toHaveLength(1)
+  expect(current.id).toBe(thread.id)
+  expect(current.workingDirectory).toBe(thread.workingDirectory)
+  expect(String(current.subagentProfile)).toBe('muse13-free')
+  expect(String(current.model.modelId)).toBe('muse13-free-model')
+  expect(current.thinkingLevel).toBe('low')
+  expect(current.updatedAt).toBe('2026-03-21T11:00:00.000Z')
+})
+
+test('rejects switching to a profile name that is not configured', async () => {
+  const parent = parentThread('/tmp/channel')
+  const thread = taskThread(parent)
+  const active = taskTurn(thread, 'turn-active', 1, 'running', 'Original task')
+  const base = taskPersistence(parent, thread, active, active)
+  let updates = 0
+  const tasks = makeTasks({
+    persistence: {
+      ...base,
+      setThreadModel: () => Effect.sync(() => void (updates += 1)),
+    },
+    friday: makeFriday([]),
+    models: makeTaskModels(() => [
+      ...profilesFor(parent),
+      {
+        name: decodeProfileName('muse13-free'),
+        description: 'Free tier work.',
+        model: decodeModelSelection({ provider: 'opencode-go', modelId: 'muse13-free-model' }),
+        thinkingLevel: 'low',
+      },
+    ]),
+    channelTurns: noChannelTurns,
+    fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+    randomUUID: Effect.succeed('unused'),
+    now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
+    fork: () => Effect.void,
+  })
+
+  const error = await Effect.runPromise(
+    Effect.flip(
+      tasks.setModel({
+        parentThreadId: parent.id,
+        taskId: decodeTaskId(thread.id),
+        profile: decodeProfileName('muse13'),
+      }),
+    ),
+  )
+
+  expect(error._tag).toBe('TaskError')
+  if (error._tag === 'TaskError') {
+    expect(error.operation).toBe('set-model')
+    expect(error.reason).toBe('model-not-configured')
+    expect(error.detail).toContain('muse13')
+  }
+  expect(updates).toBe(0)
+})
+
+test('rejects switching a terminal task', async () => {
+  const parent = parentThread('/tmp/channel')
+  const thread = taskThread(parent)
+  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
+  let updates = 0
+  const tasks = makeTasks({
+    persistence: {
+      ...taskPersistence(parent, thread, completed, completed),
+      setThreadModel: () => Effect.sync(() => void (updates += 1)),
+    },
+    friday: makeFriday([]),
+    models: makeTaskModels(() => profilesFor(parent)),
+    channelTurns: noChannelTurns,
+    fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+    randomUUID: Effect.succeed('unused'),
+    now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
+    fork: () => Effect.void,
+  })
+
+  const error = await Effect.runPromise(
+    Effect.flip(
+      tasks.setModel({
+        parentThreadId: parent.id,
+        taskId: decodeTaskId(thread.id),
+        profile: decodeProfileName('primary'),
+      }),
+    ),
+  )
+
+  expect(error._tag).toBe('TaskError')
+  if (error._tag === 'TaskError') {
+    expect(error.operation).toBe('set-model')
+    expect(error.reason).toBe('task-not-active')
+  }
+  expect(updates).toBe(0)
+})
+
+test('rejects switching a task from another channel', async () => {
+  const owner = parentThread('/tmp/channel-owner')
+  const other = decodeChannelThread({
+    ...parentThread('/tmp/channel-other'),
+    id: 'thread-task-other',
+    conversationBinding: {
+      ...parentThread('/tmp/channel-other').conversationBinding,
+      channelId: 'channel-task-other',
+      sourceMessageId: 'message-task-other',
+      conversationId: 'conversation-task-other',
+    },
+  })
+  const thread = taskThread(owner)
+  const active = taskTurn(thread, 'turn-active', 1, 'running', 'Original task')
+  const base = taskPersistence(owner, thread, active, active)
+  const tasks = makeTasks({
+    persistence: {
+      ...base,
+      getThread: (threadId) =>
+        Effect.succeed(
+          threadId === other.id
+            ? Option.some(other)
+            : threadId === thread.id
+              ? Option.some(thread)
+              : Option.none(),
+        ),
+    },
+    friday: makeFriday([]),
+    models: makeTaskModels(() => profilesFor(owner)),
+    channelTurns: noChannelTurns,
+    fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
+    randomUUID: Effect.succeed('unused'),
+    now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
+    fork: () => Effect.void,
+  })
+
+  const error = await Effect.runPromise(
+    Effect.flip(
+      tasks.setModel({
+        parentThreadId: other.id,
+        taskId: decodeTaskId(thread.id),
+        profile: decodeProfileName('primary'),
+      }),
+    ),
+  )
+
+  expect(error._tag).toBe('TaskError')
+  if (error._tag === 'TaskError') expect(error.reason).toBe('task-not-owned')
 })

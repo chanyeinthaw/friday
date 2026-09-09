@@ -427,6 +427,18 @@ export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistenc
           harnessSession: update.harnessSession,
         })
       }).pipe(Effect.mapError(toPersistenceError('ThreadPersistence.setThreadHarnessSession'))),
+    setThreadModel: (update) =>
+      Effect.gen(function* () {
+        const existing = yield* getThread(update.threadId)
+        if (Option.isNone(existing) || existing.value.audience !== 'agent') return
+        yield* updateThread({
+          ...existing.value,
+          model: update.model,
+          thinkingLevel: update.thinkingLevel,
+          subagentProfile: update.subagentProfile,
+          updatedAt: update.updatedAt,
+        })
+      }).pipe(Effect.mapError(toPersistenceError('ThreadPersistence.setThreadModel'))),
     createTurn: (turn) =>
       insertTurn(turn).pipe(Effect.mapError(toPersistenceError('ThreadPersistence.createTurn'))),
     getTurn,

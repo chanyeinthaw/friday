@@ -18,6 +18,8 @@ import {
   type InspectTaskResult,
   type IsoDateTime,
   type ListTasksRequest,
+  type SetTaskModelRequest,
+  type SetTaskModelResult,
   type StartedTask,
   type StartTaskRequest,
   type SteerTaskRequest,
@@ -72,7 +74,15 @@ import {
 
 export class TaskError extends Schema.Error<TaskError>('TaskError')({
   _tag: Schema.tag('TaskError'),
-  operation: Schema.Literals(['start', 'bootstrap', 'steer', 'list', 'cancel', 'inspect']),
+  operation: Schema.Literals([
+    'start',
+    'bootstrap',
+    'steer',
+    'list',
+    'cancel',
+    'inspect',
+    'set-model',
+  ]),
   reason: Schema.Literals([
     'model-not-configured',
     'invalid-working-directory',
@@ -113,6 +123,9 @@ export interface TasksContract {
   readonly inspect: (
     request: InspectTaskRequest,
   ) => Effect.Effect<InspectTaskResult, TaskError | ThreadPersistenceError>
+  readonly setModel: (
+    request: SetTaskModelRequest,
+  ) => Effect.Effect<SetTaskModelResult, TaskError | ThreadPersistenceError>
 }
 
 export class Tasks extends Context.Service<Tasks, TasksContract>()('friday/tasks/Tasks') {}
@@ -942,6 +955,70 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
     )
   })
 
+  const setModel = Effect.fn('Tasks.setModel')(function* (request: SetTaskModelRequest) {
+    yield* requireChannelThread(options.persistence, request.parentThreadId)
+    const resolved = yield* options.models.resolve(request.profile)
+    if (Option.isNone(resolved)) {
+      return yield* taskError(
+        'model-not-configured',
+        `Subagent profile '${request.profile}' is not configured.`,
+        'set-model',
+      )
+    }
+    const profile = resolved.value
+    const thread = yield* requireOwnedTask(
+      options.persistence,
+      'set-model',
+      request.parentThreadId,
+      request.taskId,
+    )
+    const latest = yield* options.persistence.getLatestTurn(thread.id)
+    const turn = yield* Option.match(latest, {
+      onNone: () =>
+        Effect.fail(
+          taskError('task-not-active', `Task '${request.taskId}' has no Turns.`, 'set-model'),
+        ),
+      onSome: Effect.succeed,
+    })
+    if (!isActiveTaskStatus(turn.status)) {
+      return yield* taskError(
+        'task-not-active',
+        `Task '${request.taskId}' is already ${turn.status}.`,
+        'set-model',
+      )
+    }
+    if (
+      thread.subagentProfile === profile.name &&
+      thread.model.provider === profile.model.provider &&
+      thread.model.modelId === profile.model.modelId &&
+      thread.thinkingLevel === profile.thinkingLevel
+    ) {
+      return {
+        taskId: request.taskId,
+        profile: profile.name,
+        model: profile.model,
+        thinkingLevel: profile.thinkingLevel,
+      } satisfies SetTaskModelResult
+    }
+    // Only the model selection changes: the Thread keeps its identity,
+    // workspace, and history, and a running Turn finishes on its current
+    // model. The runtime pool recycles the idle harness session on the next
+    // acquisition, so subsequent execution resolves the new profile.
+    yield* options.persistence.setThreadModel({
+      threadId: thread.id,
+      model: profile.model,
+      thinkingLevel: profile.thinkingLevel,
+      subagentProfile: profile.name,
+      updatedAt: yield* options.now,
+    })
+    return {
+      taskId: request.taskId,
+      profile: profile.name,
+      model: profile.model,
+      thinkingLevel: profile.thinkingLevel,
+    } satisfies SetTaskModelResult
+  })
+
   const requireInspectTask = Effect.fn('Tasks.requireInspectTask')(function* (
     parentThreadId: InspectTaskRequest['parentThreadId'],
     taskId: InspectTaskRequest['taskId'],
@@ -1028,6 +1105,7 @@ export const makeTasks = (options: MakeTasksOptions): TasksContract => {
     list,
     cancel,
     inspect,
+    setModel,
   })
 }
 
