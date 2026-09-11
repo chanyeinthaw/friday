@@ -22,7 +22,6 @@ import {
   isValidPublicBaseUrl,
   makeDocumentsLive,
 } from './Documents.ts'
-import { documentSkillPathsForAudience, ensureDocumentSkill } from './DocumentSkill.ts'
 import { serveDocumentRequest } from './DocumentServer.ts'
 import {
   SystemPromptTemplates,
@@ -266,43 +265,6 @@ describe('document HTTP behavior', () => {
       yield* program.pipe(Effect.provide(documentsLive(directory)))
     }),
   )
-})
-
-describe('document skill', () => {
-  it.effect('installs the skill idempotently and repairs drift', () =>
-    Effect.gen(function* () {
-      const root = yield* freshDirectory('friday-document-skill-')
-      const skillDirectory = join(root, 'skills', 'friday-document')
-      const skillPath = join(skillDirectory, 'SKILL.md')
-      const read = (path: string) =>
-        FileSystem.FileSystem.pipe(
-          Effect.flatMap((fileSystem) => fileSystem.readFileString(path)),
-          Effect.provide(NodeFileSystem.layer),
-        )
-      const install = ensureDocumentSkill(skillDirectory, skillPath).pipe(
-        Effect.provide(NodeFileSystem.layer),
-      )
-      yield* install
-      const written = yield* read(skillPath)
-      assert.include(written, 'friday-document')
-      assert.include(written, 'revoke')
-      assert.include(written, 'document save')
-      yield* install
-      assert.strictEqual(yield* read(skillPath), written)
-      yield* FileSystem.FileSystem.pipe(
-        Effect.flatMap((fileSystem) => fileSystem.writeFileString(skillPath, 'drifted')),
-        Effect.provide(NodeFileSystem.layer),
-      )
-      yield* install
-      assert.strictEqual(yield* read(skillPath), written)
-    }),
-  )
-
-  it('discloses the skill only to user-facing channel sessions', () => {
-    assert.strictEqual(documentSkillPathsForAudience('user').length, 1)
-    assert.include(documentSkillPathsForAudience('user')[0] ?? '', 'friday-document')
-    assert.deepStrictEqual(documentSkillPathsForAudience('agent'), [])
-  })
 })
 
 describe('document prompt', () => {

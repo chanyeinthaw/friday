@@ -36,8 +36,8 @@ import { IdentityConfiguration, IdentityConfigurationLive } from './config/Ident
 import { ModelConfiguration, ModelConfigurationLive } from './config/ModelConfiguration.ts'
 import { getPiModel, listPiModels, reloadPiModels } from './harness/pi/PiModelCatalog.ts'
 import { Documents, DocumentsLive, DocumentError } from './documents/Documents.ts'
-import { ensureDocumentSkill } from './documents/DocumentSkill.ts'
 import { startDocumentServer } from './documents/DocumentServer.ts'
+import { ensureFridaySkills } from './skills/FridaySkills.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
@@ -93,7 +93,7 @@ const start = Effect.scoped(
       reload: reloadApplicationConfig(config),
     })
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
-    yield* ensureDocumentSkill()
+    yield* ensureFridaySkills()
     yield* startDocumentServer().pipe(Effect.provide(DocumentsConfiguredLive))
     const cleanupNotifications = yield* WorkspaceCleanupNotifications
     yield* cleanupNotifications.run.pipe(Effect.forkScoped)
