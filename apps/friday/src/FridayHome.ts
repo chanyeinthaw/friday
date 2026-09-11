@@ -29,5 +29,4 @@ export const FRIDAY_CLI_PATH = isPackagedBuild
 
 export const FRIDAY_CONTROL_SOCKET_PATH = join(FRIDAY_HOME, 'friday.sock')
 export const FRIDAY_DOCUMENTS_DIRECTORY = join(FRIDAY_HOME, 'documents')
-export const FRIDAY_DOCUMENT_SKILL_DIRECTORY = join(FRIDAY_HOME, 'skills', 'friday-document')
-export const FRIDAY_DOCUMENT_SKILL_PATH = join(FRIDAY_DOCUMENT_SKILL_DIRECTORY, 'SKILL.md')
+export const FRIDAY_SKILLS_DIRECTORY = join(FRIDAY_HOME, 'skills')

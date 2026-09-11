@@ -48,8 +48,8 @@ import {
   type SystemPromptTemplatesContract,
 } from '../../system-prompt/SystemPromptTemplates.ts'
 import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
-import { documentSkillPathsForAudience } from '../../documents/DocumentSkill.ts'
 import type { PlatformRegistryContract } from '../../platforms/PlatformRegistry.ts'
+import { fridaySkillPathsForAudience } from '../../skills/FridaySkills.ts'
 import { renderPromptMessage } from './PromptMessage.ts'
 import { refreshSharedModelRuntime } from './PiModelRefresh.ts'
 import { makePiTaskTool, type PiTaskOperations } from '../../tasks/PiTaskTool.ts'
@@ -409,11 +409,9 @@ const makeSession = Effect.fn('makePiAgentSession')(function* (
     cwd: options.thread.workingDirectory,
     agentDir: getAgentDir(),
   }
-  // The private-document skill is disclosed only to user-facing channel
-  // sessions; subagent and bootstrap sessions never receive it.
-  const documentSkillPaths = documentSkillPathsForAudience(options.thread.audience)
-  if (documentSkillPaths.length > 0) {
-    resourceLoaderOptions.additionalSkillPaths = [...documentSkillPaths]
+  const fridaySkillPaths = fridaySkillPathsForAudience(options.thread.audience)
+  if (fridaySkillPaths.length > 0) {
+    resourceLoaderOptions.additionalSkillPaths = [...fridaySkillPaths]
   }
   if (systemPrompt) resourceLoaderOptions.systemPromptOverride = () => systemPrompt
   if (subagentModelHint) {
