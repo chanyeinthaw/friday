@@ -72,6 +72,8 @@ const documentStubs = {
   getDocumentUrl: unreachable,
   revokeDocument: unreachable,
   removeDocument: unreachable,
+  getDocumentConfig: unreachable,
+  updateDocumentConfig: unreachable,
 }
 
 const recorder = <O>(outcome: O) => {
@@ -91,6 +93,31 @@ const lastLine = Effect.map(TestConsole.logLines, (lines) =>
 )
 
 describe('document CLI parsing', () => {
+  it.effect('parses document server configuration', () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* parseFridayCli(['document', 'config', 'get', '--json']), {
+        type: 'config-document-get',
+        json: true,
+      })
+      assert.deepStrictEqual(
+        yield* parseFridayCli([
+          'document',
+          'config',
+          'set',
+          '--listen-host',
+          '0.0.0.0',
+          '--listen-port',
+          '4021',
+        ]),
+        {
+          type: 'config-document-set',
+          patch: { listenHost: '0.0.0.0', listenPort: 4021 },
+          json: false,
+        },
+      )
+    }),
+  )
+
   it.effect('parses save with stdin-first defaults', () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(yield* parseFridayCli(['document', 'save', 'weekly-report']), {
@@ -164,7 +191,7 @@ describe('document CLI parsing', () => {
       const unknown = yield* parseFridayCli(['document', 'dance']).pipe(Effect.flip)
       assert.strictEqual(
         unknown.message,
-        "Unknown 'friday document' subcommand 'dance'. Known subcommands: save, get, list, url, revoke, remove.",
+        "Unknown 'friday document' subcommand 'dance'. Known subcommands: save, get, list, url, revoke, remove, config.",
       )
     }),
   )

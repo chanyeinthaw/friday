@@ -13,6 +13,9 @@ friday document list [--json]
 friday document url <key> [--json]
 friday document revoke <key> [--json]
 friday document remove <key> --yes
+friday document config get [--json]
+friday document config set [--public-base-url <url>] [--listen-host <host>]
+  [--listen-port <port>] [--max-bytes <bytes>] [--json]
 ```
 
 `save` reads content from `--file` or stdin (Markdown by default) and returns
@@ -47,14 +50,17 @@ of indexing, and a restrictive content security policy.
 
 ## Configuration and deployment
 
-Document serving reads one row from the `document_config` table (created with
-conservative defaults by migrations):
+Use `friday document config get` to inspect serving settings and `friday document
+config set` to change one or more values. Listener address changes need a Friday
+restart. The CLI persists these settings in the `document_config` table, which
+migrations create with conservative defaults:
 
 - `public_base_url` (default `http://127.0.0.1:4020`) — the external origin
   clients use. Set this to the reverse proxy's public origin.
 - `listen_host` (default `127.0.0.1`) and `listen_port` (default `4020`) — the
-  loopback listener. Friday binds only here; a reverse proxy owns TLS and
-  forwards to it. Changing either needs a Friday restart.
+  listener address. Keep the loopback default for a same-host reverse proxy, or
+  bind `0.0.0.0` when a container or cluster Service must reach Friday. A reverse
+  proxy should own TLS. Changing either needs a Friday restart.
 - `max_bytes` (default `262144`, 256 KiB) — the largest accepted document.
 
 Stored files live under `$FRIDAY_HOME/documents`. Keys are validated so they

@@ -103,6 +103,9 @@ export interface DocumentsContract {
     auth: string | null,
   ) => Effect.Effect<Option.Option<StoredDocument>, DocumentError>
   readonly getConfig: () => Effect.Effect<DocumentConfig, DocumentError>
+  readonly updateConfig: (
+    patch: DocumentConfigPatch,
+  ) => Effect.Effect<DocumentConfig, DocumentError>
 }
 
 export class Documents extends Context.Service<Documents, DocumentsContract>()(
@@ -178,6 +181,13 @@ const constantTimeEqual = (left: string, right: string): boolean => {
   return timingSafeEqual(leftBytes, rightBytes)
 }
 
+export interface DocumentConfigPatch {
+  readonly publicBaseUrl?: string
+  readonly listenHost?: string
+  readonly listenPort?: number
+  readonly maxBytes?: number
+}
+
 export interface DocumentsLiveOptions {
   readonly documentsDirectory?: string
 }
@@ -225,6 +235,35 @@ export const makeDocumentsLive = (options?: DocumentsLiveOptions) =>
             detail: `Stored document public base URL '${config.publicBaseUrl}' is invalid.`,
           })
         }
+        return config
+      })
+
+      const updateConfig = Effect.fn('Documents.updateConfig')(function* (
+        patch: DocumentConfigPatch,
+      ) {
+        const current = yield* getConfig()
+        const candidate = yield* decodeConfig({ ...current, ...patch }).pipe(
+          Effect.mapError(failure('decode')),
+        )
+        if (!isValidPublicBaseUrl(candidate.publicBaseUrl)) {
+          return yield* new DocumentError({
+            operation: 'config',
+            detail: `Document public base URL '${candidate.publicBaseUrl}' is invalid.`,
+          })
+        }
+        const config = {
+          ...candidate,
+          publicBaseUrl: normalizePublicBaseUrl(candidate.publicBaseUrl),
+        }
+        yield* sql`
+          UPDATE document_config SET
+            public_base_url = ${config.publicBaseUrl},
+            listen_host = ${config.listenHost},
+            listen_port = ${config.listenPort},
+            max_bytes = ${config.maxBytes},
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = 1
+        `.pipe(Effect.mapError(failure('config')))
         return config
       })
 
@@ -425,7 +464,7 @@ export const makeDocumentsLive = (options?: DocumentsLiveOptions) =>
         return Option.some({ metadata: { ...metadata, format }, content: content.value })
       })
 
-      return Documents.of({ save, get, list, url, revoke, remove, verify, getConfig })
+      return Documents.of({ save, get, list, url, revoke, remove, verify, getConfig, updateConfig })
     }),
   )
 
