@@ -84,6 +84,8 @@ import {
 } from './workspaces/WorkspaceCleanup.ts'
 import {
   DocumentKey,
+  type DocumentConfig,
+  type DocumentConfigPatch,
   type DocumentFormat,
   type DocumentMetadata,
   type SavedDocument,
@@ -400,6 +402,12 @@ export type FridayCliAction =
   | { readonly type: 'document-url'; readonly key: DocumentKey; readonly json: boolean }
   | { readonly type: 'document-revoke'; readonly key: DocumentKey; readonly json: boolean }
   | { readonly type: 'document-remove'; readonly key: DocumentKey; readonly yes: boolean }
+  | { readonly type: 'config-document-get'; readonly json: boolean }
+  | {
+      readonly type: 'config-document-set'
+      readonly patch: DocumentConfigPatch
+      readonly json: boolean
+    }
 
 export class ConfigReloadRejectedError extends Schema.Error<ConfigReloadRejectedError>(
   'ConfigReloadRejectedError',
@@ -1472,6 +1480,41 @@ const parseDocumentList = Effect.fn('Cli.parseDocumentList')(function* (
   return { type: 'document-list' as const, json }
 })
 
+const parseDocumentConfigGet = Effect.fn('Cli.parseDocumentConfigGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  return { type: 'config-document-get' as const, json: yield* parseTrailingJson(tokens, all) }
+})
+
+const parseDocumentConfigSet = Effect.fn('Cli.parseDocumentConfigSet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  let patch: DocumentConfigPatch = {}
+  let json = false
+  for (let index = 0; index < tokens.length; index += 1) {
+    const flag = tokens[index]
+    if (flag === '--json') {
+      json = true
+      continue
+    }
+    const value = tokens[index + 1]
+    if (value === undefined || value.startsWith('-')) return yield* discordArgumentsError(all)
+    if (flag === '--public-base-url') patch = { ...patch, publicBaseUrl: value }
+    else if (flag === '--listen-host') patch = { ...patch, listenHost: value }
+    else if (flag === '--listen-port' || flag === '--max-bytes') {
+      const number = Number(value)
+      if (!Number.isInteger(number)) return yield* discordArgumentsError(all)
+      patch =
+        flag === '--listen-port' ? { ...patch, listenPort: number } : { ...patch, maxBytes: number }
+    } else return yield* discordArgumentsError(all)
+    index += 1
+  }
+  if (Object.keys(patch).length === 0) return yield* discordArgumentsError(all)
+  return { type: 'config-document-set' as const, patch, json }
+})
+
 const parseDocumentRemove = Effect.fn('Cli.parseDocumentRemove')(function* (
   tokens: ReadonlyArray<string>,
   all: ReadonlyArray<string>,
@@ -1876,6 +1919,27 @@ export const cliCommandSpec: CliBranchSpec = {
           arguments: ['<key> --yes'],
           parse: parseDocumentRemove,
         },
+        {
+          name: 'config',
+          summary: 'Inspect or change document server configuration.',
+          children: [
+            {
+              name: 'get',
+              summary: 'Show document server configuration.',
+              arguments: ['[--json]'],
+              parse: parseDocumentConfigGet,
+            },
+            {
+              name: 'set',
+              summary: 'Change document server configuration; listener changes need a restart.',
+              arguments: [
+                '[--public-base-url <url>] [--listen-host <host>] [--listen-port <port>]',
+                '[--max-bytes <bytes>] [--json]',
+              ],
+              parse: parseDocumentConfigSet,
+            },
+          ],
+        },
       ],
     },
     {
@@ -2040,6 +2104,14 @@ export const renderDocumentList = (documents: ReadonlyArray<DocumentMetadata>): 
           (document) => `  ${document.key}  ${document.format}  ${document.sizeBytes} bytes`,
         ),
       ].join('\n')
+
+export const renderDocumentConfig = (config: DocumentConfig): string =>
+  [
+    `Public base URL: ${config.publicBaseUrl}`,
+    `Listen host: ${config.listenHost}`,
+    `Listen port: ${config.listenPort}`,
+    `Maximum bytes: ${config.maxBytes}`,
+  ].join('\n')
 
 export const renderWorkspaceCleanupList = (
   proposals: ReadonlyArray<WorkspaceCleanupProposal>,
@@ -2503,6 +2575,10 @@ export type FridayCliOperations<
     key: DocumentKey,
   ) => Effect.Effect<Option.Option<SavedDocument>, DocumentError>
   readonly removeDocument: (key: DocumentKey) => Effect.Effect<'removed' | 'missing', DocumentError>
+  readonly getDocumentConfig: () => Effect.Effect<DocumentConfig, DocumentError>
+  readonly updateDocumentConfig: (
+    patch: DocumentConfigPatch,
+  ) => Effect.Effect<DocumentConfig, DocumentError>
   readonly applyWorkspaceCleanup: (
     action: Extract<FridayCliAction, { readonly type: 'workspace-cleanup-apply' }>,
     currentWorkingDirectory: string,
@@ -2610,6 +2686,8 @@ const cliActionGroups = {
   'document-url': 'runtime',
   'document-revoke': 'runtime',
   'document-remove': 'runtime',
+  'config-document-get': 'runtime',
+  'config-document-set': 'runtime',
   start: 'runtime',
 } satisfies {
   readonly [ActionType in FridayCliAction['type']]: GroupFor<ActionType>
@@ -2626,7 +2704,10 @@ const isConnectionAction = (action: CatalogAction): action is ConnectionAction =
 const isGuildAction = (action: FridayCliAction): action is GuildAction =>
   cliActionGroups[action.type] === 'guild'
 
-type DocumentAction = Extract<FridayCliAction, { readonly type: `document-${string}` }>
+type DocumentAction = Extract<
+  FridayCliAction,
+  { readonly type: `document-${string}` | `config-document-${string}` }
+>
 const isDocumentAction = (action: RuntimeAction): action is DocumentAction =>
   action.type.startsWith('document-')
 
@@ -3189,6 +3270,16 @@ export const runFridayCli = <
                   : `Document '${selected.key}' access revoked.\nNew URL: ${revoked.url}`,
             }),
           )
+          return
+        }
+        case 'config-document-get': {
+          const config = yield* options.getDocumentConfig()
+          yield* Console.log(selected.json ? JSON.stringify(config) : renderDocumentConfig(config))
+          return
+        }
+        case 'config-document-set': {
+          const config = yield* options.updateDocumentConfig(selected.patch)
+          yield* Console.log(selected.json ? JSON.stringify(config) : renderDocumentConfig(config))
           return
         }
         case 'document-remove': {

@@ -219,6 +219,16 @@ describe('document lifecycle', () => {
         assert.deepStrictEqual(config, DefaultDocumentConfig)
         assert.strictEqual(config.listenHost, '127.0.0.1')
         assert.isTrue(config.maxBytes <= 5242880)
+        const updated = yield* documents.updateConfig({
+          publicBaseUrl: 'https://documents.example.com/',
+          listenHost: '0.0.0.0',
+        })
+        assert.deepStrictEqual(updated, {
+          ...DefaultDocumentConfig,
+          publicBaseUrl: 'https://documents.example.com',
+          listenHost: '0.0.0.0',
+        })
+        assert.deepStrictEqual(yield* documents.getConfig(), updated)
       }),
     ),
   )

@@ -360,6 +360,16 @@ const application = Effect.scoped(
           Effect.flatMap((documents) => documents.remove(key)),
           Effect.provide(DocumentsConfiguredLive),
         ),
+      getDocumentConfig: () =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.getConfig()),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
+      updateDocumentConfig: (patch) =>
+        Documents.pipe(
+          Effect.flatMap((documents) => documents.updateConfig(patch)),
+          Effect.provide(DocumentsConfiguredLive),
+        ),
       ensureWorktree: (action) => {
         const workspaceRoot = action.workspace ?? process.env.FRIDAY_WORKSPACE_ROOT ?? process.cwd()
         let input: EnsureRepositoryWorktreeInput = { url: action.url, workspaceRoot }
