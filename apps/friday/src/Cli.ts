@@ -2709,7 +2709,7 @@ type DocumentAction = Extract<
   { readonly type: `document-${string}` | `config-document-${string}` }
 >
 const isDocumentAction = (action: RuntimeAction): action is DocumentAction =>
-  action.type.startsWith('document-')
+  action.type.startsWith('document-') || action.type.startsWith('config-document-')
 
 export const runFridayCli = <
   E,
