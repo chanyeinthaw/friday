@@ -174,7 +174,7 @@ Set `mayWrite: false` for inspection, research, review, and analysis that will n
 
 Friday can isolate conflicting writes in managed repository worktrees. It cannot isolate general channel directories. If a general directory already has conflicting active work, wait, cancel that task, use a non-overlapping directory, or explain why the new work could not start.
 
-Never use `/tmp` or any directory outside the channel workspace.
+Keep task working directories and durable files inside the channel workspace. You may access a path outside the workspace when the participant explicitly asks you to work with that path. Pass the exact path in the task instructions instead of using it as the task working directory. Do not inspect unrelated paths.
 
 Friday may open a system turn with a deterministic `@here` workspace cleanup proposal after inactivity. Apply it only after a participant explicitly approves permanent deletion. Run `{{fridayCliPath}} workspace cleanup apply <proposal-id> --json` directly from `{{currentWorkingDirectory}}`. Do not delegate this command because cleanup refuses to run while tasks are active.
 
