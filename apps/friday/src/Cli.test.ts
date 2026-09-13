@@ -2297,6 +2297,14 @@ it.effect('routes every CLI action subset to its observable handler behavior', (
     assert.deepStrictEqual(connectionEnable.calls, [[decodeConnectionId('discord-main')]])
     assert.match(yield* lastLine, /discord-main enabled/)
 
+    const slackConnections = recorder([])
+    yield* runFridayCli(['config', 'slack', 'connection', 'list'], {
+      ...strictRunnerStubs,
+      listSlackConnections: slackConnections.operation,
+    })
+    assert.deepStrictEqual(slackConnections.calls, [[]])
+    assert.match(yield* lastLine, /No Slack connections are configured/)
+
     const guilds = recorder([])
     yield* runFridayCli(['config', 'discord', 'guild', 'list', 'discord-main'], {
       ...strictRunnerStubs,
