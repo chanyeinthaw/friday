@@ -148,13 +148,12 @@ export class FridaySlackAdapter extends SlackAdapter {
   }
 
   protected override handleAgentSessionStopped(
-    event: AgentStoppedEvent,
-    options?: WebhookOptions,
+    _event: AgentStoppedEvent,
+    _options?: WebhookOptions,
   ): void {
-    // Agent stop carries no team; channel/user gating uses the resolved policy
-    // only when both are present, otherwise it flows to the lifecycle handler
-    // where Friday logs without creating threads or publishing.
-    return super.handleAgentSessionStopped(event, options)
+    // The event has no workspace identity, so it cannot pass Friday's
+    // fail-closed policy gate. The upstream handler also aborts Chat state and
+    // writes Slack session status; Friday does not use either mechanism.
   }
 
   protected override handleAgentSessionTitleChanged(
@@ -181,11 +180,7 @@ export class FridaySlackAdapter extends SlackAdapter {
     teamId?: string,
   ): void {
     const typed = event as { readonly channel: string; readonly user: string }
-    if (
-      teamId !== undefined &&
-      teamId !== '' &&
-      this.dropsForPolicy(teamId, typed.channel, typed.user)
-    ) {
+    if (teamId === undefined || this.dropsForPolicy(teamId, typed.channel, typed.user)) {
       this.logger.debug('Ignored Slack Home open from unknown location', {
         channelId: typed.channel,
       })

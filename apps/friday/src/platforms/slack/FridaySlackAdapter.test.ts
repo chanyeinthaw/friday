@@ -28,6 +28,7 @@ class RecordingFridaySlackAdapter extends FridaySlackAdapter {
   readonly processedMessages: Array<unknown> = []
   readonly startedThreads: Array<unknown> = []
   readonly changedContexts: Array<unknown> = []
+  readonly stoppedSessions: Array<unknown> = []
   readonly changedTitles: Array<unknown> = []
   readonly openedHomes: Array<unknown> = []
   readonly changedAppContexts: Array<unknown> = []
@@ -49,6 +50,12 @@ class RecordingFridaySlackAdapter extends FridaySlackAdapter {
       },
       processAssistantContextChanged: async (input: unknown) => {
         this.changedContexts.push(input)
+      },
+      abortTurn: async (threadId: string) => {
+        this.stoppedSessions.push({ operation: 'abort', threadId })
+      },
+      processAgentSessionStopped: async (input: unknown) => {
+        this.stoppedSessions.push(input)
       },
       processAgentSessionTitleChanged: async (input: unknown) => {
         this.changedTitles.push(input)
@@ -93,6 +100,12 @@ class RecordingFridaySlackAdapter extends FridaySlackAdapter {
   runAssistantContextChanged(event: unknown): void {
     // SAFETY: the adapter receives assistant_thread_context_changed payloads here.
     super.handleAssistantContextChanged(event as never)
+  }
+
+  /** Exposes the protected agent-stop entry point for the test. */
+  runAgentSessionStopped(event: unknown): void {
+    // SAFETY: the adapter receives agent_session_stopped payloads here.
+    super.handleAgentSessionStopped(event as never)
   }
 
   /** Exposes the protected session-title entry point for the test. */
@@ -317,6 +330,21 @@ it.effect('gates assistant threads on team, channel, and user', () =>
   }),
 )
 
+it.effect('drops agent stop events that have no workspace identity', () =>
+  Effect.promise(async () => {
+    const adapter = adapterWith(allowTeam)
+
+    adapter.runAgentSessionStopped({
+      channel: CHANNEL,
+      thread_ts: '1234567890.111111',
+      user: USER,
+    })
+    await flushTasks()
+
+    assert.deepStrictEqual(adapter.stoppedSessions, [])
+  }),
+)
+
 it.effect('gates session title changes on the resolved policy', () =>
   Effect.promise(async () => {
     const adapter = adapterWith(allowTeam)
@@ -332,7 +360,7 @@ it.effect('gates session title changes on the resolved policy', () =>
   }),
 )
 
-it.effect('gates Home opens only when the team is known', () =>
+it.effect('gates Home opens on a known workspace, channel, and user', () =>
   Effect.promise(async () => {
     const adapter = adapterWith(allowTeam)
     const home = { channel: CHANNEL, user: USER, tab: 'home' }
@@ -345,15 +373,11 @@ it.effect('gates Home opens only when the team is known', () =>
     await flushTasks()
     assert.strictEqual(adapter.openedHomes.length, 1)
 
-    // Without a team the event flows through for observability.
+    // Missing and blank teams cannot be authorized fail-closed.
     adapter.runAppHomeOpened(home)
-    await flushTasks()
-    assert.strictEqual(adapter.openedHomes.length, 2)
-
-    // A blank team is not a known team either.
     adapter.runAppHomeOpened(home, '')
     await flushTasks()
-    assert.strictEqual(adapter.openedHomes.length, 3)
+    assert.strictEqual(adapter.openedHomes.length, 1)
   }),
 )
 
