@@ -225,28 +225,36 @@ it.effect('reads the team from either Slack team shape', () =>
   }),
 )
 
-it.effect('drops empty teams and channels even for permissive policies', () =>
+it.effect('drops malformed, empty, and missing locations even for permissive policies', () =>
   Effect.promise(async () => {
     const adapter = adapterWith(() => allowAll)
 
     adapter.runMessageEvent(messageEvent({ team_id: '', team: '' }))
     adapter.runMessageEvent(messageEvent({ channel: '' }))
+    const { team: _team, ...withoutTeam } = messageEvent({ team_id: '' })
+    adapter.runMessageEvent(withoutTeam)
+    // SAFETY: the object intentionally models Slack's non-string team envelope
+    // so the boundary narrowing rejects it.
+    adapter.runMessageEvent(messageEvent({ team_id: '', team: { id: TEAM } as never }))
+    const { channel: _channel, ...withoutChannel } = messageEvent()
+    adapter.runMessageEvent(withoutChannel)
     await flushTasks()
 
     assert.deepStrictEqual(adapter.processedMessages, [])
   }),
 )
 
-it.effect('admits authorless events past the user gate', () =>
+it.effect('admits authorless and blank-author events past the user gate', () =>
   Effect.promise(async () => {
     const adapter = adapterWith(allowTeam)
     const { user: _droppedUser, ...withoutUser } = messageEvent()
 
     adapter.runMessageEvent(withoutUser)
+    adapter.runMessageEvent(messageEvent({ user: '' }))
     await flushTasks()
 
-    // No user means no denial; invocation is decided downstream.
-    assert.strictEqual(adapter.processedMessages.length, 1)
+    // No usable user means no denial; invocation is decided downstream.
+    assert.strictEqual(adapter.processedMessages.length, 2)
   }),
 )
 
@@ -311,9 +319,17 @@ it.effect('gates assistant threads on team, channel, and user', () =>
     foreign.assistant_thread.context.team_id = OTHER_TEAM
     adapter.runAssistantThreadStarted(foreign)
     adapter.runAssistantContextChanged(foreign)
-    // Events without a thread payload are ignored.
+    // Events without a thread payload or workspace identity are ignored.
     adapter.runAssistantThreadStarted({ type: 'assistant_thread_started' })
     adapter.runAssistantContextChanged({ type: 'assistant_thread_context_changed' })
+    const unscoped = {
+      assistant_thread: {
+        ...started().assistant_thread,
+        context: {},
+      },
+    }
+    adapter.runAssistantThreadStarted(unscoped)
+    adapter.runAssistantContextChanged(unscoped)
     await flushTasks()
     assert.strictEqual(adapter.startedThreads.length, 1)
     assert.strictEqual(adapter.changedContexts.length, 1)
@@ -373,11 +389,15 @@ it.effect('gates Home opens on a known workspace, channel, and user', () =>
     await flushTasks()
     assert.strictEqual(adapter.openedHomes.length, 1)
 
-    // Missing and blank teams cannot be authorized fail-closed.
+    // Missing and blank teams cannot be authorized fail-closed, even when a
+    // permissive resolver would otherwise admit the location.
     adapter.runAppHomeOpened(home)
     adapter.runAppHomeOpened(home, '')
+    const permissive = adapterWith(() => allowAll)
+    permissive.runAppHomeOpened(home)
     await flushTasks()
     assert.strictEqual(adapter.openedHomes.length, 1)
+    assert.deepStrictEqual(permissive.openedHomes, [])
   }),
 )
 
