@@ -28,6 +28,7 @@ class RecordingFridaySlackAdapter extends FridaySlackAdapter {
   readonly processedMessages: Array<unknown> = []
   readonly startedThreads: Array<unknown> = []
   readonly changedContexts: Array<unknown> = []
+  readonly stoppedSessions: Array<unknown> = []
   readonly changedTitles: Array<unknown> = []
   readonly openedHomes: Array<unknown> = []
   readonly changedAppContexts: Array<unknown> = []
@@ -49,6 +50,12 @@ class RecordingFridaySlackAdapter extends FridaySlackAdapter {
       },
       processAssistantContextChanged: async (input: unknown) => {
         this.changedContexts.push(input)
+      },
+      abortTurn: async (threadId: string) => {
+        this.stoppedSessions.push({ operation: 'abort', threadId })
+      },
+      processAgentSessionStopped: async (input: unknown) => {
+        this.stoppedSessions.push(input)
       },
       processAgentSessionTitleChanged: async (input: unknown) => {
         this.changedTitles.push(input)
@@ -93,6 +100,12 @@ class RecordingFridaySlackAdapter extends FridaySlackAdapter {
   runAssistantContextChanged(event: unknown): void {
     // SAFETY: the adapter receives assistant_thread_context_changed payloads here.
     super.handleAssistantContextChanged(event as never)
+  }
+
+  /** Exposes the protected agent-stop entry point for the test. */
+  runAgentSessionStopped(event: unknown): void {
+    // SAFETY: the adapter receives agent_session_stopped payloads here.
+    super.handleAgentSessionStopped(event as never)
   }
 
   /** Exposes the protected session-title entry point for the test. */
@@ -146,6 +159,8 @@ const messageEvent = (
     readonly user?: string
     readonly text?: string
     readonly ts?: string
+    readonly bot_id?: string
+    readonly subtype?: string
   } = {},
 ) => ({
   type: 'message',
@@ -210,28 +225,36 @@ it.effect('reads the team from either Slack team shape', () =>
   }),
 )
 
-it.effect('drops empty teams and channels even for permissive policies', () =>
+it.effect('drops malformed, empty, and missing locations even for permissive policies', () =>
   Effect.promise(async () => {
     const adapter = adapterWith(() => allowAll)
 
     adapter.runMessageEvent(messageEvent({ team_id: '', team: '' }))
     adapter.runMessageEvent(messageEvent({ channel: '' }))
+    const { team: _team, ...withoutTeam } = messageEvent({ team_id: '' })
+    adapter.runMessageEvent(withoutTeam)
+    // SAFETY: the object intentionally models Slack's non-string team envelope
+    // so the boundary narrowing rejects it.
+    adapter.runMessageEvent(messageEvent({ team_id: '', team: { id: TEAM } as never }))
+    const { channel: _channel, ...withoutChannel } = messageEvent()
+    adapter.runMessageEvent(withoutChannel)
     await flushTasks()
 
     assert.deepStrictEqual(adapter.processedMessages, [])
   }),
 )
 
-it.effect('admits authorless events past the user gate', () =>
+it.effect('admits authorless and blank-author events past the user gate', () =>
   Effect.promise(async () => {
     const adapter = adapterWith(allowTeam)
     const { user: _droppedUser, ...withoutUser } = messageEvent()
 
     adapter.runMessageEvent(withoutUser)
+    adapter.runMessageEvent(messageEvent({ user: '' }))
     await flushTasks()
 
-    // No user means no denial; invocation is decided downstream.
-    assert.strictEqual(adapter.processedMessages.length, 1)
+    // No usable user means no denial; invocation is decided downstream.
+    assert.strictEqual(adapter.processedMessages.length, 2)
   }),
 )
 
@@ -246,6 +269,30 @@ it.effect('drops denied users before Chat state', () =>
     await flushTasks()
 
     assert.deepStrictEqual(adapter.processedMessages, [])
+  }),
+)
+
+it.effect('drops bot and Slack system messages before catch-all routing', () =>
+  Effect.promise(async () => {
+    const adapter = adapterWith(allowTeam)
+
+    adapter.runMessageEvent(messageEvent({ user: 'UAPP', bot_id: 'BAPP' }))
+    adapter.runMessageEvent(messageEvent({ user: 'UAPP', subtype: 'bot_message' }))
+    adapter.runMessageEvent(messageEvent({ user: 'USLACKBOT' }))
+    await flushTasks()
+
+    assert.deepStrictEqual(adapter.processedMessages, [])
+  }),
+)
+
+it.effect('keeps human message subtypes eligible for normal routing', () =>
+  Effect.promise(async () => {
+    const adapter = adapterWith(allowTeam)
+
+    adapter.runMessageEvent(messageEvent({ subtype: 'file_share' }))
+    await flushTasks()
+
+    assert.strictEqual(adapter.processedMessages.length, 1)
   }),
 )
 
@@ -272,9 +319,17 @@ it.effect('gates assistant threads on team, channel, and user', () =>
     foreign.assistant_thread.context.team_id = OTHER_TEAM
     adapter.runAssistantThreadStarted(foreign)
     adapter.runAssistantContextChanged(foreign)
-    // Events without a thread payload are ignored.
+    // Events without a thread payload or workspace identity are ignored.
     adapter.runAssistantThreadStarted({ type: 'assistant_thread_started' })
     adapter.runAssistantContextChanged({ type: 'assistant_thread_context_changed' })
+    const unscoped = {
+      assistant_thread: {
+        ...started().assistant_thread,
+        context: {},
+      },
+    }
+    adapter.runAssistantThreadStarted(unscoped)
+    adapter.runAssistantContextChanged(unscoped)
     await flushTasks()
     assert.strictEqual(adapter.startedThreads.length, 1)
     assert.strictEqual(adapter.changedContexts.length, 1)
@@ -288,6 +343,21 @@ it.effect('gates assistant threads on team, channel, and user', () =>
     await flushTasks()
     assert.deepStrictEqual(denied.startedThreads, [])
     assert.deepStrictEqual(denied.changedContexts, [])
+  }),
+)
+
+it.effect('drops agent stop events that have no workspace identity', () =>
+  Effect.promise(async () => {
+    const adapter = adapterWith(allowTeam)
+
+    adapter.runAgentSessionStopped({
+      channel: CHANNEL,
+      thread_ts: '1234567890.111111',
+      user: USER,
+    })
+    await flushTasks()
+
+    assert.deepStrictEqual(adapter.stoppedSessions, [])
   }),
 )
 
@@ -306,7 +376,7 @@ it.effect('gates session title changes on the resolved policy', () =>
   }),
 )
 
-it.effect('gates Home opens only when the team is known', () =>
+it.effect('gates Home opens on a known workspace, channel, and user', () =>
   Effect.promise(async () => {
     const adapter = adapterWith(allowTeam)
     const home = { channel: CHANNEL, user: USER, tab: 'home' }
@@ -319,15 +389,15 @@ it.effect('gates Home opens only when the team is known', () =>
     await flushTasks()
     assert.strictEqual(adapter.openedHomes.length, 1)
 
-    // Without a team the event flows through for observability.
+    // Missing and blank teams cannot be authorized fail-closed, even when a
+    // permissive resolver would otherwise admit the location.
     adapter.runAppHomeOpened(home)
-    await flushTasks()
-    assert.strictEqual(adapter.openedHomes.length, 2)
-
-    // A blank team is not a known team either.
     adapter.runAppHomeOpened(home, '')
+    const permissive = adapterWith(() => allowAll)
+    permissive.runAppHomeOpened(home)
     await flushTasks()
-    assert.strictEqual(adapter.openedHomes.length, 3)
+    assert.strictEqual(adapter.openedHomes.length, 1)
+    assert.deepStrictEqual(permissive.openedHomes, [])
   }),
 )
 

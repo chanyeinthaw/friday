@@ -24,6 +24,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import * as Crypto from 'effect/Crypto'
 import * as DateTime from 'effect/DateTime'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Queue from 'effect/Queue'
@@ -534,7 +535,10 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
   const eventsQueue = yield* Queue.unbounded<ThreadRuntimeEvent>()
   const projectionLock = yield* Semaphore.make(1)
   const sessionLock = yield* Semaphore.make(1)
-  const queuedSteering: Array<PromptRequest> = []
+  const queuedSteering: Array<{
+    readonly request: PromptRequest
+    readonly delivered: Deferred.Deferred<void, PiThreadRuntimeError | SteerRejectedError>
+  }> = []
   const sessionState = {
     compacting: false,
     drainingSteering: false,
@@ -571,15 +575,19 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
         }),
       )
       if (!request) return
-      // Stale queued steering must never reach a newer Pi turn. Drop it
-      // without aborting; the caller already fell back to a new turn.
-      const stale = yield* Effect.sync(() => request.turnId !== state.activeTurnId)
+      // Stale queued steering must never reach a newer Pi turn. Reject it so
+      // common dispatch can fall back to a new turn instead of losing input.
+      const stale = yield* Effect.sync(() => request.request.turnId !== state.activeTurnId)
       if (stale) {
-        yield* Effect.logDebug('pi.steering.stale-dropped').pipe(
+        const rejection = new SteerRejectedError({
+          turnId: String(request.request.turnId),
+          detail: 'The active Pi turn finished before queued steering could be delivered.',
+        })
+        yield* Effect.logDebug('pi.steering.stale-rejected').pipe(
           Effect.annotateLogs({
             component: 'pi',
             threadId: options.thread.id,
-            turnId: request.turnId,
+            turnId: request.request.turnId,
           }),
         )
         yield* sessionLock.withPermit(
@@ -587,22 +595,32 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
             sessionState.queuedSteering.shift()
           }),
         )
+        yield* Deferred.fail(request.delivered, rejection)
         continue
       }
-      yield* sendSteering(request).pipe(
-        Effect.tapError(() =>
-          sessionLock.withPermit(
-            Effect.sync(() => {
-              sessionState.drainingSteering = false
-            }),
-          ),
-        ),
-      )
+      const delivered = yield* sendSteering(request.request).pipe(Effect.exit)
       yield* sessionLock.withPermit(
         Effect.sync(() => {
           sessionState.queuedSteering.shift()
+          if (delivered._tag === 'Failure') sessionState.drainingSteering = false
         }),
       )
+      yield* Deferred.done(request.delivered, delivered)
+      if (delivered._tag === 'Failure') {
+        const remaining = yield* sessionLock.withPermit(
+          Effect.sync(() => {
+            const pending = sessionState.queuedSteering.splice(0)
+            sessionState.drainingSteering = false
+            return pending
+          }),
+        )
+        yield* Effect.forEach(
+          remaining,
+          ({ delivered: pending }) => Deferred.done(pending, delivered),
+          { discard: true },
+        )
+        return yield* delivered
+      }
     }
   })
   const failActiveTurnFromSteering = Effect.fn('PiThreadRuntime.failActiveTurnFromSteering')(
@@ -698,6 +716,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
           detail: 'Steering turn does not match the active Pi turn.',
         })
       }
+      const delivered = yield* Deferred.make<void, PiThreadRuntimeError | SteerRejectedError>()
       const disposition = yield* sessionLock.withPermit(
         Effect.sync(() => {
           if (
@@ -707,7 +726,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
           ) {
             return 'send' as const
           }
-          sessionState.queuedSteering.push(request)
+          sessionState.queuedSteering.push({ request, delivered })
           if (!sessionState.compacting && !sessionState.drainingSteering) {
             sessionState.drainingSteering = true
             return 'drain' as const
@@ -729,6 +748,7 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
           }),
         )
       }
+      if (disposition !== 'send') yield* Deferred.await(delivered)
       return undefined
     }
 

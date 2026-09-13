@@ -41,8 +41,10 @@ const teamFromEvent = (event: Pick<SlackEvent, 'team' | 'team_id'>): string =>
  * Enforces Friday's fail-closed Slack policy at the adapter boundary. The
  * upstream adapter would otherwise store Chat state, apply suggested prompts,
  * and apply titles before Friday handlers run, so unknown or disabled
- * workspaces/channels and denied users must be dropped before that work
- * happens. Invocation (direct-mention-only, bound threads, DMs) stays in
+ * workspaces/channels, denied users, and automated messages must be dropped
+ * before that work happens. This also keeps the Slack catch-all from turning
+ * other apps' bot messages into Friday user turns. Invocation
+ * (direct-mention-only, bound threads, DMs) stays in
  * the Chat lifecycle `shouldHandleMessage` gate where Friday persistence is
  * available; this layer owns admission only.
  *
@@ -76,12 +78,22 @@ export class FridaySlackAdapter extends SlackAdapter {
     return false
   }
 
+  private isAutomatedMessage(event: SlackMessageHandlerEvent): boolean {
+    return (
+      event.bot_id !== undefined || event.subtype === 'bot_message' || event.user === 'USLACKBOT'
+    )
+  }
+
   protected override handleMessageEvent(
     event: SlackMessageHandlerEvent,
     options?: WebhookOptions,
   ): void {
     const teamId = teamFromEvent(event as Pick<SlackEvent, 'team' | 'team_id'>)
     const channelId = (event as { readonly channel?: string }).channel ?? ''
+    if (this.isAutomatedMessage(event)) {
+      this.logger.debug('Ignored automated Slack message', { teamId, channelId })
+      return
+    }
     if (this.dropsForPolicy(teamId, channelId, (event as { readonly user?: string }).user)) {
       this.logger.debug('Ignored Slack message from unknown or disabled location', {
         teamId,
@@ -136,13 +148,12 @@ export class FridaySlackAdapter extends SlackAdapter {
   }
 
   protected override handleAgentSessionStopped(
-    event: AgentStoppedEvent,
-    options?: WebhookOptions,
+    _event: AgentStoppedEvent,
+    _options?: WebhookOptions,
   ): void {
-    // Agent stop carries no team; channel/user gating uses the resolved policy
-    // only when both are present, otherwise it flows to the lifecycle handler
-    // where Friday logs without creating threads or publishing.
-    return super.handleAgentSessionStopped(event, options)
+    // The event has no workspace identity, so it cannot pass Friday's
+    // fail-closed policy gate. The upstream handler also aborts Chat state and
+    // writes Slack session status; Friday does not use either mechanism.
   }
 
   protected override handleAgentSessionTitleChanged(
@@ -169,11 +180,7 @@ export class FridaySlackAdapter extends SlackAdapter {
     teamId?: string,
   ): void {
     const typed = event as { readonly channel: string; readonly user: string }
-    if (
-      teamId !== undefined &&
-      teamId !== '' &&
-      this.dropsForPolicy(teamId, typed.channel, typed.user)
-    ) {
+    if (teamId === undefined || this.dropsForPolicy(teamId, typed.channel, typed.user)) {
       this.logger.debug('Ignored Slack Home open from unknown location', {
         channelId: typed.channel,
       })

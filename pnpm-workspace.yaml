@@ -23,3 +23,6 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-protocol@0.84.2'
   - '@earendil-works/pi-telemetry@0.84.2'
   - '@earendil-works/pi-tui@0.84.2'
+
+patchedDependencies:
+  '@chat-adapter/discord@4.40.0': patches/@chat-adapter__discord@4.40.0.patch
