@@ -146,6 +146,8 @@ const messageEvent = (
     readonly user?: string
     readonly text?: string
     readonly ts?: string
+    readonly bot_id?: string
+    readonly subtype?: string
   } = {},
 ) => ({
   type: 'message',
@@ -246,6 +248,30 @@ it.effect('drops denied users before Chat state', () =>
     await flushTasks()
 
     assert.deepStrictEqual(adapter.processedMessages, [])
+  }),
+)
+
+it.effect('drops bot and Slack system messages before catch-all routing', () =>
+  Effect.promise(async () => {
+    const adapter = adapterWith(allowTeam)
+
+    adapter.runMessageEvent(messageEvent({ user: 'UAPP', bot_id: 'BAPP' }))
+    adapter.runMessageEvent(messageEvent({ user: 'UAPP', subtype: 'bot_message' }))
+    adapter.runMessageEvent(messageEvent({ user: 'USLACKBOT' }))
+    await flushTasks()
+
+    assert.deepStrictEqual(adapter.processedMessages, [])
+  }),
+)
+
+it.effect('keeps human message subtypes eligible for normal routing', () =>
+  Effect.promise(async () => {
+    const adapter = adapterWith(allowTeam)
+
+    adapter.runMessageEvent(messageEvent({ subtype: 'file_share' }))
+    await flushTasks()
+
+    assert.strictEqual(adapter.processedMessages.length, 1)
   }),
 )
 
