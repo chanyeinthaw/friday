@@ -92,7 +92,7 @@ import {
   type StoredDocument,
 } from './documents/Documents.ts'
 
-export const FRIDAY_VERSION = '0.0.0-nightly.29'
+export const FRIDAY_VERSION = '0.0.0-nightly.30'
 
 /**
  * One node of the CLI command tree: the typed source of parsing, validation,
