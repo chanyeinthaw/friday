@@ -1,3 +1,4 @@
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion -- Typed steer rejection inspects unknown wrapped causes. */
 import type {
   Activity,
   HarnessSession,
@@ -14,6 +15,32 @@ import * as Schema from 'effect/Schema'
 import type * as Stream from 'effect/Stream'
 
 export type PromptMode = 'steer' | 'turn'
+
+/** Typed rejection when steering finds no genuinely active turn. */
+export class SteerRejectedError extends Schema.Error<SteerRejectedError>('SteerRejectedError')({
+  _tag: Schema.tag('SteerRejectedError'),
+  turnId: Schema.String,
+  detail: Schema.String,
+}) {}
+
+const hasSteerRejectedTag = (value: unknown): boolean =>
+  typeof value === 'object' &&
+  value !== null &&
+  '_tag' in value &&
+  (value as { readonly _tag: unknown })._tag === 'SteerRejectedError'
+
+/** Matches a direct rejection or one wrapped as `cause` (e.g. via ThreadRuntimeError). */
+export const isSteerRejected = (error: unknown): boolean => {
+  if (hasSteerRejectedTag(error)) return true
+  if (typeof error === 'object' && error !== null && 'cause' in error) {
+    const cause = (error as { readonly cause: unknown }).cause
+    if (cause !== undefined && cause !== null) {
+      if (hasSteerRejectedTag(cause)) return true
+      if (typeof cause === 'object') return isSteerRejected(cause)
+    }
+  }
+  return false
+}
 
 export interface PromptRequest {
   readonly turnId: TurnId

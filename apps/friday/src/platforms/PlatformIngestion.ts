@@ -199,7 +199,11 @@ export const PlatformIngestionLive = Layer.effect(
     ) {
       const key = ingestKey(input)
       const annotations = ingestAnnotations(input)
-      return yield* semaphore
+      // The binding semaphore covers lookup, enrichment, routing, and thread
+      // resolution only. Agent dispatch, terminal waiting, and publication run
+      // after release so follow-ups can steer the active turn instead of
+      // queueing behind its execution.
+      const dispatched = yield* semaphore
         .withPermit(key)(
           Effect.gen(function* () {
             const foundThread = yield* lookupAdmission(input)
@@ -219,10 +223,12 @@ export const PlatformIngestionLive = Layer.effect(
             if (targetCreated) {
               yield* launchTitleSidecar(thread, input.message.content.text)
             }
-            const message = resolveIngestMessage(routedInput)
-            yield* channelTurns.accept({ thread, message })
+            return { thread, message: resolveIngestMessage(routedInput) }
           }),
         )
+        .pipe(Effect.annotateLogs(annotations), Effect.withLogSpan('platform.ingest'))
+      yield* channelTurns
+        .accept(dispatched)
         .pipe(Effect.annotateLogs(annotations), Effect.withLogSpan('platform.ingest'))
     })
 

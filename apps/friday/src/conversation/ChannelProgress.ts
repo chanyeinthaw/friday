@@ -3,6 +3,7 @@ import type {
   InputMessage,
   ThreadId,
   ToolCallId,
+  TurnId,
 } from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Duration from 'effect/Duration'
@@ -22,6 +23,7 @@ type ToolCategory = 'commands' | 'editing' | 'reading' | 'task' | 'tools'
 
 interface ChannelProgressState {
   readonly thread: ChannelThread
+  readonly turnId: TurnId
   readonly activeTools: Map<ToolCallId, ToolCategory>
   status: string
 }
@@ -30,12 +32,17 @@ export interface ChannelProgressContract {
   readonly accept: (
     thread: ChannelThread,
     message: InputMessage,
+    turnId: TurnId,
   ) => Effect.Effect<void, ProgressError>
   readonly observe: (
     threadId: ThreadId,
     event: ThreadRuntimeEvent,
   ) => Effect.Effect<void, ProgressError>
-  readonly finalize: (thread: ChannelThread, text: string) => Effect.Effect<void, ProgressError>
+  readonly finalize: (
+    thread: ChannelThread,
+    turnId: TurnId,
+    text: string,
+  ) => Effect.Effect<void, ProgressError>
 }
 
 export class ChannelProgress extends Context.Service<ChannelProgress, ChannelProgressContract>()(
@@ -150,7 +157,7 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
         })
 
       return ChannelProgress.of({
-        accept: (thread, message) =>
+        accept: (thread, message, turnId) =>
           lockFor(thread.id).withPermit(
             Effect.gen(function* () {
               if (message.platformMessageId !== undefined) {
@@ -163,7 +170,18 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
                 )
               }
               const existing = states.get(thread.id)
-              if (existing) return
+              if (existing && existing.turnId === turnId) return
+              if (existing) {
+                // A newer turn reuses the single working message. Reset tool
+                // tracking so stale updates cannot leak into the new turn.
+                states.set(thread.id, {
+                  thread,
+                  turnId,
+                  activeTools: new Map(),
+                  status: existing.status,
+                })
+                return
+              }
               yield* attempt(
                 'begin-working',
                 platforms.beginWorking({
@@ -173,6 +191,7 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
               )
               states.set(thread.id, {
                 thread,
+                turnId,
                 activeTools: new Map(),
                 status: 'Thinking...',
               })
@@ -183,6 +202,7 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
             Effect.gen(function* () {
               const state = states.get(threadId)
               if (!state) return
+              if (state.turnId !== event.turnId) return
               if (event.type === 'turn-started') {
                 yield* update(state, 'Thinking...')
                 return
@@ -198,9 +218,11 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
               }
             }),
           ),
-        finalize: (thread, text) =>
+        finalize: (thread, turnId, text) =>
           lockFor(thread.id).withPermit(
             Effect.gen(function* () {
+              const current = states.get(thread.id)
+              if (!current || current.turnId !== turnId) return
               states.delete(thread.id)
               if (text.trim().length === 0) {
                 yield* attempt(

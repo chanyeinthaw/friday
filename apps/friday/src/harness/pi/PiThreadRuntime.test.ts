@@ -154,15 +154,21 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
       },
       mode: 'turn',
     })
-    yield* runtime.prompt({
-      turnId,
-      message: { source: 'user', content: { text: 'steer', images: [] } },
-    })
+    const rejected = yield* runtime
+      .prompt({
+        turnId,
+        message: { source: 'user', content: { text: 'steer', images: [] } },
+      })
+      .pipe(
+        Effect.as(false),
+        Effect.catchTag('SteerRejectedError', () => Effect.succeed(true)),
+      )
+    assert.strictEqual(rejected, true)
     const delivered = yield* Fiber.join(events)
-    assert.lengthOf(prompts, 2)
+    assert.lengthOf(prompts, 1)
     assert.deepStrictEqual(
       prompts.map(({ behavior }) => behavior),
-      [undefined, 'steer'],
+      [undefined],
     )
     const firstPrompt = prompts[0]
     assert.isDefined(firstPrompt)
@@ -182,7 +188,6 @@ it.effect('runs the complete Pi wrapper lifecycle through ThreadRuntime', () =>
         trigger: { kind: 'trigger', participantId: 'p1', content: 'start' },
       })
     }
-    assert.strictEqual(prompts[1]?.text, 'steer')
     assert.deepStrictEqual(
       Array.from(delivered, (event) => event.type),
       ['turn-started', 'turn-completed'],
@@ -327,6 +332,8 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
         readonly text: string
         readonly behavior: 'steer' | 'followUp' | undefined
       }> = []
+      const turnStarted = yield* Deferred.make<void>()
+      const finishTurn = yield* Deferred.make<void>()
       let listener: ((event: AgentSessionEvent) => void | Promise<void>) | undefined
       const session = {
         sessionId: 'pi-session-compaction',
@@ -340,6 +347,10 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
         bindExtensions: async () => undefined,
         prompt: async (text, options) => {
           prompts.push({ text, behavior: options?.streamingBehavior })
+          if (options?.streamingBehavior !== 'steer') {
+            Effect.runFork(Deferred.succeed(turnStarted, undefined))
+            await Effect.runPromise(Deferred.await(finishTurn))
+          }
         },
         abort: async () => undefined,
         reload: async () => undefined,
@@ -382,20 +393,29 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
         thread,
         sessionFactory: () => Effect.succeed(session),
       })
+      const turnId = decodeTurnId('turn-compaction')
+      yield* runtime
+        .prompt({
+          turnId,
+          message: { source: 'user', content: { text: 'start', images: [] } },
+          mode: 'turn',
+        })
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(turnStarted)
       yield* Effect.promise(
         () => listener?.({ type: 'compaction_start', reason: 'threshold' }) ?? Promise.resolve(),
       )
       yield* Effect.all([
         runtime.prompt({
-          turnId: decodeTurnId('turn-compaction'),
+          turnId,
           message: { source: 'user', content: { text: 'first', images: [] } },
         }),
         runtime.prompt({
-          turnId: decodeTurnId('turn-compaction'),
+          turnId,
           message: { source: 'user', content: { text: 'second', images: [] } },
         }),
       ])
-      assert.deepStrictEqual(prompts, [])
+      assert.deepStrictEqual(prompts, [{ text: 'start', behavior: undefined }])
 
       yield* Effect.promise(
         () =>
@@ -408,9 +428,11 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
           }) ?? Promise.resolve(),
       )
       assert.deepStrictEqual(prompts, [
+        { text: 'start', behavior: undefined },
         { text: 'first', behavior: 'steer' },
         { text: 'second', behavior: 'steer' },
       ])
+      yield* Deferred.succeed(finishTurn, undefined)
     }),
   ).pipe(Effect.provide(BunCrypto.layer)),
 )
@@ -759,6 +781,152 @@ it.effect('reports a structured failure when the Pi reload rejects', () =>
         reason: 'reload-failed',
         detail: 'extension runner exploded',
       })
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
+)
+
+it.effect('rejects steering when no Pi turn is active', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const session = {
+        sessionId: 'pi-session-steer-idle',
+        sessionManager: { getSessionFile: () => undefined },
+        subscribe: () => () => undefined,
+        bindExtensions: async () => undefined,
+        prompt: async () => undefined,
+        abort: async () => undefined,
+        reload: async () => undefined,
+        dispose: () => undefined,
+        getSessionStats: () => ({
+          sessionFile: undefined,
+          sessionId: 'pi-session-steer-idle',
+          userMessages: 0,
+          assistantMessages: 0,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: 0,
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          cost: 0,
+        }),
+      } satisfies PiAgentSessionContract
+      const runtime = yield* makePiThreadRuntime({
+        thread: decodeThread({
+          id: 'thread-steer-idle',
+          audience: 'user',
+          parent: null,
+          harness: 'pi',
+          harnessSession: null,
+          workingDirectory: '/tmp/friday/thread-steer-idle',
+          model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
+          thinkingLevel: 'max',
+          channelContext: { name: 'Friday test channel', description: '' },
+          conversationBinding: {
+            platform: 'discord',
+            connectionId: 'discord',
+            channelId: 'channel-steer-idle',
+            sourceMessageId: 'message-steer-idle',
+            conversationId: 'platform-conversation-steer-idle',
+          },
+          status: 'active',
+          createdAt: '2026-03-21T09:00:00.000Z',
+          updatedAt: '2026-03-21T09:00:00.000Z',
+          closedAt: null,
+        }),
+        sessionFactory: () => Effect.succeed(session),
+      })
+      const rejected = yield* runtime
+        .prompt({
+          turnId: decodeTurnId('turn-steer-idle'),
+          message: { source: 'user', content: { text: 'stale', images: [] } },
+        })
+        .pipe(
+          Effect.as(false),
+          Effect.catchTag('SteerRejectedError', () => Effect.succeed(true)),
+        )
+      assert.strictEqual(rejected, true)
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
+)
+
+it.effect('rejects steering for a different turn while one Pi turn is active', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const prompts: Array<string> = []
+      const turnStarted = yield* Deferred.make<void>()
+      const finishTurn = yield* Deferred.make<void>()
+      const session = {
+        sessionId: 'pi-session-steer-mismatch',
+        sessionManager: { getSessionFile: () => undefined },
+        subscribe: () => () => undefined,
+        bindExtensions: async () => undefined,
+        prompt: async (text: string, options?: { readonly streamingBehavior?: string }) => {
+          prompts.push(text)
+          if (options?.streamingBehavior !== 'steer') {
+            Effect.runFork(Deferred.succeed(turnStarted, undefined))
+            await Effect.runPromise(Deferred.await(finishTurn))
+          }
+        },
+        abort: async () => undefined,
+        reload: async () => undefined,
+        dispose: () => undefined,
+        getSessionStats: () => ({
+          sessionFile: undefined,
+          sessionId: 'pi-session-steer-mismatch',
+          userMessages: 0,
+          assistantMessages: 0,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: 0,
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          cost: 0,
+        }),
+      } satisfies PiAgentSessionContract
+      const runtime = yield* makePiThreadRuntime({
+        thread: decodeThread({
+          id: 'thread-steer-mismatch',
+          audience: 'user',
+          parent: null,
+          harness: 'pi',
+          harnessSession: null,
+          workingDirectory: '/tmp/friday/thread-steer-mismatch',
+          model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
+          thinkingLevel: 'max',
+          channelContext: { name: 'Friday test channel', description: '' },
+          conversationBinding: {
+            platform: 'discord',
+            connectionId: 'discord',
+            channelId: 'channel-steer-mismatch',
+            sourceMessageId: 'message-steer-mismatch',
+            conversationId: 'platform-conversation-steer-mismatch',
+          },
+          status: 'active',
+          createdAt: '2026-03-21T09:00:00.000Z',
+          updatedAt: '2026-03-21T09:00:00.000Z',
+          closedAt: null,
+        }),
+        sessionFactory: () => Effect.succeed(session),
+      })
+      const activeTurn = decodeTurnId('turn-steer-active')
+      yield* runtime
+        .prompt({
+          turnId: activeTurn,
+          message: { source: 'user', content: { text: 'active', images: [] } },
+          mode: 'turn',
+        })
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(turnStarted)
+      const rejected = yield* runtime
+        .prompt({
+          turnId: decodeTurnId('turn-steer-other'),
+          message: { source: 'user', content: { text: 'other', images: [] } },
+        })
+        .pipe(
+          Effect.as(false),
+          Effect.catchTag('SteerRejectedError', () => Effect.succeed(true)),
+        )
+      assert.strictEqual(rejected, true)
+      assert.deepStrictEqual(prompts.length, 1)
+      yield* Deferred.succeed(finishTurn, undefined)
     }),
   ).pipe(Effect.provide(BunCrypto.layer)),
 )
