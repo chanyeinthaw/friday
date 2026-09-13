@@ -22,6 +22,9 @@ catalogs:
       specifier: 4.1.10
       version: 4.1.10
 
+patchedDependencies:
+  '@chat-adapter/discord@4.40.0': 70843947ec19b08ab0dc39966b9aa697e39feca99e46602384251ad2e9a71a2f
+
 importers:
 
   .:
@@ -64,7 +67,7 @@ importers:
     dependencies:
       '@chat-adapter/discord':
         specifier: 4.40.0
-        version: 4.40.0(zod@4.4.3)
+        version: 4.40.0(patch_hash=70843947ec19b08ab0dc39966b9aa697e39feca99e46602384251ad2e9a71a2f)(zod@4.4.3)
       '@chat-adapter/slack':
         specifier: 4.40.0
         version: 4.40.0(zod@4.4.3)
@@ -3249,7 +3252,7 @@ snapshots:
       '@babel/helper-string-parser': 8.0.0
       '@babel/helper-validator-identifier': 8.0.4
 
-  '@chat-adapter/discord@4.40.0(zod@4.4.3)':
+  '@chat-adapter/discord@4.40.0(patch_hash=70843947ec19b08ab0dc39966b9aa697e39feca99e46602384251ad2e9a71a2f)(zod@4.4.3)':
     dependencies:
       '@chat-adapter/shared': 4.40.0(zod@4.4.3)
       chat: 4.40.0(zod@4.4.3)

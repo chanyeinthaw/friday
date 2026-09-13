@@ -1,0 +1,13 @@
+diff --git a/dist/index.js b/dist/index.js
+index 2b07a8b6569234dac42026e560aef701e7e9fbbb..d5e83e4e8a6cba527f2daacccf560de409960e5b 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -2001,7 +2001,7 @@ var DiscordAdapter = class _DiscordAdapter {
+     this.logger.debug("Discord API: DELETE message response", { ok: true });
+   }
+   async resolveThreadChannelId(parentChannelId, discordThreadId) {
+-    if (!discordThreadId) {
++    if (!discordThreadId || discordThreadId === parentChannelId) {
+       return parentChannelId;
+     }
+     const cached = this.threadParentCache.get(discordThreadId);
