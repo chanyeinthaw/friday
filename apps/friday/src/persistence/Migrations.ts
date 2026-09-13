@@ -266,15 +266,129 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
     )
   `
 
+  // `guild` stays in the check for the one-time legacy Discord migration
+  // below, which reads guild subjects to discover guilds before deleting
+  // them. No writer creates guild rows afterwards; Slack channel admission
+  // reuses the same policy tables with the `channel` subject type.
   yield* sql`
     CREATE TABLE IF NOT EXISTS platform_access_policies (
       connection_id TEXT NOT NULL,
-      subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace')),
+      subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace', 'channel', 'guild')),
       mode TEXT NOT NULL CHECK (mode IN ('all', 'allow', 'deny')),
       PRIMARY KEY (connection_id, subject_type),
       FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
     )
   `
+
+  // Older databases restrict access subjects to user/workspace. Slack channel
+  // admission reuses the same policy tables, so widen the check once. The
+  // copy preserves legacy `guild` rows for the Discord migration below.
+  const accessPolicyTable = yield* sql<{ readonly sql: string }>`
+    SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'platform_access_policies'
+  `
+  if (accessPolicyTable[0]?.sql !== undefined && !accessPolicyTable[0].sql.includes("'channel'")) {
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`
+          CREATE TABLE platform_access_policies_next (
+            connection_id TEXT NOT NULL,
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('user', 'workspace', 'channel', 'guild')),
+            mode TEXT NOT NULL CHECK (mode IN ('all', 'allow', 'deny')),
+            PRIMARY KEY (connection_id, subject_type),
+            FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id)
+              ON DELETE CASCADE
+          )
+        `
+        yield* sql`
+          INSERT INTO platform_access_policies_next
+          SELECT connection_id, subject_type, mode
+          FROM platform_access_policies
+        `
+        yield* sql`DROP TABLE platform_access_policies`
+        yield* sql`
+          ALTER TABLE platform_access_policies_next
+          RENAME TO platform_access_policies
+        `
+      }),
+    )
+  }
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS slack_connections (
+      connection_id TEXT PRIMARY KEY,
+      bot_token_env TEXT NOT NULL,
+      app_token_env TEXT NOT NULL,
+      default_reply_mode TEXT NOT NULL DEFAULT 'reply-in-thread'
+        CHECK (default_reply_mode IN ('reply-in-thread', 'reply-in-channel')),
+      FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+    )
+  `
+
+  const slackConnectionColumns = yield* sql<{ readonly name: string }>`
+    SELECT name FROM pragma_table_info('slack_connections')
+  `
+  if (!slackConnectionColumns.some((column) => column.name === 'default_reply_mode')) {
+    yield* sql`
+      ALTER TABLE slack_connections
+      ADD COLUMN default_reply_mode TEXT NOT NULL DEFAULT 'reply-in-thread'
+        CHECK (default_reply_mode IN ('reply-in-thread', 'reply-in-channel'))
+    `
+  }
+
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS slack_channels (
+      connection_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      invocation_mode TEXT CHECK (invocation_mode IN ('mention-only', 'all-messages')),
+      reply_mode TEXT CHECK (reply_mode IN ('reply-in-thread', 'reply-in-channel')),
+      PRIMARY KEY (connection_id, channel_id),
+      FOREIGN KEY (connection_id) REFERENCES slack_connections(connection_id) ON DELETE CASCADE
+    )
+  `
+
+  // Older databases store only a mandatory reply mode per Slack channel.
+  // Per-channel invocation arrived later with both columns optional, so a
+  // row only carries the overrides it needs and absent fields inherit the
+  // connection defaults. Rebuild once, preserving every existing row with a
+  // NULL invocation mode (mention-only, the previous behavior).
+  const slackChannelColumns = yield* sql<{
+    readonly name: string
+    readonly notnull: number
+  }>`
+    SELECT name, "notnull" FROM pragma_table_info('slack_channels')
+  `
+  const slackReplyColumn = slackChannelColumns.find((column) => column.name === 'reply_mode')
+  if (
+    !slackChannelColumns.some((column) => column.name === 'invocation_mode') ||
+    slackReplyColumn?.notnull === 1
+  ) {
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`
+          CREATE TABLE slack_channels_next (
+            connection_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            invocation_mode TEXT CHECK (invocation_mode IN ('mention-only', 'all-messages')),
+            reply_mode TEXT CHECK (reply_mode IN ('reply-in-thread', 'reply-in-channel')),
+            PRIMARY KEY (connection_id, channel_id),
+            FOREIGN KEY (connection_id) REFERENCES slack_connections(connection_id)
+              ON DELETE CASCADE
+          )
+        `
+        yield* sql`
+          INSERT INTO slack_channels_next (connection_id, channel_id, invocation_mode, reply_mode)
+          SELECT connection_id, channel_id, NULL, reply_mode
+          FROM slack_channels
+        `
+        yield* sql`DROP TABLE slack_channels`
+        yield* sql`
+          ALTER TABLE slack_channels_next
+          RENAME TO slack_channels
+        `
+      }),
+    )
+  }
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS platform_access_subjects (

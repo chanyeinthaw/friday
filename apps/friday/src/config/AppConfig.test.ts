@@ -6,12 +6,14 @@ import * as Schema from 'effect/Schema'
 import {
   AppConfig,
   DiscordPlatformConfig,
+  SlackPlatformConfig,
   findDiscordConnection,
   mergeReloadedAppConfig,
 } from './AppConfig.ts'
 
 const decodeAppConfig = Schema.decodeSync(AppConfig)
 const decodeDiscord = Schema.decodeSync(DiscordPlatformConfig)
+const decodeSlack = Schema.decodeSync(SlackPlatformConfig)
 
 const guild = (
   overrides: {
@@ -49,7 +51,10 @@ const discordConnection = (overrides: {
     guilds: overrides.guilds ?? [guild()],
   })
 
-const appConfig = (discord: ReadonlyArray<ReturnType<typeof discordConnection>>) =>
+const appConfig = (
+  discord: ReadonlyArray<ReturnType<typeof discordConnection>>,
+  slack: ReadonlyArray<ReturnType<typeof slackConnection>> = [],
+) =>
   decodeAppConfig({
     installationId: 'installation-1',
     models: {
@@ -57,9 +62,36 @@ const appConfig = (discord: ReadonlyArray<ReturnType<typeof discordConnection>>)
       utility: { provider: 'opencode-go', modelId: 'glm-5.3-flash', thinkingLevel: 'low' },
       subagents: [],
     },
-    platforms: { discord, slack: [] },
+    platforms: { discord, slack },
     agent: { recentMessageCount: 20 },
     admin: { discordUserIds: ['admin-1'] },
+  })
+
+const slackConnection = (overrides: {
+  readonly connectionId?: string
+  readonly botToken?: string
+  readonly channels?: ReadonlyArray<{
+    readonly channelId: string
+    readonly invocationMode?: 'mention-only' | 'all-messages'
+    readonly replyMode?: 'reply-in-thread' | 'reply-in-channel'
+  }>
+}) =>
+  decodeSlack({
+    connectionId: overrides.connectionId ?? 'slack-personal',
+    platform: 'slack',
+    name: 'Personal Slack',
+    mode: 'socket',
+    credentials: {
+      botToken: overrides.botToken ?? 'xoxb-1',
+      appToken: 'xapp-1',
+    },
+    access: {
+      users: { mode: 'all', ids: [] },
+      channels: { mode: 'all', ids: [] },
+      workspaces: { mode: 'all', ids: [] },
+    },
+    defaultReplyMode: 'reply-in-thread',
+    channels: overrides.channels ?? [],
   })
 
 it('applies reloaded guild configuration and user policies to running connections', () => {
@@ -140,6 +172,27 @@ it('takes non-topology configuration from the loaded snapshot', () => {
   const merged = mergeReloadedAppConfig(running, loaded)
   assert.strictEqual(merged.agent.recentMessageCount, 40)
   assert.strictEqual(merged.models.primary.thinkingLevel, 'high')
+})
+
+it('applies reloaded Slack channel overrides while pinning topology', () => {
+  const running = appConfig([], [slackConnection({ botToken: 'running-token' })])
+  const loaded = appConfig(
+    [],
+    [
+      slackConnection({
+        botToken: 'database-token',
+        channels: [{ channelId: 'C456', invocationMode: 'all-messages' }],
+      }),
+    ],
+  )
+  const merged = mergeReloadedAppConfig(running, loaded)
+  const connection = merged.platforms.slack[0]
+  assert(connection)
+  assert(connection.mode === 'socket')
+  assert.strictEqual(String(connection.credentials.botToken), 'running-token')
+  assert.deepStrictEqual(connection.channels, [
+    { channelId: 'C456', invocationMode: 'all-messages' },
+  ])
 })
 
 it('finds a running Discord connection by ID', () => {

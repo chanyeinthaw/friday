@@ -2,6 +2,7 @@ import type { DiscordAdapter } from '@chat-adapter/discord'
 import * as Effect from 'effect/Effect'
 
 import type { PlatformInput } from '../PlatformAdapter.ts'
+import { platformHistorySource } from '../PlatformAdapter.ts'
 import { ChatSdkCallbackError } from '../chat-sdk/Errors.ts'
 import { projectChatSdkContextMessage } from '../chat-sdk/MessageProjection.ts'
 import { discordChannelConversationId, isDiscordThread } from './DiscordConversationScope.ts'
@@ -100,7 +101,7 @@ export const loadDiscordInitialContext = Effect.fn('loadDiscordInitialContext')(
     catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
   })
   const historySource =
-    input.discordHistorySource === 'thread' && isDiscordThread(location)
+    platformHistorySource(input) === 'thread' && isDiscordThread(location)
       ? String(input.binding.conversationId)
       : discordChannelConversationId(discord, location)
   const triggerId = String(input.message.platformMessageId ?? '')

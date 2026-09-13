@@ -39,6 +39,8 @@ import { Documents, DocumentsLive, DocumentError } from './documents/Documents.t
 import { startDocumentServer } from './documents/DocumentServer.ts'
 import { ensureFridaySkills } from './skills/FridaySkills.ts'
 import { startDiscord } from './platforms/discord/DiscordLive.ts'
+import { startSlack } from './platforms/slack/SlackLive.ts'
+import { SlackConnections, SlackConnectionsLive } from './config/SlackConnections.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
 import {
@@ -76,6 +78,8 @@ const ModelConfigurationConfiguredLive = ModelConfigurationLive.pipe(
   Layer.provide(FridaySqliteLive),
 )
 
+const SlackConnectionsConfiguredLive = SlackConnectionsLive.pipe(Layer.provide(FridaySqliteLive))
+
 const start = Effect.scoped(
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem
@@ -93,6 +97,7 @@ const start = Effect.scoped(
       reload: reloadApplicationConfig(config),
     })
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
+    yield* startSlack().pipe(Effect.provide(FridaySqliteLive))
     yield* ensureFridaySkills()
     yield* startDocumentServer().pipe(Effect.provide(DocumentsConfiguredLive))
     const cleanupNotifications = yield* WorkspaceCleanupNotifications
@@ -234,6 +239,58 @@ const application = Effect.scoped(
         DiscordGuilds.pipe(
           Effect.flatMap((guilds) => guilds.resetChannel(connectionId, guildId, channelId)),
           Effect.provide(DiscordGuildsConfiguredLive),
+        ),
+      addSlackConnection: (input) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.addConnection(input)),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      updateSlackConnection: (action) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.updateConnection(action)),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      removeSlackConnection: (connectionId) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.removeConnection(connectionId)),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      enableSlackConnection: (connectionId) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.enableConnection(connectionId)),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      disableSlackConnection: (connectionId) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.disableConnection(connectionId)),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      getSlackConnection: (connectionId) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.getConnection(connectionId)),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      listSlackConnections: () =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.listConnections()),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      setSlackAccess: (connectionId, subject, policy) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) =>
+            connections.setAccessPolicy(connectionId, subject, policy),
+          ),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      setSlackChannel: (connectionId, channelId, patch) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.setChannel(connectionId, channelId, patch)),
+          Effect.provide(SlackConnectionsConfiguredLive),
+        ),
+      resetSlackChannel: (connectionId, channelId) =>
+        SlackConnections.pipe(
+          Effect.flatMap((connections) => connections.resetChannel(connectionId, channelId)),
+          Effect.provide(SlackConnectionsConfiguredLive),
         ),
       addDiscordAdmin: (userId) =>
         DiscordAdmins.pipe(

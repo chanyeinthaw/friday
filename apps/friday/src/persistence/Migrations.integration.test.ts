@@ -1063,3 +1063,81 @@ test('adds the guild channel scope column to pre-scope databases', async () =>
       assert.strictEqual(rows[0]?.channels_mode, null)
     }).pipe(Effect.provide(database)),
   ))
+
+test('adds the invocation column to pre-invocation Slack channels', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      // Pre-create the Slack tables in their pre-invocation shape: a
+      // mandatory reply mode and no invocation column. Structural
+      // migrations must rebuild the table idempotently without losing rows.
+      yield* sql`
+        CREATE TABLE platform_connections (
+          connection_id TEXT PRIMARY KEY,
+          platform TEXT NOT NULL,
+          name TEXT NOT NULL,
+          enabled INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `
+      yield* sql`
+        CREATE TABLE slack_connections (
+          connection_id TEXT PRIMARY KEY,
+          bot_token_env TEXT NOT NULL,
+          app_token_env TEXT NOT NULL,
+          default_reply_mode TEXT NOT NULL DEFAULT 'reply-in-thread'
+            CHECK (default_reply_mode IN ('reply-in-thread', 'reply-in-channel')),
+          FOREIGN KEY (connection_id) REFERENCES platform_connections(connection_id) ON DELETE CASCADE
+        )
+      `
+      yield* sql`
+        CREATE TABLE slack_channels (
+          connection_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          reply_mode TEXT NOT NULL CHECK (reply_mode IN ('reply-in-thread', 'reply-in-channel')),
+          PRIMARY KEY (connection_id, channel_id),
+          FOREIGN KEY (connection_id) REFERENCES slack_connections(connection_id) ON DELETE CASCADE
+        )
+      `
+      yield* sql`
+        INSERT INTO platform_connections (
+          connection_id, platform, name, enabled, created_at, updated_at
+        ) VALUES (
+          'slack-personal', 'slack', 'Personal Slack', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `
+      yield* sql`
+        INSERT INTO slack_connections (
+          connection_id, bot_token_env, app_token_env, default_reply_mode
+        ) VALUES (
+          'slack-personal', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'reply-in-thread'
+        )
+      `
+      yield* sql`
+        INSERT INTO slack_channels (connection_id, channel_id, reply_mode)
+        VALUES ('slack-personal', 'C456', 'reply-in-channel')
+      `
+
+      yield* runStructuralMigrations()
+      yield* runStructuralMigrations()
+
+      const columns = yield* sql<{ readonly name: string }>`
+        SELECT name FROM pragma_table_info('slack_channels') ORDER BY name
+      `
+      assert.deepStrictEqual(
+        columns.map((column) => column.name),
+        ['channel_id', 'connection_id', 'invocation_mode', 'reply_mode'],
+      )
+      // The pre-existing row survives with a NULL invocation mode
+      // (mention-only, the previous behavior) and its reply mode intact.
+      const rows = yield* sql<{
+        readonly invocation_mode: string | null
+        readonly reply_mode: string | null
+      }>`
+        SELECT invocation_mode, reply_mode FROM slack_channels
+      `
+      assert.strictEqual(rows[0]?.invocation_mode, null)
+      assert.strictEqual(rows[0]?.reply_mode, 'reply-in-channel')
+    }).pipe(Effect.provide(database)),
+  ))

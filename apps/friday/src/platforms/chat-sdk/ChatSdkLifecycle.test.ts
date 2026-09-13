@@ -139,6 +139,155 @@ it.effect('classifies mentions inside subscribed threads as mention invocations'
   }),
 )
 
+it.effect('routes catch-all patterns through ingestion with the configured kind', () =>
+  Effect.gen(function* () {
+    const handledKinds: Array<unknown> = []
+    const patterns: Array<RegExp> = []
+    const catchAllHandlers: Array<ChatSdkMessageHandler> = []
+    const chat: ChatSdkLifecycleSource = {
+      initialize: async () => undefined,
+      shutdown: async () => undefined,
+      thread: () => ({ post: () => Promise.resolve({}) }),
+      onNewMention: () => undefined,
+      onDirectMessage: () => undefined,
+      onSubscribedMessage: () => undefined,
+      onNewMessage: (pattern, handler) => {
+        patterns.push(pattern)
+        catchAllHandlers.push(handler)
+      },
+    }
+
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* startChatSdkLifecycle({
+          connectionId: 'discord',
+          chat,
+          catchAll: { pattern: /[\s\S]*/, kind: 'subscribed-message' },
+          onInboundMessage: (_input, kind) => Effect.sync(() => handledKinds.push(kind)),
+        })
+        assert.strictEqual(patterns.length, 1)
+        assert.strictEqual(patterns[0]?.source, '[\\s\\S]*')
+        const handler = catchAllHandlers[0]
+        assert(handler !== undefined)
+        yield* Effect.promise(() =>
+          handler(
+            { adapter: { name: 'discord' }, channelId: 'channel-1', id: 'thread-1' },
+            {
+              id: 'message-1',
+              raw: {},
+              text: 'unmentioned chatter',
+              author: {
+                userId: 'user-1',
+                userName: 'user',
+                fullName: 'User',
+                isBot: false,
+                isMe: false,
+              },
+            },
+          ),
+        )
+        assert.deepStrictEqual(handledKinds, ['subscribed-message'])
+      }),
+    )
+  }),
+)
+
+it.effect('refuses a catch-all the Chat source cannot register', () =>
+  Effect.gen(function* () {
+    const chat: ChatSdkLifecycleSource = {
+      initialize: async () => undefined,
+      shutdown: async () => undefined,
+      thread: () => ({ post: () => Promise.resolve({}) }),
+      onNewMention: () => undefined,
+      onDirectMessage: () => undefined,
+      onSubscribedMessage: () => undefined,
+    }
+    const exit = yield* Effect.scoped(
+      startChatSdkLifecycle({
+        connectionId: 'discord',
+        chat,
+        catchAll: { pattern: /[\s\S]*/, kind: 'subscribed-message' },
+        onInboundMessage: () => Effect.void,
+      }).pipe(Effect.exit),
+    )
+    assert(Exit.isFailure(exit))
+  }),
+)
+
+it.effect('threads the effective kind through to inbound ingestion', () =>
+  Effect.gen(function* () {
+    const seenKinds: Array<unknown> = []
+    const handledKinds: Array<unknown> = []
+    const seenHandlers: Array<ChatSdkMessageHandler> = []
+    const chat: ChatSdkLifecycleSource = {
+      initialize: async () => undefined,
+      shutdown: async () => undefined,
+      thread: () => ({ post: () => Promise.resolve({}) }),
+      // Registration must hand each kind a defined handler (an undefined
+      // lookup would silently wire no handler for that kind).
+      onNewMention: (handler) => {
+        assert.ok(handler)
+        seenHandlers.push(handler)
+      },
+      onDirectMessage: (handler) => {
+        assert.ok(handler)
+        seenHandlers.push(handler)
+      },
+      onSubscribedMessage: (handler) => {
+        assert.ok(handler)
+        seenHandlers.push(handler)
+      },
+    }
+    const message = (
+      overrides: Partial<{ readonly isMention: boolean }> = {},
+    ): ChatSdkMessageProjectionSource => ({
+      id: 'message-1',
+      raw: {},
+      text: 'hello',
+      author: {
+        userId: 'user-1',
+        userName: 'user',
+        fullName: 'User',
+        isBot: false,
+        isMe: false,
+      },
+      ...overrides,
+    })
+    const thread = {
+      adapter: { name: 'discord' },
+      channelId: 'channel-1',
+      id: 'thread-1',
+    }
+
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* startChatSdkLifecycle({
+          connectionId: 'discord',
+          chat,
+          shouldHandleMessage: (kind) =>
+            Effect.sync(() => {
+              seenKinds.push(kind)
+              return true
+            }),
+          onInboundMessage: (_input, kind) => Effect.sync(() => handledKinds.push(kind)),
+        })
+        assert.strictEqual(seenHandlers.length, 3)
+        // Subscribed mentions classify as mentions; plain subscribed traffic
+        // keeps its kind; direct traffic keeps its kind.
+        yield* Effect.promise(
+          () => seenHandlers[0]?.(thread, message({ isMention: true })) ?? Promise.resolve(),
+        )
+        yield* Effect.promise(
+          () => seenHandlers[1]?.(thread, message({ isMention: true })) ?? Promise.resolve(),
+        )
+        yield* Effect.promise(() => seenHandlers[2]?.(thread, message()) ?? Promise.resolve())
+        assert.deepStrictEqual(seenKinds, ['mention', 'direct-message', 'subscribed-message'])
+        assert.deepStrictEqual(handledKinds, ['mention', 'direct-message', 'subscribed-message'])
+      }),
+    )
+  }),
+)
+
 it.effect('uses platform-specific inbound normalization before ingestion', () =>
   Effect.gen(function* () {
     const handlers: Array<

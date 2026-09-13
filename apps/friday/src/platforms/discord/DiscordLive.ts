@@ -16,8 +16,8 @@ import { ThreadPersistence } from '../../conversation/ThreadPersistence.ts'
 import { ThreadRuntimePool } from '../../conversation/ThreadRuntimePool.ts'
 import { harnessReloadRefused } from '../../conversation/ThreadRuntime.ts'
 import { ChatSdkCallbackError, ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
-import type { InvocationMode } from '../../config/AppConfig.ts'
 import { PlatformRegistry } from '../PlatformRegistry.ts'
+import { admitPlatformMessage } from '../PlatformAdmission.ts'
 import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
 import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
 import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
@@ -274,106 +274,85 @@ export const startDiscord = Effect.fn('startDiscord')(function* () {
         chat.onSlashCommand(HARNESS_COMMAND_PATHS, (event) =>
           Effect.runPromise(runHarnessCommand(event)).then(() => undefined),
         )
+        // No `shouldHandleMessage` here: the adapter preflight
+        // (`FridayDiscordAdapter`) already drops unknown/disabled guilds and
+        // denied users before upstream thread creation, and the shared
+        // admission below is the authoritative gate after projection. Keeping a
+        // second full invocation check here would duplicate policy, binding,
+        // and logging orchestration that `PlatformAdmission` now owns.
         yield* startChatSdkLifecycle({
           connectionId: discordConfig.connectionId,
           chat,
           normalizeInboundMessage: (thread, message) =>
             projectDiscordMessage(discordConfig.connectionId, discord, thread, message),
-          shouldHandleMessage: (kind, thread, message) =>
-            Effect.try({
-              try: () => {
-                // Thread ids encode the parent channel, so policy resolves from
-                // the parent channel while the message stays in its thread.
-                const location = discord.decodeThreadId(thread.id)
-                const resolved = resolveDiscordChannelPolicy(
-                  currentPolicies(),
-                  location.guildId,
-                  location.channelId,
-                )
-                return { location, resolved }
-              },
-              catch: (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
-            }).pipe(
-              Effect.flatMap(({ location, resolved }) =>
-                Effect.gen(function* () {
-                  if (
-                    Option.isNone(resolved) ||
-                    !isAllowedByPolicy(message.author.userId, resolved.value.users)
-                  ) {
-                    return {
-                      allowed: false,
-                      location,
-                      mode: null satisfies InvocationMode | null,
-                    }
-                  }
-                  const input = yield* projectDiscordMessage(
-                    discordConfig.connectionId,
-                    discord,
-                    thread,
-                    message,
-                  )
-                  const hasBinding = yield* ingestion.hasBinding(input)
-                  return {
-                    allowed: shouldInvoke({
-                      kind,
-                      mode: resolved.value.invocationMode,
-                      hasBinding,
-                    }),
-                    location,
-                    mode: resolved.value.invocationMode,
-                  }
-                }).pipe(
-                  Effect.mapError(
-                    (cause) => new ChatSdkCallbackError({ operation: 'inbound-message', cause }),
-                  ),
-                ),
-              ),
-              Effect.tap(({ allowed, location, mode }) =>
-                allowed
-                  ? Effect.logDebug('discord.message.allowed').pipe(
-                      Effect.annotateLogs({
-                        component: 'discord',
-                        connectionId: discordConfig.connectionId,
-                        channelId: location.channelId,
-                        invocationKind: kind,
-                        invocationMode: mode,
-                      }),
-                    )
-                  : Effect.logDebug('discord.message.ignored').pipe(
-                      Effect.annotateLogs({
-                        component: 'discord',
-                        guildId: location.guildId,
-                        channelId: location.channelId,
-                        userId: message.author.userId,
-                        invocationKind: kind,
-                        invocationMode: mode,
-                      }),
-                    ),
-              ),
-              Effect.map(({ allowed }) => allowed),
-            ),
-          onInboundMessage: (input) =>
-            ingestion.ingest(
+          onInboundMessage: (input, kind) =>
+            admitPlatformMessage(
               input,
-              bootstrap,
-              (contextInput, cursor) => {
-                const location = discord.decodeThreadId(String(contextInput.binding.conversationId))
-                const policy = resolveChannelPolicy(location.guildId, location.channelId)
-                return policy !== undefined &&
-                  shouldLoadDiscordContext({
-                    created: cursor.created,
-                    invocationMode: policy.invocationMode,
-                    replyMode: policy.replyMode,
-                  })
-                  ? loadDiscordInitialContext(
-                      discord,
-                      config.current().agent.recentMessageCount,
-                      contextInput,
-                      cursor,
+              kind,
+              {
+                platform: 'discord',
+                connectionId: String(discordConfig.connectionId),
+                // Canonical conversation ids encode the parent channel, so
+                // policy resolves from the parent channel while the message
+                // stays in its thread. Decode failures drop instead of
+                // throwing: raw decode failures already fail in projection.
+                resolvePolicy: (canonical) => {
+                  try {
+                    const location = discord.decodeThreadId(
+                      String(canonical.binding.conversationId),
                     )
-                  : Effect.succeed(contextInput)
+                    if (location.guildId === undefined || location.channelId === undefined) {
+                      return undefined
+                    }
+                    return Option.getOrUndefined(
+                      resolveDiscordChannelPolicy(
+                        currentPolicies(),
+                        location.guildId,
+                        location.channelId,
+                      ),
+                    )
+                  } catch {
+                    return undefined
+                  }
+                },
+                isUserAdmitted: (canonical, policy) =>
+                  canonical.message.author !== undefined &&
+                  isAllowedByPolicy(String(canonical.message.author.platformUserId), policy.users),
+                shouldInvoke: ({ policy, hasBinding, kind: invocationKind }) =>
+                  shouldInvoke({
+                    kind: invocationKind,
+                    mode: policy.invocationMode,
+                    hasBinding,
+                  }),
               },
-              routeThread,
+              {
+                hasBinding: (canonical) => ingestion.hasBinding(canonical),
+                onAdmit: (admitted) =>
+                  ingestion.ingest(
+                    admitted,
+                    bootstrap,
+                    (contextInput, cursor) => {
+                      const location = discord.decodeThreadId(
+                        String(contextInput.binding.conversationId),
+                      )
+                      const policy = resolveChannelPolicy(location.guildId, location.channelId)
+                      return policy !== undefined &&
+                        shouldLoadDiscordContext({
+                          created: cursor.created,
+                          invocationMode: policy.invocationMode,
+                          replyMode: policy.replyMode,
+                        })
+                        ? loadDiscordInitialContext(
+                            discord,
+                            config.current().agent.recentMessageCount,
+                            contextInput,
+                            cursor,
+                          )
+                        : Effect.succeed(contextInput)
+                    },
+                    routeThread,
+                  ),
+              },
             ),
         })
         // Register the application commands before the gateway starts so a

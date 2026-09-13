@@ -147,6 +147,16 @@ const strictRunnerStubs = {
   setDiscordGuildChannels: () => Effect.die('unreachable'),
   setDiscordGuildChannel: () => Effect.die('unreachable'),
   resetDiscordGuildChannel: () => Effect.die('unreachable'),
+  addSlackConnection: () => Effect.die('unreachable'),
+  updateSlackConnection: () => Effect.die('unreachable'),
+  removeSlackConnection: () => Effect.die('unreachable'),
+  enableSlackConnection: () => Effect.die('unreachable'),
+  disableSlackConnection: () => Effect.die('unreachable'),
+  getSlackConnection: () => Effect.die('unreachable'),
+  listSlackConnections: () => Effect.die('unreachable'),
+  setSlackAccess: () => Effect.die('unreachable'),
+  setSlackChannel: () => Effect.die('unreachable'),
+  resetSlackChannel: () => Effect.die('unreachable'),
 }
 
 /**
@@ -927,7 +937,7 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['config', 'wat'],
         prefix: 'friday config',
         head: 'wat',
-        known: 'reload, model, profile, admin, identity, root-user, discord',
+        known: 'reload, model, profile, admin, identity, root-user, discord, slack',
       },
       {
         arguments_: ['config', 'admin', 'wat'],
@@ -1005,7 +1015,7 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config'],
         prefix: 'friday config',
-        known: 'reload, model, profile, admin, identity, root-user, discord',
+        known: 'reload, model, profile, admin, identity, root-user, discord, slack',
       },
       {
         arguments_: ['config', 'admin'],
@@ -1035,6 +1045,26 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config', 'discord', 'guild', 'channel'],
         prefix: 'friday config discord guild channel',
+        known: 'set, reset',
+      },
+      {
+        arguments_: ['config', 'slack'],
+        prefix: 'friday config slack',
+        known: 'connection, access, channel',
+      },
+      {
+        arguments_: ['config', 'slack', 'connection'],
+        prefix: 'friday config slack connection',
+        known: 'add, update, remove, enable, disable, get, list',
+      },
+      {
+        arguments_: ['config', 'slack', 'access'],
+        prefix: 'friday config slack access',
+        known: 'set-users, set-channels, set-workspaces',
+      },
+      {
+        arguments_: ['config', 'slack', 'channel'],
+        prefix: 'friday config slack channel',
         known: 'set, reset',
       },
       {

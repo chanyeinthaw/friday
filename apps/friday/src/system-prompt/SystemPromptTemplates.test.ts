@@ -5,6 +5,7 @@ import * as Schema from 'effect/Schema'
 
 import {
   makeSystemPromptTemplates,
+  renderPlatformContext,
   SystemPromptTemplates,
   SystemPromptTemplatesLive,
 } from './SystemPromptTemplates.ts'
@@ -209,6 +210,79 @@ it.effect('renders the bootstrap prompt without replacing Pi for normal subagent
     assert.include(prompt, 'friday/task/')
     assert.include(prompt, 'git clone')
     assert.include(prompt, 'tasks/')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('injects distinct platform blocks for Slack and Discord bindings', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const slackThread = {
+      ...thread,
+      conversationBinding: { ...thread.conversationBinding, platform: 'slack' as const },
+    }
+    const discordPrompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+    const slackPrompt = yield* templates.renderChannelAgent({
+      thread: slackThread,
+      availableAgentModels: [],
+    })
+
+    assert.include(discordPrompt, '## Platform context')
+    assert.include(slackPrompt, '## Platform context')
+    assert.include(discordPrompt, 'This conversation runs in Discord.')
+    assert.include(discordPrompt, 'Supported image attachments can arrive on inbound messages.')
+    assert.include(slackPrompt, 'This conversation runs in Slack.')
+    assert.include(slackPrompt, '<@U...>')
+    assert.include(slackPrompt, 'You cannot see files or images for now.')
+    assert.include(slackPrompt, 'Do not assume Discord behavior')
+    assert.notInclude(discordPrompt, 'This conversation runs in Slack.')
+    assert.notInclude(slackPrompt, 'This conversation runs in Discord.')
+    assert.notInclude(slackPrompt, 'Discord image attachments')
+    assert.notInclude(slackPrompt, 'Supported image attachments can arrive on inbound messages.')
+    assert.notInclude(discordPrompt, 'Discord image attachments')
+    assert.include(discordPrompt, 'Supported image attachments may include')
+    assert.include(slackPrompt, 'Supported image attachments may include')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('falls back to a safe generic block for other platforms', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const webThread = {
+      ...thread,
+      conversationBinding: { ...thread.conversationBinding, platform: 'web' as const },
+    }
+    const prompt = yield* templates.renderChannelAgent({
+      thread: webThread,
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, '## Platform context')
+    assert.include(prompt, 'Copy a supplied native mention exactly.')
+    assert.include(prompt, 'Do not assume files or images are available.')
+    assert.include(prompt, 'You work in one channel or thread on this platform.')
+    assert.notInclude(prompt, 'This conversation runs in Slack.')
+    assert.notInclude(prompt, 'This conversation runs in Discord.')
+    assert.notInclude(prompt, 'Discord image attachments')
+    assert.notInclude(prompt, '<@U...>')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('prefers the explicit typed platform input over the thread binding', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      platform: 'slack',
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, 'This conversation runs in Slack.')
+    assert.notInclude(prompt, 'This conversation runs in Discord.')
+    assert.strictEqual(renderPlatformContext('slack'), renderPlatformContext('slack'))
+    assert.notStrictEqual(renderPlatformContext('slack'), renderPlatformContext('discord'))
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
 

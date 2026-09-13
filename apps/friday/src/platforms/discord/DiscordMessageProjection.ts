@@ -30,7 +30,7 @@ const projectWithConversationId = (
   thread: ChatSdkThreadProjectionSource,
   message: ChatSdkMessageProjectionSource,
   conversationId: string,
-  discordHistorySource: 'channel' | 'thread',
+  historySource: 'channel' | 'thread',
 ): PlatformInput => {
   const input = projectChatSdkMessage(connectionId, thread, message)
   return {
@@ -39,7 +39,8 @@ const projectWithConversationId = (
       ...input.binding,
       conversationId: decodeConversationId(conversationId),
     },
-    discordHistorySource,
+    historySource,
+    discordHistorySource: historySource,
   }
 }
 
@@ -57,6 +58,7 @@ export const projectDiscordMessage = Effect.fn('projectDiscordMessage')(function
   if (isDiscordThread(location)) {
     return {
       ...projectChatSdkMessage(connectionId, thread, message),
+      historySource: 'thread' as const,
       discordHistorySource: 'thread' as const,
     }
   }

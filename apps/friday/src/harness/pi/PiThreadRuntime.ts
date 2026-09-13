@@ -322,6 +322,7 @@ const renderSystemPrompt = (
       return yield* options.systemPromptTemplates
         .renderChannelAgent({
           thread: options.thread,
+          platform: options.thread.conversationBinding.platform,
           availableAgentModels: options.availableAgentModels?.() ?? [],
           identityText: identityText ?? DefaultIdentityText,
           rootUsers,

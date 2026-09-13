@@ -101,6 +101,16 @@ export const DiscordPlatformConfig = Schema.Struct({
 })
 export type DiscordPlatformConfig = typeof DiscordPlatformConfig.Type
 
+/** The default invocation behavior for Slack channels without an explicit override. */
+export const DefaultSlackInvocationMode: InvocationMode = 'mention-only'
+
+export const SlackChannelConfig = Schema.Struct({
+  channelId: Identifier,
+  invocationMode: Schema.optionalKey(InvocationMode),
+  replyMode: Schema.optionalKey(ReplyMode),
+})
+export type SlackChannelConfig = typeof SlackChannelConfig.Type
+
 export const SlackPlatformConfig = Schema.Union([
   Schema.Struct({
     connectionId: PlatformConnectionId,
@@ -117,6 +127,8 @@ export const SlackPlatformConfig = Schema.Union([
       channels: AccessPolicy,
       workspaces: AccessPolicy,
     }),
+    defaultReplyMode: ReplyMode,
+    channels: Schema.Array(SlackChannelConfig),
   }),
   Schema.Struct({
     connectionId: PlatformConnectionId,
@@ -132,6 +144,8 @@ export const SlackPlatformConfig = Schema.Union([
       channels: AccessPolicy,
       workspaces: AccessPolicy,
     }),
+    defaultReplyMode: ReplyMode,
+    channels: Schema.Array(SlackChannelConfig),
   }),
 ])
 export type SlackPlatformConfig = typeof SlackPlatformConfig.Type
@@ -173,12 +187,26 @@ export type DiscordConnectionTopology = Pick<
   | 'mentionRoleIds'
 >
 
+/** The Slack connection identity and resources that only restarts may change. */
+export type SlackConnectionTopology =
+  | Pick<
+      Extract<SlackPlatformConfig, { readonly mode: 'socket' }>,
+      'connectionId' | 'platform' | 'name' | 'mode' | 'credentials'
+    >
+  | Pick<
+      Extract<SlackPlatformConfig, { readonly mode: 'webhook' }>,
+      'connectionId' | 'platform' | 'name' | 'mode' | 'credentials'
+    >
+
 /**
  * Merges a freshly validated configuration into the running snapshot for reload.
  *
  * Discord connection topology (identity, credentials, and mention roles) is pinned
  * to the running snapshot because Discord resources are built once at startup; access policies, invocation policies, system channels, models,
- * and agent settings come from the loaded configuration. Discord connections that
+ * and agent settings come from the loaded configuration. Slack connection topology
+ * (identity, credentials, and mode) is pinned the same way because Socket Mode
+ * resources are built once at startup; access policies, reply modes, invocation modes,
+ * and channel overrides come from the loaded configuration. Connections that
  * are not currently running are ignored until restart, and the admin allow-list is
  * pinned so a database edit cannot lock administrators out of running reloads.
  */
@@ -201,6 +229,38 @@ export const mergeReloadedAppConfig = (running: AppConfig, loaded: AppConfig): A
       }
       return { ...reloaded, ...topology }
     }),
+    slack: running.platforms.slack.map((connection) => {
+      const reloaded = loaded.platforms.slack.find(
+        (candidate) => candidate.connectionId === connection.connectionId,
+      )
+      if (reloaded === undefined) return connection
+      // Connection topology (identity, mode, credentials) stays pinned to
+      // the running snapshot because Socket Mode resources are built once at
+      // startup; access policy, reply modes, and channel overrides reload.
+      // Modes always match in practice (mode is topology), so a mismatched
+      // reload keeps the running connection instead of mixing variants.
+      if (connection.mode === 'socket' && reloaded.mode === 'socket') {
+        return {
+          ...reloaded,
+          connectionId: connection.connectionId,
+          platform: connection.platform,
+          name: connection.name,
+          mode: connection.mode,
+          credentials: connection.credentials,
+        }
+      }
+      if (connection.mode === 'webhook' && reloaded.mode === 'webhook') {
+        return {
+          ...reloaded,
+          connectionId: connection.connectionId,
+          platform: connection.platform,
+          name: connection.name,
+          mode: connection.mode,
+          credentials: connection.credentials,
+        }
+      }
+      return connection
+    }),
   },
   admin: running.admin,
 })
@@ -212,6 +272,15 @@ export const findDiscordConnection = (
 ): Option.Option<DiscordPlatformConfig> =>
   Option.fromNullishOr(
     configuration.platforms.discord.find((connection) => connection.connectionId === connectionId),
+  )
+
+/** Resolves one Slack connection from the current snapshot. */
+export const findSlackConnection = (
+  configuration: AppConfig,
+  connectionId: SlackPlatformConfig['connectionId'],
+): Option.Option<SlackPlatformConfig> =>
+  Option.fromNullishOr(
+    configuration.platforms.slack.find((connection) => connection.connectionId === connectionId),
   )
 
 export class AppConfigError extends Schema.Error<AppConfigError>('AppConfigError')({
@@ -305,6 +374,21 @@ const GuildChannelUserSubjectRow = Schema.Struct({
   user_id: Schema.String,
 })
 
+const SlackConnectionRow = Schema.Struct({
+  connection_id: Schema.String,
+  name: Schema.String,
+  bot_token_env: Schema.String,
+  app_token_env: Schema.String,
+  default_reply_mode: ReplyMode,
+})
+
+const SlackChannelRow = Schema.Struct({
+  connection_id: Schema.String,
+  channel_id: Schema.String,
+  invocation_mode: Schema.NullOr(InvocationMode),
+  reply_mode: Schema.NullOr(ReplyMode),
+})
+
 const GuildChannelScopeSubjectRow = Schema.Struct({
   connection_id: Schema.String,
   guild_id: Schema.String,
@@ -331,6 +415,16 @@ interface AssembledDiscordGuildChannel {
   replyMode?: ReplyMode
 }
 
+/**
+ * Mutable assembly shape for Slack channel configuration read from SQLite:
+ * optional overrides attach only when their columns are configured.
+ */
+interface AssembledSlackChannel {
+  channelId: string
+  invocationMode?: InvocationMode
+  replyMode?: ReplyMode
+}
+
 const decodeInstallationRows = Schema.decodeUnknownEffect(Schema.Array(InstallationRow))
 const decodeAdminUserRows = Schema.decodeUnknownEffect(Schema.Array(AdminUserRow))
 const decodeAgentConfigRows = Schema.decodeUnknownEffect(Schema.Array(AgentConfigRow))
@@ -349,6 +443,8 @@ const decodeGuildChannelScopeSubjectRows = Schema.decodeUnknownEffect(
   Schema.Array(GuildChannelScopeSubjectRow),
 )
 const decodeSecretValue = Schema.decodeUnknownEffect(SecretValue)
+const decodeSlackConnectionRows = Schema.decodeUnknownEffect(Schema.Array(SlackConnectionRow))
+const decodeSlackChannelRows = Schema.decodeUnknownEffect(Schema.Array(SlackChannelRow))
 const decodeAppConfig = Schema.decodeUnknownEffect(AppConfig)
 
 const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
@@ -421,6 +517,22 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
   const adminUsers = yield* sql<
     Record<string, unknown>
   >`SELECT user_id FROM admin_discord_users ORDER BY user_id`
+  const slack = yield* sql<Record<string, unknown>>`
+    SELECT
+      platform_connections.connection_id,
+      platform_connections.name,
+      slack_connections.bot_token_env,
+      slack_connections.app_token_env,
+      slack_connections.default_reply_mode
+    FROM platform_connections
+    JOIN slack_connections USING (connection_id)
+    WHERE platform_connections.platform = 'slack'
+      AND platform_connections.enabled = 1
+    ORDER BY platform_connections.connection_id
+  `
+  const slackChannels = yield* sql<Record<string, unknown>>`
+    SELECT * FROM slack_channels ORDER BY connection_id, channel_id
+  `
   return {
     installation,
     agent,
@@ -435,6 +547,8 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
     guildChannelUsers: yield* decodeGuildChannelUserSubjectRows(guildChannelUsers),
     guildChannelScope: yield* decodeGuildChannelScopeSubjectRows(guildChannelScope),
     adminUsers: yield* decodeAdminUserRows(adminUsers),
+    slack: yield* decodeSlackConnectionRows(slack),
+    slackChannels: yield* decodeSlackChannelRows(slackChannels),
   }
 })
 
@@ -475,7 +589,7 @@ const resolveSecret = (
 
 const policyFor = (
   connectionId: string,
-  subjectType: 'user' | 'workspace',
+  subjectType: 'user' | 'workspace' | 'channel',
   policies: ReadonlyArray<typeof AccessPolicyRow.Type>,
   subjects: ReadonlyArray<typeof AccessSubjectRow.Type>,
 ): AccessPolicy => {
@@ -622,7 +736,57 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
           }
         }),
       ),
-      slack: [],
+      slack: yield* Effect.forEach(rows.slack, (connection) =>
+        Effect.gen(function* () {
+          const botToken = yield* resolveSecret(
+            environment,
+            connection.bot_token_env,
+            `platforms.${connection.connection_id}.credentials.botToken`,
+          )
+          const appToken = yield* resolveSecret(
+            environment,
+            connection.app_token_env,
+            `platforms.${connection.connection_id}.credentials.appToken`,
+          )
+          return {
+            connectionId: connection.connection_id,
+            platform: 'slack',
+            name: connection.name,
+            mode: 'socket',
+            credentials: { botToken, appToken },
+            access: {
+              users: policyFor(connection.connection_id, 'user', rows.policies, rows.subjects),
+              channels: policyFor(
+                connection.connection_id,
+                'channel',
+                rows.policies,
+                rows.subjects,
+              ),
+              workspaces: policyFor(
+                connection.connection_id,
+                'workspace',
+                rows.policies,
+                rows.subjects,
+              ),
+            },
+            defaultReplyMode: connection.default_reply_mode,
+            channels: rows.slackChannels
+              .filter((channel) => channel.connection_id === connection.connection_id)
+              .map((channel) => {
+                // Optional overrides attach only when configured, so absent
+                // fields keep inheriting the connection defaults.
+                const entry: AssembledSlackChannel = { channelId: channel.channel_id }
+                if (channel.invocation_mode !== null) {
+                  entry.invocationMode = channel.invocation_mode
+                }
+                if (channel.reply_mode !== null) {
+                  entry.replyMode = channel.reply_mode
+                }
+                return entry
+              }),
+          }
+        }),
+      ),
     },
     agent: { recentMessageCount: rows.agent.recent_message_count },
     admin: {

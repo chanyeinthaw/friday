@@ -128,6 +128,54 @@ it('projects the platform scope for Discord guilds and Slack workspaces', () => 
   assert.isUndefined(dm.binding.scopeId)
 })
 
+it('projects Slack scope from string, object, and missing team shapes', () => {
+  const slackAuthor = {
+    userId: 'U123',
+    userName: 'user',
+    fullName: 'User',
+    isBot: false,
+    isMe: false,
+  }
+  const slackThread = {
+    adapter: { name: 'slack' },
+    channelId: 'slack:C123',
+    id: 'slack:C123:1710000000.000000',
+  }
+
+  const fromStringTeam = projectChatSdkMessage('slack', slackThread, {
+    id: '1710000000.000001',
+    text: 'Hello Friday',
+    raw: { team: 'T123' },
+    author: slackAuthor,
+  })
+  assert.strictEqual(fromStringTeam.binding.scopeId, 'T123')
+
+  const fromObjectTeam = projectChatSdkMessage('slack', slackThread, {
+    id: '1710000000.000002',
+    text: 'Hello Friday',
+    raw: { team: { id: 'T123' } },
+    author: slackAuthor,
+  })
+  assert.strictEqual(fromObjectTeam.binding.scopeId, 'T123')
+
+  const withoutTeam = projectChatSdkMessage('slack', slackThread, {
+    id: '1710000000.000003',
+    text: 'Hello Friday',
+    raw: {},
+    author: slackAuthor,
+  })
+  assert.isUndefined(withoutTeam.binding.scopeId)
+
+  // A non-object raw payload carries no team and never throws.
+  const malformed = projectChatSdkMessage('slack', slackThread, {
+    id: '1710000000.000004',
+    text: 'Hello Friday',
+    raw: 'unexpected',
+    author: slackAuthor,
+  })
+  assert.isUndefined(malformed.binding.scopeId)
+})
+
 it('projects Discord trigger attachments, including image-only input', () => {
   const inbound = projectChatSdkMessage(
     'discord',
