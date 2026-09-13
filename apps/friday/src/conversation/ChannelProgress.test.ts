@@ -106,7 +106,7 @@ it.effect('discards the working placeholder for an empty response', () =>
       yield* progress.accept(thread, userMessage('Stop.'))
       yield* progress.finalize(thread, '')
 
-      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'discard'])
+      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'discard'])
     }),
   ),
 )
@@ -138,9 +138,9 @@ it.effect('aggregates parallel tool categories into one working status', () =>
 
       assert.deepStrictEqual(events, [
         'ack',
-        'working:-# Thinking...',
-        'update:-# Reading files...',
-        'update:-# Reading files and running commands...',
+        'working:Thinking...',
+        'update:Reading files...',
+        'update:Reading files and running commands...',
       ])
     }),
   ),
@@ -161,10 +161,10 @@ it.effect('ends the progress lifecycle when a turn delegates work', () =>
 
       assert.deepStrictEqual(events, [
         'ack',
-        'working:-# Thinking...',
+        'working:Thinking...',
         'finalize:I delegated the inspection and will report back.',
         'ack',
-        'working:-# Thinking...',
+        'working:Thinking...',
         'finalize:It runs in a background agent thread.',
       ])
     }),
@@ -180,7 +180,7 @@ it.effect('does not publish a duplicate after successful finalization', () =>
       yield* progress.accept(thread, userMessage('Do work.'))
       yield* progress.finalize(thread, 'Done.')
 
-      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'finalize:Done.'])
+      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'finalize:Done.'])
     }),
   ),
 )
@@ -199,7 +199,7 @@ it.effect('continues the lifecycle when acknowledgement fails', () =>
       yield* progress.accept(thread, userMessage('Do work.'))
       yield* progress.finalize(thread, 'Done.')
 
-      assert.deepStrictEqual(events, ['working:-# Thinking...', 'finalize:Done.'])
+      assert.deepStrictEqual(events, ['working:Thinking...', 'finalize:Done.'])
     }),
   ),
 )
@@ -225,7 +225,7 @@ it.effect('times out a hung acknowledgement and continues the lifecycle', () =>
       yield* Fiber.join(fiber)
       yield* progress.finalize(thread, 'Done.')
 
-      assert.deepStrictEqual(events, ['working:-# Thinking...', 'finalize:Done.'])
+      assert.deepStrictEqual(events, ['working:Thinking...', 'finalize:Done.'])
     }),
   ),
 )
@@ -263,7 +263,7 @@ it.effect('does not let a hung channel block progress in another channel', () =>
         platformMessageId: otherMessageId,
       })
 
-      assert.deepStrictEqual(events, ['ack-other', 'working:-# Thinking...'])
+      assert.deepStrictEqual(events, ['ack-other', 'working:Thinking...'])
       yield* Fiber.interrupt(hung)
     }),
   ),
@@ -290,7 +290,7 @@ it.effect('falls back to publishing when finalization times out', () =>
       yield* TestClock.adjust('1 second')
       yield* Fiber.join(finalization)
 
-      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'publish:Done.'])
+      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'publish:Done.'])
     }),
   ),
 )
@@ -309,7 +309,7 @@ it.effect('falls back to publishing when finalization fails', () =>
       yield* progress.accept(thread, userMessage('Do work.'))
       yield* progress.finalize(thread, 'Done.')
 
-      assert.deepStrictEqual(events, ['ack', 'working:-# Thinking...', 'publish:Done.'])
+      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'publish:Done.'])
     }),
   ),
 )

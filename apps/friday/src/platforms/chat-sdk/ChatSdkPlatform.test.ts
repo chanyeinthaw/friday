@@ -32,6 +32,7 @@ const makeSource = () => {
   const threadMessages: Array<TestMessage> = []
   const parentMessages: Array<TestMessage> = []
   const events: Array<string> = []
+  let botCounter = 0
   const sent = (
     id: string,
     text: string,
@@ -62,7 +63,8 @@ const makeSource = () => {
       const list = key === 'discord:channel-1' ? parentMessages : threadMessages
       return {
         post: async (text) => {
-          const message = sent(`bot-${threadMessages.length + 1}`, text)
+          botCounter += 1
+          const message = sent(`bot-${botCounter}`, text)
           threadMessages.push(message)
           events.push(`post:${message.id}:${text}`)
           return message
@@ -164,13 +166,13 @@ it.effect('acknowledges a thread starter through the parent channel', () =>
   }),
 )
 
-it.effect('edits the working message when it remains latest', () =>
+it.effect('decorates plain working statuses as Discord subtext', () =>
   Effect.gen(function* () {
     const test = makeSource()
     const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
-    yield* platform.beginWorking({ binding, text: '-# Thinking...' })
-    yield* platform.updateWorking({ binding, text: '-# Reading files...' })
+    yield* platform.beginWorking({ binding, text: 'Thinking...' })
+    yield* platform.updateWorking({ binding, text: 'Reading files...' })
     yield* platform.finalizeWorking({ binding, text: 'Final answer.' })
 
     assert.deepStrictEqual(test.events, [
@@ -192,7 +194,7 @@ it.effect('splits a long final answer after editing the latest working message',
     yield* platform.finalizeWorking({ binding, text: '1234567890abcdefghijXYZ' })
 
     assert.deepStrictEqual(test.events, [
-      'post:bot-1:Thinking',
+      'post:bot-1:-# Thinking',
       'edit:bot-1:1234567890',
       'post:bot-2:abcdefghij',
       'post:bot-3:XYZ',
@@ -212,7 +214,7 @@ it.effect('splits a long final answer after deleting a stale working message', (
     yield* platform.finalizeWorking({ binding, text: '1234567890abcdefghijXYZ' })
 
     assert.deepStrictEqual(test.events, [
-      'post:bot-1:Thinking',
+      'post:bot-1:-# Thinking',
       'delete:bot-1',
       'post:bot-2:1234567890',
       'post:bot-3:abcdefghij',
@@ -226,7 +228,7 @@ it.effect('deletes a stale working message and posts the final answer at the bot
     const test = makeSource()
     const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
-    yield* platform.beginWorking({ binding, text: '-# Thinking...' })
+    yield* platform.beginWorking({ binding, text: 'Thinking...' })
     test.addUser('steering-message')
     yield* platform.finalizeWorking({ binding, text: 'Final answer.' })
 
@@ -234,6 +236,38 @@ it.effect('deletes a stale working message and posts the final answer at the bot
       'post:bot-1:-# Thinking...',
       'delete:bot-1',
       'post:bot-2:Final answer.',
+    ])
+  }),
+)
+
+it.effect('posts fresh when no working message is tracked', () =>
+  Effect.gen(function* () {
+    const test = makeSource()
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
+
+    yield* platform.updateWorking({ binding, text: 'ignored' })
+    yield* platform.finalizeWorking({ binding, text: 'Fresh.' })
+
+    assert.deepStrictEqual(test.events, ['post:bot-1:Fresh.'])
+  }),
+)
+
+it.effect('deletes the tracked message on empty finalize and discard', () =>
+  Effect.gen(function* () {
+    const test = makeSource()
+    const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
+
+    yield* platform.beginWorking({ binding, text: 'Thinking...' })
+    yield* platform.finalizeWorking({ binding, text: '   ' })
+    assert.deepStrictEqual(test.events, ['post:bot-1:-# Thinking...', 'delete:bot-1'])
+
+    yield* platform.beginWorking({ binding, text: 'Thinking...' })
+    yield* platform.discardWorking(binding)
+    assert.deepStrictEqual(test.events, [
+      'post:bot-1:-# Thinking...',
+      'delete:bot-1',
+      'post:bot-2:-# Thinking...',
+      'delete:bot-2',
     ])
   }),
 )

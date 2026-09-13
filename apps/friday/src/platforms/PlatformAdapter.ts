@@ -10,10 +10,17 @@ export interface PlatformInput {
   readonly binding: ConversationBinding
   readonly message: InputMessage
   readonly initialContext?: ReadonlyArray<ContextMessage>
+  /** Preferred history source; `discordHistorySource` remains as a deprecated alias. */
+  readonly historySource?: 'channel' | 'thread'
+  /** @deprecated Use `historySource`; kept for Discord compatibility. */
   readonly discordHistorySource?: 'channel' | 'thread'
 }
 
 export type PlatformMessageScope = 'thread' | 'channel'
+
+/** Reads the normalized history source across the renamed field and its Discord alias. */
+export const platformHistorySource = (input: PlatformInput): 'channel' | 'thread' | undefined =>
+  input.historySource ?? input.discordHistorySource
 
 export interface PlatformMessageRecord {
   readonly id: PlatformMessageId

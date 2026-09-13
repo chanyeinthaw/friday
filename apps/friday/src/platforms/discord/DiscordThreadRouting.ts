@@ -4,6 +4,7 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import type { PlatformInput } from '../PlatformAdapter.ts'
+import { platformHistorySource } from '../PlatformAdapter.ts'
 import type {
   PlatformThreadRouterContract,
   ThreadRouteDecideInput,
@@ -52,6 +53,7 @@ export const rebindToNativeThread = (
     ...input.binding,
     conversationId: decodeConversationId(conversationId),
   },
+  historySource: 'thread',
   discordHistorySource: 'thread',
 })
 
@@ -81,7 +83,7 @@ export const makeDiscordThreadRoute =
   (input: PlatformInput): Effect.Effect<PlatformInput> =>
     Effect.gen(function* () {
       if (input.binding.platform !== 'discord') return input
-      if (input.discordHistorySource === 'thread') return input
+      if (platformHistorySource(input) === 'thread') return input
       const location = yield* Effect.try({
         try: () => options.discord.decodeThreadId(String(input.binding.conversationId)),
         catch: () => 'decode-failed' as const,

@@ -36,4 +36,22 @@ describe('DiscordLive wiring', () => {
     expect(liveSource).toContain('harnessReloadReply(outcome)')
     expect(liveSource).toContain('yield* registerGlobalDiscordCommands({')
   })
+
+  it('delegates admission to the shared layer instead of a second invocation implementation', () => {
+    // The authoritative admission/invocation flow lives in PlatformAdmission:
+    // policy resolve, user admission, binding lookup, invocation decision,
+    // and admit/drop logging. The lifecycle path must call it with Discord
+    // semantics (canonical policy resolve, user check, kind/mode decision).
+    expect(liveSource).toContain('admitPlatformMessage(')
+    expect(liveSource).toContain("platform: 'discord'")
+    expect(liveSource).toContain('resolvePolicy:')
+    expect(liveSource).toContain('isUserAdmitted:')
+    expect(liveSource).toContain('shouldInvoke({')
+    // The old duplicated orchestration must not return: per-platform
+    // allowed/ignored logging and a full shouldHandleMessage gate would be a
+    // second invocation implementation alongside the shared layer.
+    expect(liveSource).not.toContain('discord.message.allowed')
+    expect(liveSource).not.toContain('discord.message.ignored')
+    expect(liveSource).not.toContain('shouldHandleMessage:')
+  })
 })

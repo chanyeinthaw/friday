@@ -27,6 +27,12 @@ export interface ChatSdkLifecycleSource {
   readonly onNewMention: (handler: ChatSdkMessageHandler) => void
   readonly onDirectMessage: (handler: ChatSdkMessageHandler) => void
   readonly onSubscribedMessage: (handler: ChatSdkMessageHandler) => void
+  /**
+   * Optional catch-all for messages the Chat router delivers past the
+   * mention/subscribed handlers (unmentioned chatter in unsubscribed
+   * threads). Only the platforms that opt in through `catchAll` need it.
+   */
+  readonly onNewMessage?: (pattern: RegExp, handler: ChatSdkMessageHandler) => void
 }
 
 export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
@@ -41,8 +47,17 @@ export interface ChatSdkLifecycleOptions<InboundError, InboundServices> {
     thread: ChatSdkThreadProjectionSource,
     message: ChatSdkMessageProjectionSource,
   ) => Effect.Effect<boolean, ChatSdkCallbackError>
+  /**
+   * Optional catch-all for unmentioned chatter the Chat router would
+   * otherwise drop after the mention/subscribed handlers. The matched
+   * messages flow through the same normalization and `onInboundMessage`
+   * pipeline as `kind`, so invocation still belongs to the shared admission
+   * layer. Absent means no catch-all is registered.
+   */
+  readonly catchAll?: { readonly pattern: RegExp; readonly kind: ChatSdkInboundKind } | undefined
   readonly onInboundMessage: (
     message: PlatformInput,
+    kind: ChatSdkInboundKind,
   ) => Effect.Effect<void, InboundError, InboundServices>
 }
 
@@ -104,7 +119,7 @@ const makeChatSdkMessageHandler = <InboundError, InboundServices>(
         }),
       )
       const worker = yield* options
-        .onInboundMessage(input)
+        .onInboundMessage(input, effectiveKind)
         .pipe(Effect.mapError(callbackError), Effect.forkIn(options.scope))
       return yield* Fiber.join(worker)
     }).pipe(Effect.tapError((cause) => Effect.logError('Friday Chat SDK callback failed', cause)))
@@ -112,15 +127,26 @@ const makeChatSdkMessageHandler = <InboundError, InboundServices>(
   return (thread, message) => runPromise(handleInboundMessage(thread, message))
 }
 
-const registerChatSdkHandlers = (
+const registerChatSdkHandlers = <InboundError, InboundServices>(
   chat: ChatSdkLifecycleSource,
   handlers: Readonly<Record<ChatSdkInboundKind, ChatSdkMessageHandler>>,
+  handlerOptions: ChatSdkMessageHandlerOptions<InboundError, InboundServices>,
+  catchAll: ChatSdkLifecycleOptions<InboundError, InboundServices>['catchAll'],
 ): Effect.Effect<void, ChatSdkLifecycleError> =>
   Effect.try({
     try: () => {
       chat.onNewMention(handlers.mention)
       chat.onDirectMessage(handlers['direct-message'])
       chat.onSubscribedMessage(handlers['subscribed-message'])
+      if (catchAll !== undefined) {
+        if (chat.onNewMessage === undefined) {
+          throw new Error('Chat source does not support catch-all message patterns.')
+        }
+        chat.onNewMessage(
+          catchAll.pattern,
+          makeChatSdkMessageHandler(catchAll.kind, handlerOptions),
+        )
+      }
     },
     catch: (cause) =>
       new ChatSdkLifecycleError({
@@ -172,10 +198,15 @@ export const startChatSdkLifecycle = Effect.fn('startChatSdkLifecycle')(function
     shouldHandleMessage: options.shouldHandleMessage,
     onInboundMessage: options.onInboundMessage,
   }
-  yield* registerChatSdkHandlers(options.chat, {
-    mention: makeChatSdkMessageHandler('mention', handlerOptions),
-    'direct-message': makeChatSdkMessageHandler('direct-message', handlerOptions),
-    'subscribed-message': makeChatSdkMessageHandler('subscribed-message', handlerOptions),
-  })
+  yield* registerChatSdkHandlers(
+    options.chat,
+    {
+      mention: makeChatSdkMessageHandler('mention', handlerOptions),
+      'direct-message': makeChatSdkMessageHandler('direct-message', handlerOptions),
+      'subscribed-message': makeChatSdkMessageHandler('subscribed-message', handlerOptions),
+    },
+    handlerOptions,
+    options.catchAll,
+  )
   yield* initializeChatSdk(options.chat)
 })

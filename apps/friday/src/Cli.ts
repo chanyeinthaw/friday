@@ -16,6 +16,7 @@ import {
   type DiscordGuildConfig,
   InvocationMode,
   type InvocationMode as InvocationModeType,
+  type ReplyMode as ReplyModeType,
 } from './config/AppConfig.ts'
 import {
   DiscordGuildChannelId,
@@ -40,6 +41,22 @@ import {
   type DiscordConnectionRemoveOutcome,
   type DiscordConnectionUpdateOutcome,
 } from './config/DiscordConnections.ts'
+import {
+  SlackChannelId,
+  SlackTokenEnvName,
+  type SlackAccessSubject,
+  type SlackAccessUpdateOutcome,
+  type SlackChannelPatch,
+  type SlackChannelResetOutcome,
+  type SlackChannelUpdateOutcome,
+  type SlackConnectionAddOutcome,
+  type SlackConnectionDetail,
+  type SlackConnectionDisableOutcome,
+  type SlackConnectionEnableOutcome,
+  type SlackConnectionRecord,
+  type SlackConnectionRemoveOutcome,
+  type SlackConnectionUpdateOutcome,
+} from './config/SlackConnections.ts'
 import {
   ControlSocketError,
   isControlSocketNotRunning,
@@ -327,6 +344,54 @@ export type FridayCliAction =
       readonly type: 'config-discord-connection-get'
       readonly connectionId: typeof PlatformConnectionId.Type
       readonly json: boolean
+    }
+  | { readonly type: 'config-slack-connection-list'; readonly json: boolean }
+  | {
+      readonly type: 'config-slack-connection-add'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly name: string
+      readonly botTokenEnv: typeof SlackTokenEnvName.Type
+      readonly appTokenEnv: typeof SlackTokenEnvName.Type
+      readonly defaultReplyMode: ReplyModeType
+    }
+  | {
+      readonly type: 'config-slack-connection-update'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly name?: string
+      readonly botTokenEnv?: typeof SlackTokenEnvName.Type
+      readonly appTokenEnv?: typeof SlackTokenEnvName.Type
+      readonly defaultReplyMode?: ReplyModeType
+    }
+  | {
+      readonly type: 'config-slack-connection-remove'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly yes: boolean
+    }
+  | {
+      readonly type: 'config-slack-connection-enable' | 'config-slack-connection-disable'
+      readonly connectionId: typeof PlatformConnectionId.Type
+    }
+  | {
+      readonly type: 'config-slack-connection-get'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly json: boolean
+    }
+  | {
+      readonly type: 'config-slack-access-set'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly subject: SlackAccessSubject
+      readonly policy: AccessPolicy
+    }
+  | {
+      readonly type: 'config-slack-channel-set'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly channelId: typeof SlackChannelId.Type
+      readonly patch: SlackChannelPatch
+    }
+  | {
+      readonly type: 'config-slack-channel-reset'
+      readonly connectionId: typeof PlatformConnectionId.Type
+      readonly channelId: typeof SlackChannelId.Type
     }
   | {
       readonly type: 'config-discord-guild-enable' | 'config-discord-guild-disable'
@@ -1134,6 +1199,342 @@ const parseConfigDiscordConnectionGet = Effect.fn('Cli.parseConfigDiscordConnect
   return { type: 'config-discord-connection-get' as const, connectionId, json }
 })
 
+const decodeSlackTokenEnvName = Schema.decodeUnknownEffect(SlackTokenEnvName)
+const decodeSlackChannelId = Schema.decodeUnknownEffect(SlackChannelId)
+const decodeSlackSubjectId = Schema.decodeUnknownEffect(
+  Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty())),
+)
+
+/**
+ * Parses a Slack permission policy argument: `all`, `allow=<id>[,<id>...]`, or
+ * `deny=<id>[,<id>...]`. Slack ids are opaque non-empty tokens (team, channel,
+ * or user ids), unlike Discord snowflakes.
+ */
+export const parseSlackAccessPolicySpec = (
+  spec: string,
+): Effect.Effect<AccessPolicy, FridayCliError> =>
+  Effect.gen(function* () {
+    if (spec === 'all') return { mode: 'all', ids: [] }
+    const match = /^(allow|deny)=(.*)$/.exec(spec)
+    if (match === null || match[2] === undefined || match[2] === '') {
+      return yield* new FridayCliError({ argument: spec })
+    }
+    const ids = yield* Effect.forEach(match[2].split(','), (id) =>
+      decodeSlackSubjectId(id.trim()).pipe(
+        Effect.mapError(() => new FridayCliError({ argument: spec })),
+      ),
+    )
+    // SAFETY: the regex above only matches the 'allow' or 'deny' alternatives.
+    return { mode: match[1] as 'allow' | 'deny', ids: [...ids] }
+  })
+
+const parseConfigSlackConnectionList = Effect.fn('Cli.parseConfigSlackConnectionList')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const json = yield* parseTrailingJson(tokens, all)
+  return { type: 'config-slack-connection-list' as const, json }
+})
+
+const parseConfigSlackConnectionAdd = Effect.fn('Cli.parseConfigSlackConnectionAdd')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodePlatformConnectionId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  let name: string | undefined
+  let botTokenEnv: typeof SlackTokenEnvName.Type | undefined
+  let appTokenEnv: typeof SlackTokenEnvName.Type | undefined
+  let defaultReplyMode: ReplyModeType = 'reply-in-thread'
+  let index = 1
+  while (index < tokens.length) {
+    const flag = tokens[index]
+    if (flag === '--reply-in-thread' || flag === '--reply-in-channel') {
+      defaultReplyMode = flag === '--reply-in-thread' ? 'reply-in-thread' : 'reply-in-channel'
+      index += 1
+      continue
+    }
+    const value = tokens[index + 1]
+    if (flag === '--name') {
+      if (name !== undefined) return yield* discordArgumentsError(all)
+      name = yield* connectionFlagValue(value, all).pipe(
+        Effect.flatMap(decodeConnectionName),
+        Effect.mapError(() => discordArgumentsError(all)),
+      )
+      index += 2
+      continue
+    }
+    if (flag === '--bot-token-env') {
+      if (botTokenEnv !== undefined) return yield* discordArgumentsError(all)
+      botTokenEnv = yield* connectionFlagValue(value, all).pipe(
+        Effect.flatMap(decodeSlackTokenEnvName),
+        Effect.mapError(() => discordArgumentsError(all)),
+      )
+      index += 2
+      continue
+    }
+    if (flag === '--app-token-env') {
+      if (appTokenEnv !== undefined) return yield* discordArgumentsError(all)
+      appTokenEnv = yield* connectionFlagValue(value, all).pipe(
+        Effect.flatMap(decodeSlackTokenEnvName),
+        Effect.mapError(() => discordArgumentsError(all)),
+      )
+      index += 2
+      continue
+    }
+    return yield* discordArgumentsError(all)
+  }
+  if (name === undefined || botTokenEnv === undefined || appTokenEnv === undefined) {
+    return yield* discordArgumentsError(all)
+  }
+  return {
+    type: 'config-slack-connection-add' as const,
+    connectionId,
+    name,
+    botTokenEnv,
+    appTokenEnv,
+    defaultReplyMode,
+  }
+})
+
+const parseSlackTokenEnvFlag = Effect.fn('Cli.parseSlackTokenEnvFlag')(function* (
+  current: typeof SlackTokenEnvName.Type | undefined,
+  value: string | undefined,
+  all: ReadonlyArray<string>,
+) {
+  if (current !== undefined) return yield* discordArgumentsError(all)
+  return yield* connectionFlagValue(value, all).pipe(
+    Effect.flatMap(decodeSlackTokenEnvName),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+})
+
+/** Mutable assembly shape for the Slack connection update parsed from CLI flags. */
+interface ParsedSlackConnectionUpdate {
+  name?: string
+  botTokenEnv?: typeof SlackTokenEnvName.Type
+  appTokenEnv?: typeof SlackTokenEnvName.Type
+  defaultReplyMode?: ReplyModeType
+}
+
+const parseConfigSlackConnectionUpdate = Effect.fn('Cli.parseConfigSlackConnectionUpdate')(
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length < 2) {
+      return yield* new FridayCliError({
+        argument: all.join(' '),
+        detail:
+          'Provide at least one field to update: --name, --bot-token-env, --app-token-env, --reply-in-thread, or --reply-in-channel.',
+      })
+    }
+    const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+      Effect.flatMap(decodePlatformConnectionId),
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    let name: string | undefined
+    let botTokenEnv: typeof SlackTokenEnvName.Type | undefined
+    let appTokenEnv: typeof SlackTokenEnvName.Type | undefined
+    let defaultReplyMode: ReplyModeType | undefined
+    let index = 1
+    while (index < tokens.length) {
+      const flag = tokens[index]
+      if (flag === '--reply-in-thread' || flag === '--reply-in-channel') {
+        if (defaultReplyMode !== undefined) return yield* discordArgumentsError(all)
+        defaultReplyMode = flag === '--reply-in-thread' ? 'reply-in-thread' : 'reply-in-channel'
+        index += 1
+        continue
+      }
+      const value = tokens[index + 1]
+      if (flag === '--name') {
+        if (name !== undefined) return yield* discordArgumentsError(all)
+        name = yield* connectionFlagValue(value, all).pipe(
+          Effect.flatMap(decodeConnectionName),
+          Effect.mapError(() => discordArgumentsError(all)),
+        )
+        index += 2
+        continue
+      }
+      if (flag === '--bot-token-env') {
+        botTokenEnv = yield* parseSlackTokenEnvFlag(botTokenEnv, value, all)
+        index += 2
+        continue
+      }
+      if (flag === '--app-token-env') {
+        appTokenEnv = yield* parseSlackTokenEnvFlag(appTokenEnv, value, all)
+        index += 2
+        continue
+      }
+      return yield* discordArgumentsError(all)
+    }
+    if (
+      name === undefined &&
+      botTokenEnv === undefined &&
+      appTokenEnv === undefined &&
+      defaultReplyMode === undefined
+    ) {
+      return yield* discordArgumentsError(all)
+    }
+    const patch: ParsedSlackConnectionUpdate = {}
+    if (name !== undefined) patch.name = name
+    if (botTokenEnv !== undefined) patch.botTokenEnv = botTokenEnv
+    if (appTokenEnv !== undefined) patch.appTokenEnv = appTokenEnv
+    if (defaultReplyMode !== undefined) patch.defaultReplyMode = defaultReplyMode
+    return {
+      type: 'config-slack-connection-update' as const,
+      connectionId,
+      ...patch,
+    }
+  },
+)
+
+const parseConfigSlackConnectionRemove = Effect.fn('Cli.parseConfigSlackConnectionRemove')(
+  function* (tokens: ReadonlyArray<string>, all: ReadonlyArray<string>) {
+    if (tokens.length !== 2 || tokens[1] !== '--yes') {
+      return yield* discordArgumentsError(all)
+    }
+    const connectionId = yield* decodePlatformConnectionId(tokens[0] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    return {
+      type: 'config-slack-connection-remove' as const,
+      connectionId,
+      yes: true,
+    }
+  },
+)
+
+const parseSlackConnectionEnableDisable = (enable: boolean) =>
+  Effect.fn('Cli.parseSlackConnectionEnableDisable')(function* (
+    tokens: ReadonlyArray<string>,
+    all: ReadonlyArray<string>,
+  ) {
+    if (tokens.length !== 1) return yield* discordArgumentsError(all)
+    const connectionId = yield* decodePlatformConnectionId(tokens[0] ?? '').pipe(
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    return {
+      type: enable
+        ? ('config-slack-connection-enable' as const)
+        : ('config-slack-connection-disable' as const),
+      connectionId,
+    }
+  })
+
+const parseConfigSlackConnectionGet = Effect.fn('Cli.parseConfigSlackConnectionGet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length < 1 || tokens.length > 2) return yield* discordArgumentsError(all)
+  const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodePlatformConnectionId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const json = yield* parseTrailingJson(tokens.slice(1), all)
+  return { type: 'config-slack-connection-get' as const, connectionId, json }
+})
+
+const parseConfigSlackAccessSet = (subject: SlackAccessSubject) =>
+  Effect.fn('Cli.parseConfigSlackAccessSet')(function* (
+    tokens: ReadonlyArray<string>,
+    all: ReadonlyArray<string>,
+  ) {
+    if (tokens.length !== 2) return yield* discordArgumentsError(all)
+    const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+      Effect.flatMap(decodePlatformConnectionId),
+      Effect.mapError(() => discordArgumentsError(all)),
+    )
+    const policy = yield* parseSlackAccessPolicySpec(tokens[1] ?? '')
+    return { type: 'config-slack-access-set' as const, connectionId, subject, policy }
+  })
+
+const parseConfigSlackChannelSet = Effect.fn('Cli.parseConfigSlackChannelSet')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length < 3) return yield* discordArgumentsError(all)
+  const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodePlatformConnectionId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const channelId = yield* decodeSlackChannelId(tokens[1] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  // A bare reply mode keeps the original positional form working; the flags
+  // set either override without ambiguity.
+  let invocationMode: InvocationModeType | undefined
+  let replyMode: ReplyModeType | undefined
+  let index = 2
+  while (index < tokens.length) {
+    const flag = tokens[index]
+    if (flag === '--reply-in-thread' || flag === '--reply-in-channel') {
+      if (replyMode !== undefined) return yield* discordArgumentsError(all)
+      replyMode = flag === '--reply-in-thread' ? 'reply-in-thread' : 'reply-in-channel'
+      index += 1
+      continue
+    }
+    if (flag === '--invocation') {
+      const value = tokens[index + 1]
+      if (invocationMode !== undefined || value === undefined) {
+        return yield* discordArgumentsError(all)
+      }
+      invocationMode = yield* decodeInvocationMode(value).pipe(
+        Effect.mapError(() => discordArgumentsError(all)),
+      )
+      index += 2
+      continue
+    }
+    if (flag === 'reply-in-thread' || flag === 'reply-in-channel') {
+      if (replyMode !== undefined) return yield* discordArgumentsError(all)
+      replyMode = flag
+      index += 1
+      continue
+    }
+    return yield* discordArgumentsError(all)
+  }
+  if (invocationMode === undefined && replyMode === undefined) {
+    // A channel set with no overrides would be a no-op row.
+    return yield* discordArgumentsError(all)
+  }
+  return {
+    type: 'config-slack-channel-set' as const,
+    connectionId,
+    channelId,
+    patch: buildSlackChannelPatch(invocationMode, replyMode),
+  }
+})
+
+/** Builds a Slack channel patch carrying only the overrides present on the command line. */
+interface ParsedSlackChannelPatch {
+  invocationMode?: InvocationModeType
+  replyMode?: ReplyModeType
+}
+
+const buildSlackChannelPatch = (
+  invocationMode: InvocationModeType | undefined,
+  replyMode: ReplyModeType | undefined,
+): SlackChannelPatch => {
+  const patch: ParsedSlackChannelPatch = {}
+  if (invocationMode !== undefined) patch.invocationMode = invocationMode
+  if (replyMode !== undefined) patch.replyMode = replyMode
+  return patch
+}
+
+const parseConfigSlackChannelReset = Effect.fn('Cli.parseConfigSlackChannelReset')(function* (
+  tokens: ReadonlyArray<string>,
+  all: ReadonlyArray<string>,
+) {
+  if (tokens.length !== 2) return yield* discordArgumentsError(all)
+  const connectionId = yield* positionalToken(tokens, 0, all).pipe(
+    Effect.flatMap(decodePlatformConnectionId),
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  const channelId = yield* decodeSlackChannelId(tokens[1] ?? '').pipe(
+    Effect.mapError(() => discordArgumentsError(all)),
+  )
+  return { type: 'config-slack-channel-reset' as const, connectionId, channelId }
+})
+
 const parseConnectionGuild = Effect.fn('Cli.parseConnectionGuild')(function* (
   tokens: ReadonlyArray<string>,
   connectionIndex: number,
@@ -1833,6 +2234,114 @@ export const cliCommandSpec: CliBranchSpec = {
             },
           ],
         },
+        {
+          name: 'slack',
+          summary: 'Manage Slack Socket Mode connections and their access policy.',
+          children: [
+            {
+              name: 'connection',
+              summary: "Manage one bot connection's stored topology (changes need a restart).",
+              children: [
+                {
+                  name: 'add',
+                  summary: 'Add a Slack Socket Mode connection (needs a restart).',
+                  arguments: [
+                    '<connection-id> --name <name> --bot-token-env <env-name>',
+                    '--app-token-env <env-name> [--reply-in-thread|--reply-in-channel]',
+                  ],
+                  parse: parseConfigSlackConnectionAdd,
+                },
+                {
+                  name: 'update',
+                  summary:
+                    'Update stored connection fields, preserving the rest (changes need a restart).',
+                  arguments: [
+                    '<connection-id> [--name <name>] [--bot-token-env <env-name>]',
+                    '[--app-token-env <env-name>] [--reply-in-thread|--reply-in-channel]',
+                  ],
+                  parse: parseConfigSlackConnectionUpdate,
+                },
+                {
+                  name: 'remove',
+                  summary: 'Remove a connection and its Slack configuration (needs a restart).',
+                  arguments: ['<connection-id> --yes'],
+                  parse: parseConfigSlackConnectionRemove,
+                },
+                {
+                  name: 'enable',
+                  summary: 'Enable a configured connection (needs a restart).',
+                  arguments: ['<connection-id>'],
+                  parse: parseSlackConnectionEnableDisable(true),
+                },
+                {
+                  name: 'disable',
+                  summary: 'Disable a configured connection (needs a restart).',
+                  arguments: ['<connection-id>'],
+                  parse: parseSlackConnectionEnableDisable(false),
+                },
+                {
+                  name: 'get',
+                  summary: "Show one connection's stored configuration.",
+                  arguments: ['<connection-id> [--json]'],
+                  parse: parseConfigSlackConnectionGet,
+                },
+                {
+                  name: 'list',
+                  summary: 'List configured Slack connections.',
+                  arguments: ['[--json]'],
+                  parse: parseConfigSlackConnectionList,
+                },
+              ],
+            },
+            {
+              name: 'access',
+              summary:
+                'Manage connection access policy; resident Slack connections pick up changes after reload.',
+              children: [
+                {
+                  name: 'set-users',
+                  summary: 'Set the connection-wide user permission policy.',
+                  arguments: ['<connection-id> <all|allow=<id>[,...]|deny=<id>[,...]>'],
+                  parse: parseConfigSlackAccessSet('users'),
+                },
+                {
+                  name: 'set-channels',
+                  summary: 'Set the connection-wide channel admission policy.',
+                  arguments: ['<connection-id> <all|allow=<id>[,...]|deny=<id>[,...]>'],
+                  parse: parseConfigSlackAccessSet('channels'),
+                },
+                {
+                  name: 'set-workspaces',
+                  summary: 'Set the connection-wide workspace admission policy.',
+                  arguments: ['<connection-id> <all|allow=<id>[,...]|deny=<id>[,...]>'],
+                  parse: parseConfigSlackAccessSet('workspaces'),
+                },
+              ],
+            },
+            {
+              name: 'channel',
+              summary:
+                'Override the connection reply and invocation defaults for a single channel.',
+              children: [
+                {
+                  name: 'set',
+                  summary: 'Set the channel reply-mode and invocation-mode overrides.',
+                  arguments: [
+                    '<connection-id> <channel-id> [--reply-in-thread|--reply-in-channel]',
+                    '[--invocation <mention-only|all-messages>]',
+                  ],
+                  parse: parseConfigSlackChannelSet,
+                },
+                {
+                  name: 'reset',
+                  summary: 'Remove the channel override; the connection default applies again.',
+                  arguments: ['<connection-id> <channel-id>'],
+                  parse: parseConfigSlackChannelReset,
+                },
+              ],
+            },
+          ],
+        },
       ],
     },
     {
@@ -2253,6 +2762,128 @@ export const formatDiscordConnectionDisable = (
       ? `Discord connection ${connectionId} is already disabled.`
       : `Discord connection ${connectionId} is not configured.`
 
+export const renderSlackConnectionList = (
+  connections: ReadonlyArray<SlackConnectionRecord>,
+): string =>
+  connections.length === 0
+    ? 'No Slack connections are configured.'
+    : [
+        'Slack connections:',
+        ...connections.map(
+          ({ connectionId, name, enabled }) =>
+            `  ${connectionId}  ${enabled ? 'enabled' : 'disabled'}  ${name}`,
+        ),
+      ].join('\n')
+
+export const renderSlackConnectionDetail = (detail: SlackConnectionDetail): string =>
+  [
+    `Slack connection ${detail.connectionId}:`,
+    `  Name: ${detail.name}`,
+    `  Enabled: ${detail.enabled ? 'yes' : 'no'}`,
+    `  Bot token env: ${detail.botTokenEnv}`,
+    `  App token env: ${detail.appTokenEnv}`,
+    `  Default reply mode: ${detail.defaultReplyMode}`,
+    `  Users: ${renderGuildPolicy(detail.users)}`,
+    `  Channels: ${renderGuildPolicy(detail.channels)}`,
+    `  Workspaces: ${renderGuildPolicy(detail.workspaces)}`,
+    ...(detail.channelOverrides.length === 0
+      ? []
+      : [
+          '  Channel overrides:',
+          ...detail.channelOverrides.map((override) => {
+            const overrides = [
+              override.invocationMode === undefined
+                ? undefined
+                : `invocation: ${override.invocationMode}`,
+              override.replyMode === undefined ? undefined : `reply: ${override.replyMode}`,
+            ].filter((entry) => entry !== undefined)
+            return `    ${override.channelId}: ${overrides.length === 0 ? '(no overrides)' : overrides.join(', ')}`
+          }),
+        ]),
+  ].join('\n')
+
+export const formatSlackConnectionAdd = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: SlackConnectionAddOutcome,
+): string =>
+  outcome === 'added'
+    ? `Slack connection ${connectionId} added. ${restartNote}`
+    : `A connection named ${connectionId} already exists.`
+
+export const formatSlackConnectionUpdate = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: SlackConnectionUpdateOutcome,
+): string =>
+  outcome === 'updated'
+    ? `Slack connection ${connectionId} updated. ${restartNote}`
+    : outcome === 'unchanged'
+      ? `Slack connection ${connectionId} already has the requested configuration; nothing changed.`
+      : `Slack connection ${connectionId} is not configured.`
+
+export const formatSlackConnectionRemove = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: SlackConnectionRemoveOutcome,
+): string =>
+  outcome === 'removed'
+    ? `Slack connection ${connectionId} removed together with its Slack configuration. ${restartNote}`
+    : `Slack connection ${connectionId} is not configured.`
+
+export const formatSlackConnectionEnable = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: SlackConnectionEnableOutcome,
+): string =>
+  outcome === 'enabled'
+    ? `Slack connection ${connectionId} enabled. ${restartNote}`
+    : outcome === 'already-enabled'
+      ? `Slack connection ${connectionId} is already enabled.`
+      : `Slack connection ${connectionId} is not configured.`
+
+export const formatSlackConnectionDisable = (
+  connectionId: typeof PlatformConnectionId.Type,
+  outcome: SlackConnectionDisableOutcome,
+): string =>
+  outcome === 'disabled'
+    ? `Slack connection ${connectionId} disabled. ${restartNote}`
+    : outcome === 'already-disabled'
+      ? `Slack connection ${connectionId} is already disabled.`
+      : `Slack connection ${connectionId} is not configured.`
+
+export const formatSlackAccessSet = (
+  subject: SlackAccessSubject,
+  policy: AccessPolicy,
+  outcome: SlackAccessUpdateOutcome,
+): string =>
+  outcome === 'updated'
+    ? `Slack ${subject} policy set to ${renderGuildPolicy(policy)}.`
+    : outcome === 'unchanged'
+      ? `Slack ${subject} policy is already ${renderGuildPolicy(policy)}.`
+      : 'Slack connection is not configured.'
+
+export const formatSlackChannelSet = (
+  channelId: typeof SlackChannelId.Type,
+  patch: SlackChannelPatch,
+  outcome: SlackChannelUpdateOutcome,
+): string => {
+  const overrides = [
+    patch.invocationMode === undefined ? undefined : `invocation ${patch.invocationMode}`,
+    patch.replyMode === undefined ? undefined : `reply ${patch.replyMode}`,
+  ].filter((entry) => entry !== undefined)
+  const scope = overrides.length === 0 ? 'override' : overrides.join(', ')
+  return outcome === 'updated'
+    ? `Slack channel ${channelId} ${scope} updated.`
+    : outcome === 'unchanged'
+      ? `Slack channel ${channelId} ${scope} is unchanged.`
+      : 'Slack connection is not configured.'
+}
+
+export const formatSlackChannelReset = (
+  channelId: typeof SlackChannelId.Type,
+  outcome: SlackChannelResetOutcome,
+): string =>
+  outcome === 'removed'
+    ? `Slack channel ${channelId} override removed; the connection default applies.`
+    : `No override is configured for Slack channel ${channelId}.`
+
 const renderGuildPolicy = (policy: AccessPolicy): string =>
   policy.mode === 'all' ? 'all' : `${policy.mode}=${policy.ids.join(',')}`
 
@@ -2436,6 +3067,7 @@ export type FridayCliOperations<
   ModelConfigError,
   ModelCatalogError,
   DocumentError,
+  SlackError = never,
 > = {
   readonly start: Effect.Effect<never, E>
   readonly reloadConfig: Effect.Effect<ConfigReloadOutcomeType, ControlSocketError>
@@ -2553,6 +3185,42 @@ export type FridayCliOperations<
     guildId: typeof DiscordGuildId.Type,
     channelId: typeof DiscordGuildChannelId.Type,
   ) => Effect.Effect<DiscordGuildChannelResetOutcome, GuildError>
+  readonly addSlackConnection: (
+    input: Extract<FridayCliAction, { readonly type: 'config-slack-connection-add' }>,
+  ) => Effect.Effect<SlackConnectionAddOutcome, SlackError>
+  readonly updateSlackConnection: (
+    action: Extract<FridayCliAction, { readonly type: 'config-slack-connection-update' }>,
+  ) => Effect.Effect<SlackConnectionUpdateOutcome, SlackError>
+  readonly removeSlackConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<SlackConnectionRemoveOutcome, SlackError>
+  readonly enableSlackConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<SlackConnectionEnableOutcome, SlackError>
+  readonly disableSlackConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<SlackConnectionDisableOutcome, SlackError>
+  readonly getSlackConnection: (
+    connectionId: typeof PlatformConnectionId.Type,
+  ) => Effect.Effect<Option.Option<SlackConnectionDetail>, SlackError>
+  readonly listSlackConnections: () => Effect.Effect<
+    ReadonlyArray<SlackConnectionRecord>,
+    SlackError
+  >
+  readonly setSlackAccess: (
+    connectionId: typeof PlatformConnectionId.Type,
+    subject: SlackAccessSubject,
+    policy: AccessPolicy,
+  ) => Effect.Effect<SlackAccessUpdateOutcome, SlackError>
+  readonly setSlackChannel: (
+    connectionId: typeof PlatformConnectionId.Type,
+    channelId: typeof SlackChannelId.Type,
+    patch: SlackChannelPatch,
+  ) => Effect.Effect<SlackChannelUpdateOutcome, SlackError>
+  readonly resetSlackChannel: (
+    connectionId: typeof PlatformConnectionId.Type,
+    channelId: typeof SlackChannelId.Type,
+  ) => Effect.Effect<SlackChannelResetOutcome, SlackError>
   readonly ensureWorktree: (
     action: Extract<FridayCliAction, { readonly type: 'worktree-ensure' }>,
   ) => Effect.Effect<ManagedWorktree, WorktreeError>
@@ -2592,7 +3260,9 @@ export type FridayCliOperations<
 type ProfileAction = Extract<FridayCliAction, { readonly type: `config-profile-${string}` }>
 type ConnectionAction = Extract<
   FridayCliAction,
-  { readonly type: `config-discord-connection-${string}` }
+  {
+    readonly type: `config-discord-connection-${string}` | `config-slack-connection-${string}`
+  }
 >
 type ConfigurationAction = Extract<
   FridayCliAction,
@@ -2625,7 +3295,15 @@ type CatalogAction = Extract<
       | ConnectionAction['type']
   }
 >
-type GuildAction = Extract<FridayCliAction, { readonly type: `config-discord-guild-${string}` }>
+type GuildAction = Extract<
+  FridayCliAction,
+  {
+    readonly type:
+      | `config-discord-guild-${string}`
+      | `config-slack-access-${string}`
+      | `config-slack-channel-${string}`
+  }
+>
 type RuntimeAction = Exclude<FridayCliAction, ConfigurationAction | CatalogAction | GuildAction>
 type GroupFor<ActionType extends FridayCliAction['type']> =
   ActionType extends ConfigurationAction['type']
@@ -2667,6 +3345,13 @@ const cliActionGroups = {
   'config-discord-connection-enable': 'catalog',
   'config-discord-connection-disable': 'catalog',
   'config-discord-connection-get': 'catalog',
+  'config-slack-connection-list': 'catalog',
+  'config-slack-connection-add': 'catalog',
+  'config-slack-connection-update': 'catalog',
+  'config-slack-connection-remove': 'catalog',
+  'config-slack-connection-enable': 'catalog',
+  'config-slack-connection-disable': 'catalog',
+  'config-slack-connection-get': 'catalog',
   'config-discord-guild-enable': 'guild',
   'config-discord-guild-disable': 'guild',
   'config-discord-guild-remove': 'guild',
@@ -2676,6 +3361,9 @@ const cliActionGroups = {
   'config-discord-guild-set-channels': 'guild',
   'config-discord-guild-channel-set': 'guild',
   'config-discord-guild-channel-reset': 'guild',
+  'config-slack-access-set': 'guild',
+  'config-slack-channel-set': 'guild',
+  'config-slack-channel-reset': 'guild',
   'workspace-cleanup-apply': 'runtime',
   'workspace-cleanup-list': 'runtime',
   'worktree-ensure': 'runtime',
@@ -2700,7 +3388,8 @@ const isProfileAction = (action: ConfigurationAction): action is ProfileAction =
 const isCatalogAction = (action: FridayCliAction): action is CatalogAction =>
   cliActionGroups[action.type] === 'catalog'
 const isConnectionAction = (action: CatalogAction): action is ConnectionAction =>
-  action.type.startsWith('config-discord-connection-')
+  action.type.startsWith('config-discord-connection-') ||
+  action.type.startsWith('config-slack-connection-')
 const isGuildAction = (action: FridayCliAction): action is GuildAction =>
   cliActionGroups[action.type] === 'guild'
 
@@ -2723,6 +3412,7 @@ export const runFridayCli = <
   ModelConfigError,
   ModelCatalogError,
   DocumentError,
+  SlackError,
 >(
   arguments_: ReadonlyArray<string>,
   options: FridayCliOperations<
@@ -2736,7 +3426,8 @@ export const runFridayCli = <
     ConnectionError,
     ModelConfigError,
     ModelCatalogError,
-    DocumentError
+    DocumentError,
+    SlackError
   >,
 ): Effect.Effect<
   void,
@@ -2754,6 +3445,7 @@ export const runFridayCli = <
   | ModelConfigError
   | ModelCatalogError
   | DocumentError
+  | SlackError
 > =>
   Effect.gen(function* () {
     const action = yield* parseFridayCli(arguments_)
@@ -3038,6 +3730,51 @@ export const runFridayCli = <
           )
           return
         }
+        case 'config-slack-connection-add': {
+          const outcome = yield* options.addSlackConnection(selected)
+          yield* Console.log(formatSlackConnectionAdd(selected.connectionId, outcome))
+          return
+        }
+        case 'config-slack-connection-update': {
+          const outcome = yield* options.updateSlackConnection(selected)
+          yield* Console.log(formatSlackConnectionUpdate(selected.connectionId, outcome))
+          return
+        }
+        case 'config-slack-connection-remove': {
+          const outcome = yield* options.removeSlackConnection(selected.connectionId)
+          yield* Console.log(formatSlackConnectionRemove(selected.connectionId, outcome))
+          return
+        }
+        case 'config-slack-connection-enable': {
+          const outcome = yield* options.enableSlackConnection(selected.connectionId)
+          yield* Console.log(formatSlackConnectionEnable(selected.connectionId, outcome))
+          return
+        }
+        case 'config-slack-connection-disable': {
+          const outcome = yield* options.disableSlackConnection(selected.connectionId)
+          yield* Console.log(formatSlackConnectionDisable(selected.connectionId, outcome))
+          return
+        }
+        case 'config-slack-connection-get': {
+          const detail = yield* options.getSlackConnection(selected.connectionId)
+          yield* Console.log(
+            Option.match(detail, {
+              onNone: () => `Slack connection ${selected.connectionId} is not configured.`,
+              onSome: (connection) =>
+                selected.json
+                  ? JSON.stringify(connection)
+                  : renderSlackConnectionDetail(connection),
+            }),
+          )
+          return
+        }
+        case 'config-slack-connection-list': {
+          const connections = yield* options.listSlackConnections()
+          yield* Console.log(
+            selected.json ? JSON.stringify(connections) : renderSlackConnectionList(connections),
+          )
+          return
+        }
         default: {
           const unhandled: never = selected
           return unhandled
@@ -3170,6 +3907,45 @@ export const runFridayCli = <
           yield* Console.log(
             formatDiscordConfigMutation(result, (outcome) =>
               formatDiscordGuildChannelReset(selected.channelId, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-slack-access-set': {
+          const result = yield* applyDiscordConfigMutation(
+            options.setSlackAccess(selected.connectionId, selected.subject, selected.policy),
+            (outcome) => outcome === 'updated',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatSlackAccessSet(selected.subject, selected.policy, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-slack-channel-set': {
+          const result = yield* applyDiscordConfigMutation(
+            options.setSlackChannel(selected.connectionId, selected.channelId, selected.patch),
+            (outcome) => outcome === 'updated',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatSlackChannelSet(selected.channelId, selected.patch, outcome),
+            ),
+          )
+          return
+        }
+        case 'config-slack-channel-reset': {
+          const result = yield* applyDiscordConfigMutation(
+            options.resetSlackChannel(selected.connectionId, selected.channelId),
+            (outcome) => outcome === 'removed',
+            options.reloadConfig,
+          )
+          yield* Console.log(
+            formatDiscordConfigMutation(result, (outcome) =>
+              formatSlackChannelReset(selected.channelId, outcome),
             ),
           )
           return

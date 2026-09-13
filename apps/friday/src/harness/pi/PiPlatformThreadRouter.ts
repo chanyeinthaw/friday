@@ -82,7 +82,7 @@ const renderContext = (input: ThreadRouteDecideInput): string => {
 
 const threadRoutePrompt = (input: ThreadRouteDecideInput): string =>
   [
-    'You are Friday\u2019s adaptive thread router. Decide whether a Discord channel message should stay in the channel or move to a new native thread.',
+    'You are Friday\u2019s adaptive thread router. Decide whether a channel message should stay in the channel or move to a new native thread.',
     '',
     'Conservative policy:',
     '- Create a thread only when the user explicitly asks for a thread, or when the message starts substantial focused multi-step work that benefits from a thread (for example building, debugging, multi-file tasks, or extended investigation).',

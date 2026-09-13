@@ -166,6 +166,42 @@ test('does not load disabled platform connections', async () =>
     }).pipe(Effect.provide(database)),
   ))
 
+test('loads Slack channel invocation and reply overrides', async () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* runMigrations()
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`
+      INSERT INTO platform_connections (
+        connection_id, platform, name, enabled, created_at, updated_at
+      ) VALUES ('slack-personal', 'slack', 'Personal Slack', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `
+      yield* sql`
+      INSERT INTO slack_connections (
+        connection_id, bot_token_env, app_token_env, default_reply_mode
+      ) VALUES ('slack-personal', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'reply-in-thread')
+    `
+      yield* sql`
+      INSERT INTO slack_channels (connection_id, channel_id, invocation_mode, reply_mode)
+      VALUES
+        ('slack-personal', 'C111', 'all-messages', 'reply-in-channel'),
+        ('slack-personal', 'C222', 'all-messages', NULL),
+        ('slack-personal', 'C333', NULL, 'reply-in-channel')
+    `
+      const config = yield* loadAppConfig({
+        environment: { SLACK_BOT_TOKEN: 'xoxb-test', SLACK_APP_TOKEN: 'xapp-test' },
+      })
+      const slack = config.platforms.slack[0]
+      assert(slack !== undefined)
+      assert.strictEqual(slack.connectionId, 'slack-personal')
+      assert.deepStrictEqual(slack.channels, [
+        { channelId: 'C111', invocationMode: 'all-messages', replyMode: 'reply-in-channel' },
+        { channelId: 'C222', invocationMode: 'all-messages' },
+        { channelId: 'C333', replyMode: 'reply-in-channel' },
+      ])
+    }).pipe(Effect.provide(database)),
+  ))
+
 test('fails safely when an enabled connection secret is missing', async () =>
   Effect.runPromise(
     Effect.gen(function* () {

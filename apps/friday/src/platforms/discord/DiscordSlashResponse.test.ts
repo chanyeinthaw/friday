@@ -127,9 +127,10 @@ it.effect('completes the interaction webhook original response through channel.p
     // (content plus optional flags), not untrusted I/O.
     const body = interaction[0]?.body as { content?: string; flags?: number }
     assert.strictEqual(body.content, 'Configuration reloaded (version 2).')
-    // The PATCH omits flags, so the ephemeral flag set at deferReply is
-    // preserved instead of being cleared by the completion.
-    assert.strictEqual(body.flags, undefined)
+    // Chat SDK 4.40 always echoes the deferReply flags on the PATCH
+    // (`initialFlags | (payload.flags ?? 0)`), so ephemeral stays explicit as
+    // 64 instead of omitted as in 4.38.
+    assert.strictEqual(body.flags, DiscordInteractionResponseFlag.Ephemeral)
     // The reply went to the interaction webhook, never to the channel itself.
     assert.strictEqual(
       discord.requests.some((request) => request.kind === 'channel'),

@@ -95,7 +95,8 @@ const combinedText = (categories: ReadonlySet<ToolCategory>): string => {
   return 'Running tools...'
 }
 
-const render = (status: string): string => `-# ${status}`
+// Statuses stay plain here. Discord renders subtext and Slack keeps the
+// text unchanged, so each adapter formats at its own boundary.
 
 export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
   Layer.effect(
@@ -142,7 +143,7 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
             'update-working',
             platforms.updateWorking({
               binding: state.thread.conversationBinding,
-              text: render(status),
+              text: status,
             }),
           )
           if (published) state.status = status
@@ -167,7 +168,7 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
                 'begin-working',
                 platforms.beginWorking({
                   binding: thread.conversationBinding,
-                  text: render('Thinking...'),
+                  text: 'Thinking...',
                 }),
               )
               states.set(thread.id, {
