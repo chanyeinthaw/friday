@@ -230,3 +230,28 @@ it.effect('guides durable branch selection and temporary isolation branches', ()
     assert.include(bootstrapPrompt, 'friday/task/')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
+
+it.effect('allows explicit external paths while keeping task work inside the workspace', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+
+    assert.include(
+      prompt,
+      'Keep task working directories and durable files inside the channel workspace.',
+    )
+    assert.include(
+      prompt,
+      'You may access a path outside the workspace when the participant explicitly asks you to work with that path.',
+    )
+    assert.include(
+      prompt,
+      'Pass the exact path in the task instructions instead of using it as the task working directory.',
+    )
+    assert.include(prompt, 'Do not inspect unrelated paths.')
+    assert.notInclude(prompt, 'Never use `/tmp`')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
