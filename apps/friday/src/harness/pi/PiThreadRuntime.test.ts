@@ -405,16 +405,20 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
       yield* Effect.promise(
         () => listener?.({ type: 'compaction_start', reason: 'threshold' }) ?? Promise.resolve(),
       )
-      yield* Effect.all([
-        runtime.prompt({
-          turnId,
-          message: { source: 'user', content: { text: 'first', images: [] } },
-        }),
-        runtime.prompt({
-          turnId,
-          message: { source: 'user', content: { text: 'second', images: [] } },
-        }),
-      ])
+      const steering = yield* Effect.all(
+        [
+          runtime.prompt({
+            turnId,
+            message: { source: 'user', content: { text: 'first', images: [] } },
+          }),
+          runtime.prompt({
+            turnId,
+            message: { source: 'user', content: { text: 'second', images: [] } },
+          }),
+        ],
+        { concurrency: 'unbounded' },
+      ).pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
       assert.deepStrictEqual(prompts, [{ text: 'start', behavior: undefined }])
 
       yield* Effect.promise(
@@ -427,6 +431,7 @@ it.effect('queues steering during compaction and drains it in FIFO order', () =>
             willRetry: false,
           }) ?? Promise.resolve(),
       )
+      yield* Fiber.join(steering)
       assert.deepStrictEqual(prompts, [
         { text: 'start', behavior: undefined },
         { text: 'first', behavior: 'steer' },
@@ -528,14 +533,19 @@ it.effect('fails the active Turn without overtaking failed deferred steering', (
       yield* Effect.promise(
         () => listener?.({ type: 'compaction_start', reason: 'threshold' }) ?? Promise.resolve(),
       )
-      yield* runtime.prompt({
-        turnId,
-        message: { source: 'user', content: { text: 'first', images: [] } },
-      })
-      yield* runtime.prompt({
-        turnId,
-        message: { source: 'user', content: { text: 'second', images: [] } },
-      })
+      const firstSteering = yield* runtime
+        .prompt({
+          turnId,
+          message: { source: 'user', content: { text: 'first', images: [] } },
+        })
+        .pipe(Effect.exit, Effect.forkScoped)
+      const secondSteering = yield* runtime
+        .prompt({
+          turnId,
+          message: { source: 'user', content: { text: 'second', images: [] } },
+        })
+        .pipe(Effect.exit, Effect.forkScoped)
+      yield* Effect.yieldNow
       yield* Effect.promise(
         () =>
           listener?.({
@@ -546,6 +556,10 @@ it.effect('fails the active Turn without overtaking failed deferred steering', (
             willRetry: false,
           }) ?? Promise.resolve(),
       )
+      const firstExit = yield* Fiber.join(firstSteering)
+      const secondExit = yield* Fiber.join(secondSteering)
+      assert.strictEqual(firstExit._tag, 'Failure')
+      assert.strictEqual(secondExit._tag, 'Failure')
       const terminalExit = yield* Fiber.await(terminal)
       assert.strictEqual(terminalExit._tag, 'Success')
       if (terminalExit._tag !== 'Success' || terminalExit.value._tag !== 'Some') return
@@ -781,6 +795,106 @@ it.effect('reports a structured failure when the Pi reload rejects', () =>
         reason: 'reload-failed',
         detail: 'extension runner exploded',
       })
+    }),
+  ).pipe(Effect.provide(BunCrypto.layer)),
+)
+
+it.effect('rejects queued steering when its Pi turn finishes before delivery', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const turnStarted = yield* Deferred.make<void>()
+      const finishTurn = yield* Deferred.make<void>()
+      let listener: ((event: AgentSessionEvent) => void | Promise<void>) | undefined
+      const session = {
+        sessionId: 'pi-session-steer-stale-queue',
+        sessionManager: { getSessionFile: () => undefined },
+        subscribe: (next) => {
+          listener = next
+          return () => {
+            listener = undefined
+          }
+        },
+        bindExtensions: async () => undefined,
+        prompt: async (_text: string, options?: { readonly streamingBehavior?: string }) => {
+          if (options?.streamingBehavior !== 'steer') {
+            Effect.runFork(Deferred.succeed(turnStarted, undefined))
+            await Effect.runPromise(Deferred.await(finishTurn))
+          }
+        },
+        abort: async () => undefined,
+        reload: async () => undefined,
+        dispose: () => undefined,
+        getSessionStats: () => ({
+          sessionFile: undefined,
+          sessionId: 'pi-session-steer-stale-queue',
+          userMessages: 0,
+          assistantMessages: 0,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: 0,
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          cost: 0,
+        }),
+      } satisfies PiAgentSessionContract
+      const runtime = yield* makePiThreadRuntime({
+        thread: decodeThread({
+          id: 'thread-steer-stale-queue',
+          audience: 'user',
+          parent: null,
+          harness: 'pi',
+          harnessSession: null,
+          workingDirectory: '/tmp/friday/thread-steer-stale-queue',
+          model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
+          thinkingLevel: 'max',
+          channelContext: { name: 'Friday test channel', description: '' },
+          conversationBinding: {
+            platform: 'discord',
+            connectionId: 'discord',
+            channelId: 'channel-steer-stale-queue',
+            sourceMessageId: 'message-steer-stale-queue',
+            conversationId: 'platform-conversation-steer-stale-queue',
+          },
+          status: 'active',
+          createdAt: '2026-03-21T09:00:00.000Z',
+          updatedAt: '2026-03-21T09:00:00.000Z',
+          closedAt: null,
+        }),
+        sessionFactory: () => Effect.succeed(session),
+      })
+      const turnId = decodeTurnId('turn-steer-stale-queue')
+      const active = yield* runtime
+        .prompt({
+          turnId,
+          message: { source: 'user', content: { text: 'start', images: [] } },
+          mode: 'turn',
+        })
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(turnStarted)
+      yield* Effect.promise(
+        () => listener?.({ type: 'compaction_start', reason: 'threshold' }) ?? Promise.resolve(),
+      )
+      const steering = yield* runtime
+        .prompt({
+          turnId,
+          message: { source: 'user', content: { text: 'queued', images: [] } },
+        })
+        .pipe(Effect.exit, Effect.forkScoped)
+      yield* Effect.yieldNow
+      assert.strictEqual(steering.pollUnsafe(), undefined)
+      yield* Deferred.succeed(finishTurn, undefined)
+      yield* Fiber.join(active)
+      yield* Effect.promise(
+        () =>
+          listener?.({
+            type: 'compaction_end',
+            reason: 'threshold',
+            result: undefined,
+            aborted: false,
+            willRetry: false,
+          }) ?? Promise.resolve(),
+      )
+      const exit = yield* Fiber.join(steering)
+      assert.strictEqual(exit._tag, 'Failure')
     }),
   ).pipe(Effect.provide(BunCrypto.layer)),
 )
