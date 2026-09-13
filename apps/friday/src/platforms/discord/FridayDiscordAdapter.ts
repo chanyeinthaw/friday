@@ -16,6 +16,9 @@ const DiscordLocationSegments = Schema.Union([
 const decodeDiscordLocationSegments = Schema.decodeUnknownResult(DiscordLocationSegments)
 
 interface DiscordGatewayMessage {
+  readonly id?: string
+  /** Numeric Discord message type; mirrors MessageType in discord-api-types. */
+  readonly type?: number
   readonly guildId: string | null
   readonly channelId: string
   readonly author: {
@@ -27,9 +30,25 @@ interface DiscordGatewayMessage {
   }
 }
 
+// Thread system rows that must never reach Chat handling. Values mirror
+// MessageType in discord-api-types. ThreadCreated is the "started a thread"
+// row. ThreadStarterMessage is the native thread placeholder whose parent
+// starter was already handled. Kept as named constants so the filter reads
+// without bare numbers. Normal messages are 0 and replies are 19.
+const DISCORD_THREAD_CREATED_MESSAGE_TYPE = 18
+const DISCORD_THREAD_STARTER_MESSAGE_TYPE = 21
+
+const isDiscordSystemMessageType = (type: number | undefined): boolean =>
+  type === DISCORD_THREAD_CREATED_MESSAGE_TYPE || type === DISCORD_THREAD_STARTER_MESSAGE_TYPE
+
 /** discord.js gateway client, typed through the adapter's own declarations. */
 type DiscordGatewayClient = Parameters<DiscordAdapter['setupLegacyGatewayHandlers']>[0]
 type DiscordGatewayShutdown = Parameters<DiscordAdapter['setupLegacyGatewayHandlers']>[1]
+/** Forwarded MESSAGE_CREATE payload plus the optional raw type the wire retains. */
+type DiscordForwardedMessage = Parameters<DiscordAdapter['handleForwardedMessage']>[0] & {
+  readonly type?: number
+}
+type DiscordForwardedMessageOptions = Parameters<DiscordAdapter['handleForwardedMessage']>[1]
 
 export type FridayDiscordAdapterConfig = DiscordAdapterConfig & {
   /**
@@ -203,10 +222,22 @@ export class FridayDiscordAdapter extends DiscordAdapter {
 
   protected override handleGatewayMessage(
     // SAFETY: The gateway dispatches discord.js messages; the gate only reads
-    // location and author fields.
+    // location, author, and type fields.
     message: DiscordGatewayMessage,
     isMentioned: boolean,
   ): Promise<void> {
+    // Drop thread system rows before any Chat state, thread creation,
+    // admission, history load, or reply. Type 21 placeholders follow a
+    // parent starter that was already handled, so both stay out.
+    if (isDiscordSystemMessageType(message.type)) {
+      this.logger.debug('Ignored Discord system message', {
+        guildId: message.guildId,
+        channelId: message.channelId,
+        messageId: message.id,
+        messageType: message.type,
+      })
+      return Promise.resolve()
+    }
     const guildId = message.guildId ?? '@me'
     // Mirror the upstream parent-channel resolution so thread messages resolve
     // their policy from the parent channel while staying in their thread.
@@ -237,5 +268,31 @@ export class FridayDiscordAdapter extends DiscordAdapter {
     // DiscordGatewayMessage above are read, and the base class accepts the same
     // message shape it dispatched.
     return super.handleGatewayMessage(message as never, invoke)
+  }
+
+  /**
+   * Defense in depth for forwarded MESSAGE_CREATE events. The wire payload
+   * retains the raw message type, so the same thread system rows are dropped
+   * here before any thread creation or Chat dispatch. The shared admission
+   * contract stays untouched. This stays in the Discord forwarded hook.
+   */
+  protected override handleForwardedMessage(
+    // SAFETY: forwarded payloads arrive as the adapter's own gateway data;
+    // the gate only reads identifiers and the raw type.
+    data: DiscordForwardedMessage,
+    options?: DiscordForwardedMessageOptions,
+  ): Promise<void> {
+    if (isDiscordSystemMessageType(data.type)) {
+      this.logger.debug('Ignored Discord system message', {
+        guildId: data.guild_id,
+        channelId: data.channel_id,
+        messageId: data.id,
+        messageType: data.type,
+      })
+      return Promise.resolve()
+    }
+    // SAFETY: data and options are the adapter's own forwarded shapes; the
+    // base class accepts exactly what it produced.
+    return super.handleForwardedMessage(data as never, options as never)
   }
 }
