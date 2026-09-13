@@ -139,10 +139,10 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
       }).pipe(Effect.provide(TestLive))
 
       assert.deepStrictEqual(events, [
-        'acknowledge',
-        'working:Thinking...',
         'open-thread',
         'prompt',
+        'acknowledge',
+        'working:Thinking...',
         'finalize:Friday is done.',
       ])
     }),
@@ -270,11 +270,11 @@ it.effect('adds bounded catch-up context to an existing channel Turn', () =>
 
       assert.deepStrictEqual(events, [
         'catch-up:false:message-before',
-        'acknowledge',
-        'working:Thinking...',
         'open-thread',
         'context:Missed discussion.',
         'prompt',
+        'acknowledge',
+        'working:Thinking...',
         'finalize:Friday is done.',
       ])
     }),
@@ -323,7 +323,7 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         yield* ingestion.ingest(input, () => Effect.succeed(thread))
       }).pipe(Effect.provide(TestLive))
 
-      assert.deepStrictEqual(events, ['acknowledge', 'working:Thinking...', 'open-thread', 'steer'])
+      assert.deepStrictEqual(events, ['open-thread', 'steer', 'acknowledge', 'working:Thinking...'])
     }),
   ),
 )
@@ -376,10 +376,10 @@ it.effect('keeps thread title failure non-fatal for new channel Threads', () =>
       }).pipe(Effect.provide(TestLive))
 
       assert.deepStrictEqual(events, [
-        'acknowledge',
-        'working:Thinking...',
         'open-thread',
         'prompt',
+        'acknowledge',
+        'working:Thinking...',
         'finalize:Friday is done.',
       ])
     }),

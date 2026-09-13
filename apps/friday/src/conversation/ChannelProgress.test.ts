@@ -45,6 +45,7 @@ const thread = decodeChannelThread({
   closedAt: null,
 })
 const turnId = Schema.decodeSync(TurnId)('turn-progress')
+const nextTurnId = Schema.decodeSync(TurnId)('turn-progress-next')
 const activityId = Schema.decodeSync(ActivityId)
 const callId = Schema.decodeSync(ToolCallId)
 const decodePlatformMessageId = Schema.decodeSync(PlatformMessageId)
@@ -103,8 +104,8 @@ it.effect('discards the working placeholder for an empty response', () =>
         discardWorking: () => Effect.sync(() => events.push('discard')),
       })
 
-      yield* progress.accept(thread, userMessage('Stop.'))
-      yield* progress.finalize(thread, '')
+      yield* progress.accept(thread, userMessage('Stop.'), turnId)
+      yield* progress.finalize(thread, turnId, '')
 
       assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'discard'])
     }),
@@ -116,7 +117,7 @@ it.effect('aggregates parallel tool categories into one working status', () =>
     Effect.gen(function* () {
       const events: Array<string> = []
       const progress = yield* makeProgress(makePlatform(events))
-      yield* progress.accept(thread, userMessage('Do work.'))
+      yield* progress.accept(thread, userMessage('Do work.'), turnId)
       const toolCall = (id: string, toolName: string) => ({
         type: 'activity-completed' as const,
         turnId,
@@ -152,12 +153,12 @@ it.effect('ends the progress lifecycle when a turn delegates work', () =>
       const events: Array<string> = []
       const progress = yield* makeProgress(makePlatform(events))
 
-      yield* progress.accept(thread, userMessage('Inspect the repository.'))
-      yield* progress.finalize(thread, 'I delegated the inspection and will report back.')
+      yield* progress.accept(thread, userMessage('Inspect the repository.'), turnId)
+      yield* progress.finalize(thread, turnId, 'I delegated the inspection and will report back.')
 
-      yield* progress.accept(thread, userMessage('How does that work?'))
-      yield* progress.observe(thread.id, turnStarted)
-      yield* progress.finalize(thread, 'It runs in a background agent thread.')
+      yield* progress.accept(thread, userMessage('How does that work?'), nextTurnId)
+      yield* progress.observe(thread.id, { ...turnStarted, turnId: nextTurnId })
+      yield* progress.finalize(thread, nextTurnId, 'It runs in a background agent thread.')
 
       assert.deepStrictEqual(events, [
         'ack',
@@ -177,8 +178,8 @@ it.effect('does not publish a duplicate after successful finalization', () =>
       const events: Array<string> = []
       const progress = yield* makeProgress(makePlatform(events))
 
-      yield* progress.accept(thread, userMessage('Do work.'))
-      yield* progress.finalize(thread, 'Done.')
+      yield* progress.accept(thread, userMessage('Do work.'), turnId)
+      yield* progress.finalize(thread, turnId, 'Done.')
 
       assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'finalize:Done.'])
     }),
@@ -196,8 +197,8 @@ it.effect('continues the lifecycle when acknowledgement fails', () =>
       }
       const progress = yield* makeProgress(platform)
 
-      yield* progress.accept(thread, userMessage('Do work.'))
-      yield* progress.finalize(thread, 'Done.')
+      yield* progress.accept(thread, userMessage('Do work.'), turnId)
+      yield* progress.finalize(thread, turnId, 'Done.')
 
       assert.deepStrictEqual(events, ['working:Thinking...', 'finalize:Done.'])
     }),
@@ -219,11 +220,13 @@ it.effect('times out a hung acknowledgement and continues the lifecycle', () =>
         makeChannelProgressLive({ operationTimeout: '1 second' }),
       )
 
-      const fiber = yield* progress.accept(thread, userMessage('Do work.')).pipe(Effect.forkChild)
+      const fiber = yield* progress
+        .accept(thread, userMessage('Do work.'), turnId)
+        .pipe(Effect.forkChild)
       yield* Deferred.await(acknowledgementStarted)
       yield* TestClock.adjust('1 second')
       yield* Fiber.join(fiber)
-      yield* progress.finalize(thread, 'Done.')
+      yield* progress.finalize(thread, turnId, 'Done.')
 
       assert.deepStrictEqual(events, ['working:Thinking...', 'finalize:Done.'])
     }),
@@ -256,12 +259,18 @@ it.effect('does not let a hung channel block progress in another channel', () =>
         },
       })
 
-      const hung = yield* progress.accept(thread, userMessage('Do work.')).pipe(Effect.forkChild)
+      const hung = yield* progress
+        .accept(thread, userMessage('Do work.'), turnId)
+        .pipe(Effect.forkChild)
       yield* Deferred.await(acknowledgementStarted)
-      yield* progress.accept(otherThread, {
-        ...userMessage('Other work.'),
-        platformMessageId: otherMessageId,
-      })
+      yield* progress.accept(
+        otherThread,
+        {
+          ...userMessage('Other work.'),
+          platformMessageId: otherMessageId,
+        },
+        turnId,
+      )
 
       assert.deepStrictEqual(events, ['ack-other', 'working:Thinking...'])
       yield* Fiber.interrupt(hung)
@@ -284,8 +293,8 @@ it.effect('falls back to publishing when finalization times out', () =>
         makeChannelProgressLive({ operationTimeout: '1 second' }),
       )
 
-      yield* progress.accept(thread, userMessage('Do work.'))
-      const finalization = yield* progress.finalize(thread, 'Done.').pipe(Effect.forkChild)
+      yield* progress.accept(thread, userMessage('Do work.'), turnId)
+      const finalization = yield* progress.finalize(thread, turnId, 'Done.').pipe(Effect.forkChild)
       yield* Deferred.await(finalizationStarted)
       yield* TestClock.adjust('1 second')
       yield* Fiber.join(finalization)
@@ -306,10 +315,64 @@ it.effect('falls back to publishing when finalization fails', () =>
       }
       const progress = yield* makeProgress(platform)
 
-      yield* progress.accept(thread, userMessage('Do work.'))
-      yield* progress.finalize(thread, 'Done.')
+      yield* progress.accept(thread, userMessage('Do work.'), turnId)
+      yield* progress.finalize(thread, turnId, 'Done.')
 
       assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'publish:Done.'])
+    }),
+  ),
+)
+
+it.effect('ignores stale finalization after a newer turn starts', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const progress = yield* makeProgress(makePlatform(events))
+
+      yield* progress.accept(thread, userMessage('First.'), turnId)
+      yield* progress.accept(thread, userMessage('Second.'), nextTurnId)
+      yield* progress.finalize(thread, turnId, 'Stale done.')
+
+      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'ack'])
+
+      yield* progress.finalize(thread, nextTurnId, 'Current done.')
+
+      assert.deepStrictEqual(events, [
+        'ack',
+        'working:Thinking...',
+        'ack',
+        'finalize:Current done.',
+      ])
+    }),
+  ),
+)
+
+it.effect('ignores stale tool updates for a previous turn', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const progress = yield* makeProgress(makePlatform(events))
+      yield* progress.accept(thread, userMessage('Do work.'), turnId)
+      yield* progress.accept(thread, userMessage('Follow-up.'), nextTurnId)
+      const staleToolCall = {
+        type: 'activity-completed' as const,
+        turnId,
+        activity: {
+          id: activityId('activity-stale'),
+          sequence: 0,
+          status: 'completed' as const,
+          type: 'tool-call' as const,
+          callId: callId('stale-call'),
+          toolName: 'read',
+          input: {},
+          createdAt: '2026-03-21T09:00:00.000Z' as const,
+          updatedAt: '2026-03-21T09:00:00.000Z' as const,
+          completedAt: '2026-03-21T09:00:00.000Z' as const,
+        },
+      }
+      yield* progress.observe(thread.id, staleToolCall)
+
+      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'ack'])
     }),
   ),
 )

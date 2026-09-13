@@ -38,6 +38,7 @@ import {
   harnessReloadFailed,
   harnessReloadRefused,
   harnessReloadSucceeded,
+  SteerRejectedError,
   type HarnessReloadOutcome,
   type PromptRequest,
   type ThreadRuntime,
@@ -570,6 +571,24 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
         }),
       )
       if (!request) return
+      // Stale queued steering must never reach a newer Pi turn. Drop it
+      // without aborting; the caller already fell back to a new turn.
+      const stale = yield* Effect.sync(() => request.turnId !== state.activeTurnId)
+      if (stale) {
+        yield* Effect.logDebug('pi.steering.stale-dropped').pipe(
+          Effect.annotateLogs({
+            component: 'pi',
+            threadId: options.thread.id,
+            turnId: request.turnId,
+          }),
+        )
+        yield* sessionLock.withPermit(
+          Effect.sync(() => {
+            sessionState.queuedSteering.shift()
+          }),
+        )
+        continue
+      }
       yield* sendSteering(request).pipe(
         Effect.tapError(() =>
           sessionLock.withPermit(
@@ -664,6 +683,21 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
     const text = renderPromptMessage(request.message)
     const mode = request.mode ?? 'steer'
     if (mode === 'steer') {
+      // Steering reaches only the genuinely active Pi turn. A routed message
+      // never touches the parent session because its turn id differs.
+      const active = yield* Effect.sync(() => state.activeTurnId)
+      if (active === null) {
+        return yield* new SteerRejectedError({
+          turnId: String(request.turnId),
+          detail: 'No active Pi turn to steer.',
+        })
+      }
+      if (active !== request.turnId) {
+        return yield* new SteerRejectedError({
+          turnId: String(request.turnId),
+          detail: 'Steering turn does not match the active Pi turn.',
+        })
+      }
       const disposition = yield* sessionLock.withPermit(
         Effect.sync(() => {
           if (
@@ -846,5 +880,5 @@ export const makePiThreadRuntime = Effect.fn('makePiThreadRuntime')(function* (
     cancel,
     reload,
     events: Stream.fromQueue(eventsQueue),
-  } satisfies ThreadRuntime<PiThreadRuntimeError>
+  } satisfies ThreadRuntime<PiThreadRuntimeError | SteerRejectedError>
 })
