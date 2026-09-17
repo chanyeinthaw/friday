@@ -9,7 +9,7 @@ Publish content that would be hard to read, format, or deliver reliably across c
 
 ## When to publish
 
-Publish when splitting across chat would hurt readability, formatting, or reliable delivery: long reports, guides, formatted references, or anything the reader will re-read. Keep short answers in chat.
+Publish when splitting across chat would hurt readability, formatting, or reliable delivery. Publish reports, guides, detailed investigations, and reusable reference material as a private document, then reply in chat with a short summary and the link. Keep ordinary discussion, short explanations, and small code samples in chat. If the reader explicitly asks for chat or a document, follow that choice.
 
 ## Workflow
 
@@ -24,7 +24,7 @@ friday document revoke <key> [--json]
 friday document remove <key> --yes
 ```
 
-- `save` reads content from `--file` or stdin. Markdown is the default format. It returns the secret URL; saving the same key again keeps that URL.
+- `save` reads content from `--file` or stdin. Markdown is the default format. It returns the secret URL; saving the same key again keeps that URL, so reuse the same key for updates.
 - `get` prints the stored content (metadata plus content with `--json`). It never prints the URL.
 - `list` shows keys and metadata for every document. It never prints URLs.
 - `url` recovers the current secret URL for a key, for example to resend it.
