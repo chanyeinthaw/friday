@@ -1,9 +1,15 @@
 import { assert, it } from '@effect/vitest'
-import { ConversationBinding, PlatformConnectionId, TaskId } from '@friday/contracts/conversation'
+import {
+  ConversationBinding,
+  PlatformConnectionId,
+  PlatformMessageId,
+  TaskId,
+} from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import type { PlatformRegistration } from './PlatformAdapter.ts'
+import type { PlatformMessageGetQuery, PlatformRegistration } from './PlatformAdapter.ts'
+import { PlatformMessageNotFoundError } from './PlatformAdapter.ts'
 import {
   PlatformCapabilityUnavailableError,
   PlatformRegistry,
@@ -19,7 +25,9 @@ const discordBinding = Schema.decodeSync(ConversationBinding)({
 })
 const decodePlatformConnectionId = Schema.decodeSync(PlatformConnectionId)
 const decodeTaskId = Schema.decodeSync(TaskId)
+const decodeMessageId = Schema.decodeSync(PlatformMessageId)
 const isCapabilityUnavailable = Schema.is(PlatformCapabilityUnavailableError)
+const isMessageNotFound = Schema.is(PlatformMessageNotFoundError)
 
 const slackBinding = Schema.decodeSync(ConversationBinding)({
   platform: 'slack',
@@ -84,6 +92,43 @@ it.effect('reports an unavailable optional capability instead of succeeding sile
   ),
 )
 
+it.effect('reports message retrieval as unavailable for platforms without the capability', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry.pipe(Effect.provide(PlatformRegistryLive))
+      yield* platforms.register(makePlatform('discord', []))
+
+      const error = yield* platforms.getMessage(getQuery('message-9')).pipe(Effect.flip)
+
+      assert(isCapabilityUnavailable(error))
+      assert.strictEqual(error.capability, 'message-get')
+      assert.strictEqual(error.kind, 'discord')
+    }),
+  ),
+)
+
+it.effect('preserves the generic not-found across the message retrieval boundary', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry.pipe(Effect.provide(PlatformRegistryLive))
+      yield* platforms.register({
+        ...makePlatform('discord', []),
+        messageGet: {
+          get: () =>
+            Effect.fail(
+              new PlatformMessageNotFoundError({ kind: 'discord', messageId: 'message-9' }),
+            ),
+        },
+      })
+
+      const error = yield* platforms.getMessage(getQuery('message-9')).pipe(Effect.flip)
+
+      assert(isMessageNotFound(error))
+      assert.strictEqual(error.messageId, 'message-9')
+    }),
+  ),
+)
+
 const makePlatform = (
   kind: 'discord' | 'slack',
   events: Array<string>,
@@ -96,4 +141,10 @@ const makePlatform = (
   acknowledge: () => Effect.void,
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push(`${kind}:typing`)).pipe(Effect.andThen(effect)),
+})
+
+const getQuery = (messageId: string): PlatformMessageGetQuery => ({
+  binding: discordBinding,
+  scope: 'thread',
+  messageId: decodeMessageId(messageId),
 })

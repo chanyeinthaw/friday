@@ -7,6 +7,7 @@ import * as Effect from 'effect/Effect'
 import type {
   PlatformAgentActivityCapability,
   PlatformConversationTitleCapability,
+  PlatformMessageGetCapability,
   PlatformMessageSearchCapability,
   PlatformPublication,
   PlatformAdapter,
@@ -50,6 +51,7 @@ export interface ChatSdkPlatformOptions {
   readonly setConversationTitle?: PlatformConversationTitleCapability<ChatSdkPublicationError>['conversationTitle']['set']
   readonly setAgentActivity?: PlatformAgentActivityCapability<ChatSdkPublicationError>['agentActivity']['set']
   readonly searchMessages?: PlatformMessageSearchCapability<ChatSdkPublicationError>['messageSearch']['search']
+  readonly getMessage?: PlatformMessageGetCapability<ChatSdkPublicationError>['messageGet']['get']
   /** Retained for lifecycle compatibility; durable working messages do not refresh typing. */
   readonly typingRefreshInterval?: unknown
 }
@@ -71,7 +73,8 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
       Partial<
         PlatformConversationTitleCapability<ChatSdkPublicationError> &
           PlatformAgentActivityCapability<ChatSdkPublicationError> &
-          PlatformMessageSearchCapability<ChatSdkPublicationError>
+          PlatformMessageSearchCapability<ChatSdkPublicationError> &
+          PlatformMessageGetCapability<ChatSdkPublicationError>
       >
   > =>
     Effect.sync(() => {
@@ -118,7 +121,8 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
         Partial<
           PlatformConversationTitleCapability<ChatSdkPublicationError> &
             PlatformAgentActivityCapability<ChatSdkPublicationError> &
-            PlatformMessageSearchCapability<ChatSdkPublicationError>
+            PlatformMessageSearchCapability<ChatSdkPublicationError> &
+            PlatformMessageGetCapability<ChatSdkPublicationError>
         > = {
         connectionId,
         kind,
@@ -173,6 +177,9 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
       }
       if (options.searchMessages !== undefined) {
         Object.assign(platform, { messageSearch: { search: options.searchMessages } })
+      }
+      if (options.getMessage !== undefined) {
+        Object.assign(platform, { messageGet: { get: options.getMessage } })
       }
       return platform
     }),

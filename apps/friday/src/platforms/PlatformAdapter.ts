@@ -5,6 +5,7 @@ import type {
   PlatformMessageId,
 } from '@friday/contracts/conversation'
 import type * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 
 export interface PlatformInput {
   readonly binding: ConversationBinding
@@ -48,6 +49,30 @@ export interface PlatformMessageSearchResult {
 export interface PlatformMessageTarget {
   readonly binding: ConversationBinding
   readonly messageId: PlatformMessageId
+}
+
+/** Generic not-found for single-message retrieval. Inaccessible and missing targets collapse here. */
+export class PlatformMessageNotFoundError extends Schema.Error<PlatformMessageNotFoundError>(
+  'PlatformMessageNotFoundError',
+)({
+  _tag: Schema.tag('PlatformMessageNotFoundError'),
+  kind: Schema.String,
+  messageId: Schema.String,
+}) {
+  override get message(): string {
+    return 'Message not found.'
+  }
+}
+
+export interface PlatformMessageGetQuery {
+  readonly binding: ConversationBinding
+  readonly scope: PlatformMessageScope
+  readonly messageId?: PlatformMessageId | undefined
+  readonly messageUrl?: string | undefined
+}
+
+export interface PlatformMessageGetResult {
+  readonly message: PlatformMessageRecord
 }
 
 export interface PlatformWorkingMessage {
@@ -119,10 +144,19 @@ export interface PlatformMessageSearchCapability<PlatformError> {
   }
 }
 
+export interface PlatformMessageGetCapability<PlatformError> {
+  readonly messageGet: {
+    readonly get: (
+      query: PlatformMessageGetQuery,
+    ) => Effect.Effect<PlatformMessageGetResult, PlatformError | PlatformMessageNotFoundError>
+  }
+}
+
 export type PlatformCapabilities<PlatformError> = PlatformWorkingMessageCapability<PlatformError> &
   PlatformConversationTitleCapability<PlatformError> &
   PlatformAgentActivityCapability<PlatformError> &
-  PlatformMessageSearchCapability<PlatformError>
+  PlatformMessageSearchCapability<PlatformError> &
+  PlatformMessageGetCapability<PlatformError>
 
 /** A heterogeneous registry accepts any explicit subset of optional capabilities. */
 export type PlatformRegistration<PlatformError> = PlatformAdapter<PlatformError> &
