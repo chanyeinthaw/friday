@@ -1,6 +1,6 @@
 ---
 name: friday-cli
-description: Inspect and manage Friday through its installed CLI, including configuration, models, Discord access, documents, worktrees, and cleanup.
+description: Use when inspecting or changing Friday's configuration, model profiles, Discord access, worktrees, or workspace cleanup.
 ---
 
 # Friday CLI

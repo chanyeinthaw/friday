@@ -1,6 +1,6 @@
 ---
 name: friday-document
-description: Publish long Markdown or HTML content as a private Friday document and share its secret URL.
+description: Use when asked to create a document, or when sharing a long report, guide, investigation, or reference.
 ---
 
 # friday-document
