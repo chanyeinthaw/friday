@@ -6,8 +6,6 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { runMigrations } from '../persistence/Migrations.ts'
-
 export const IdentityText = Schema.String.pipe(Schema.brand('IdentityText'))
 export type IdentityText = typeof IdentityText.Type
 
@@ -56,8 +54,6 @@ export const IdentityConfigurationLive = Layer.effect(
         detail: cause instanceof Error ? cause.message : String(cause),
         cause,
       })
-
-    yield* runMigrations().pipe(Effect.mapError(error('migrate')))
 
     const get = Effect.fn('IdentityConfiguration.get')(function* () {
       const rows = yield* sql<Record<string, unknown>>`

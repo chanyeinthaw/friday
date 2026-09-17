@@ -16,6 +16,7 @@ import { promisify } from 'node:util'
 import { vi } from 'vitest'
 
 import { ThreadPersistence } from '../conversation/ThreadPersistence.ts'
+import { SqliteMigrationsLive } from '../persistence/Migrations.ts'
 import { makeSqliteThreadPersistence } from '../persistence/SqliteThreadPersistence.ts'
 import {
   ensureRepositoryWorktree,
@@ -54,7 +55,9 @@ const fridayHome = vi.hoisted(() => {
 
 const exec = promisify(execFile)
 
-const SqlClientLive = SqliteClient.layer({ filename: ':memory:' })
+const SqlClientLive = SqliteMigrationsLive.pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
+)
 const ThreadPersistenceLive = Layer.effect(ThreadPersistence, makeSqliteThreadPersistence()).pipe(
   Layer.provide(SqlClientLive),
 )

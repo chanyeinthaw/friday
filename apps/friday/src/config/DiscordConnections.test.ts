@@ -17,6 +17,7 @@ import {
   DiscordConnectionsLive,
   DiscordPublicKey,
 } from './DiscordConnections.ts'
+import { SqliteMigrationsLive } from '../persistence/Migrations.ts'
 
 const isConnectionError = Schema.is(DiscordConnectionError)
 
@@ -34,7 +35,9 @@ const connection = {
   respondToGlobalMentions: true,
 }
 
-const SqlClientLive = SqliteClient.layer({ filename: ':memory:' })
+const SqlClientLive = SqliteMigrationsLive.pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
+)
 const TestLive = DiscordConnectionsLive.pipe(Layer.provide(SqlClientLive))
 
 describe('DiscordConnections', () => {

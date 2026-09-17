@@ -9,6 +9,7 @@ import { join } from 'node:path'
 
 import { ThreadPersistence } from '../conversation/ThreadPersistence.ts'
 import { FRIDAY_HOME } from '../FridayHome.ts'
+import { SqliteMigrationsLive } from './Migrations.ts'
 import { makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
 
 export const FRIDAY_DATABASE_PATH = join(FRIDAY_HOME, 'friday.sqlite')
@@ -20,9 +21,11 @@ const FridayHomeLive = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(BunFileSystem.layer))
 
-export const FridaySqliteLive = SqliteClient.layer({ filename: FRIDAY_DATABASE_PATH }).pipe(
+const RawFridaySqliteLive = SqliteClient.layer({ filename: FRIDAY_DATABASE_PATH }).pipe(
   Layer.provide(FridayHomeLive),
 )
+
+export const FridaySqliteLive = SqliteMigrationsLive.pipe(Layer.provideMerge(RawFridaySqliteLive))
 
 export const ThreadPersistenceLive = Layer.effect(
   ThreadPersistence,

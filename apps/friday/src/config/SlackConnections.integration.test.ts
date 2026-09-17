@@ -3,6 +3,7 @@
 import { test } from 'bun:test'
 import { strict as assert } from 'node:assert'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
@@ -15,6 +16,7 @@ import {
   SlackConnectionsLive,
   SlackTokenEnvName,
 } from './SlackConnections.ts'
+import { SqliteMigrationsLive } from '../persistence/Migrations.ts'
 
 const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
 const decodeChannelId = Schema.decodeSync(SlackChannelId)
@@ -32,7 +34,9 @@ const runWithDatabase = <A, E>(
 ) =>
   effect.pipe(
     Effect.provide(SlackConnectionsLive),
-    Effect.provide(SqliteClient.layer({ filename: ':memory:' })),
+    Effect.provide(
+      SqliteMigrationsLive.pipe(Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' }))),
+    ),
     Effect.runPromise,
   )
 

@@ -6,8 +6,6 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { runMigrations } from '../persistence/Migrations.ts'
-
 /**
  * A stable Discord user ID (snowflake): the decimal form of a positive 64-bit
  * integer, currently 17-20 digits with no leading zero.
@@ -70,8 +68,6 @@ export const DiscordAdminsLive = Layer.effect(
   DiscordAdmins,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    // Ensure the database exists with current tables even before first start.
-    yield* runMigrations()
     return DiscordAdmins.of({
       // RETURNING yields a row exactly when this statement inserted the user;
       // a conflicting existing row is ignored and reports `exists`.

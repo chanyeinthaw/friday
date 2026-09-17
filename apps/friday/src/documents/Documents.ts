@@ -14,7 +14,6 @@ import { timingSafeEqual } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 
 import { FRIDAY_DOCUMENTS_DIRECTORY } from '../FridayHome.ts'
-import { runMigrations } from '../persistence/Migrations.ts'
 
 export const DocumentKey = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)),
@@ -211,8 +210,6 @@ export const makeDocumentsLive = (options?: DocumentsLiveOptions) =>
                 detail: cause instanceof Error ? cause.message : String(cause),
                 cause,
               })
-
-      yield* runMigrations().pipe(Effect.mapError(failure('migrate')))
 
       const getConfig = Effect.fn('Documents.getConfig')(function* () {
         const rows = yield* sql<Record<string, unknown>>`

@@ -13,7 +13,6 @@ import {
   InvocationMode as InvocationModeSchema,
   ReplyMode as ReplyModeSchema,
 } from './AppConfig.ts'
-import { runMigrations } from '../persistence/Migrations.ts'
 
 /** Name of the environment variable holding a Slack token; tokens are never stored. */
 export const SlackTokenEnvName = Schema.String.pipe(
@@ -230,8 +229,6 @@ export const SlackConnectionsLive = Layer.effect(
   SlackConnections,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    yield* runMigrations().pipe(Effect.orDie)
-
     const readError = (connectionId?: PlatformConnectionId) => (cause: unknown) =>
       new SlackConnectionError({ operation: 'read', connectionId, cause })
     const writeError = (connectionId: PlatformConnectionId) => (cause: unknown) =>

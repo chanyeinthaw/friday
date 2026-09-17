@@ -9,7 +9,6 @@ import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 import { DiscordSnowflake } from './DiscordGuilds.ts'
-import { runMigrations } from '../persistence/Migrations.ts'
 
 /** The Ed25519 public key Discord publishes for an application: 64 hex digits. */
 export const DiscordPublicKey = Schema.String.pipe(
@@ -184,10 +183,6 @@ export const DiscordConnectionsLive = Layer.effect(
   DiscordConnections,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    // Ensure the database exists with current tables even before first start;
-    // a migration failure here is a defect, not a per-command error.
-    yield* runMigrations().pipe(Effect.orDie)
-
     const readError = (connectionId?: PlatformConnectionId) => (cause: unknown) =>
       new DiscordConnectionError({ operation: 'read', connectionId, cause })
     const writeError = (connectionId: PlatformConnectionId) => (cause: unknown) =>

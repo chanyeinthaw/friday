@@ -6,8 +6,6 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { runMigrations } from '../persistence/Migrations.ts'
-
 const NonEmptyTrimmed = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
 
 /**
@@ -86,8 +84,6 @@ export const RootUsersLive = Layer.effect(
   RootUsers,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    // Ensure the database exists with current tables even before first start.
-    yield* runMigrations()
     return RootUsers.of({
       // RETURNING yields a row exactly when this statement inserted the root user;
       // a conflicting existing row is ignored and reports `exists`.

@@ -13,8 +13,11 @@ import {
   IdentityConfigurationLive,
   IdentityText,
 } from './IdentityConfiguration.ts'
+import { SqliteMigrationsLive } from '../persistence/Migrations.ts'
 
-const database = SqliteClient.layer({ filename: ':memory:' })
+const database = SqliteMigrationsLive.pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
+)
 const decodeIdentityText = Schema.decodeSync(IdentityText)
 
 test('defaults to the exact Friday identity text', async () =>

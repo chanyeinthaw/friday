@@ -6,6 +6,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
@@ -17,12 +18,15 @@ import {
 } from '@friday/contracts/conversation'
 
 import { ModelConfiguration, ModelConfigurationLive } from './ModelConfiguration.ts'
+import { SqliteMigrationsLive } from '../persistence/Migrations.ts'
 
 const decodeProvider = Schema.decodeSync(ProviderId)
 const decodeModel = Schema.decodeSync(ModelId)
 const decodeName = Schema.decodeSync(SubagentProfileName)
 const decodeThinking = Schema.decodeSync(ThinkingLevel)
-const database = SqliteClient.layer({ filename: ':memory:' })
+const database = SqliteMigrationsLive.pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
+)
 const live = ModelConfigurationLive.pipe(Layer.provide(database))
 
 test('stores fixed selections and profiles with stable ordering and typed outcomes', async () =>
@@ -82,7 +86,7 @@ test('stores fixed selections and profiles with stable ordering and typed outcom
     }).pipe(Effect.provide(live)),
   ))
 
-test('reports migration failures as typed model configuration errors', async () => {
+test('fails service construction when database initialization fails', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'friday-model-config-'))
   const filename = join(directory, 'config.sqlite')
   const fileDatabase = SqliteClient.layer({ filename })
@@ -93,14 +97,14 @@ test('reports migration failures as typed model configuration errors', async () 
     }).pipe(Effect.provide(fileDatabase)),
   )
 
-  const error = await Effect.runPromise(
+  const initializedDatabase = SqliteMigrationsLive.pipe(Layer.provideMerge(fileDatabase))
+  const exit = await Effect.runPromise(
     ModelConfiguration.pipe(
-      Effect.provide(ModelConfigurationLive.pipe(Layer.provide(fileDatabase))),
-      Effect.flip,
+      Effect.provide(ModelConfigurationLive.pipe(Layer.provide(initializedDatabase))),
+      Effect.exit,
     ),
   )
-  assert.strictEqual(error.operation, 'migrate')
-  assert.match(error.message, /Model configuration migrate failed/)
+  assert(Exit.isFailure(exit))
 })
 
 test('rejects malformed persisted rows during typed row decoding', async () =>
