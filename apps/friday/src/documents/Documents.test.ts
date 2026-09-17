@@ -27,13 +27,16 @@ import {
   SystemPromptTemplatesLive,
 } from '../system-prompt/SystemPromptTemplates.ts'
 import { ChannelThread } from '@friday/contracts/conversation'
+import { SqliteMigrationsLive } from '../persistence/Migrations.ts'
 
 const isDocumentError = Schema.is(DocumentError)
 const isDocumentKey = Schema.is(DocumentKey)
 const decodeKey = Schema.decodeSync(DocumentKey)
 const decodeChannelThread = Schema.decodeSync(ChannelThread)
 
-const SqlClientLive = SqliteClient.layer({ filename: ':memory:' })
+const SqlClientLive = SqliteMigrationsLive.pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
+)
 const documentsLive = (directory: string) =>
   makeDocumentsLive({ documentsDirectory: directory }).pipe(
     Layer.provide(Layer.mergeAll(SqlClientLive, NodeFileSystem.layer, NodeCrypto.layer)),

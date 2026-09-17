@@ -12,7 +12,6 @@ import {
   AppConfigError,
   type AppConfig as AppConfigData,
 } from './AppConfig.ts'
-import { runMigrations } from '../persistence/Migrations.ts'
 
 export interface AppConfigSnapshot {
   /** Monotonic snapshot version; incremented on every successful reload. */
@@ -57,7 +56,6 @@ export const makeAppConfigLive = (options?: AppConfigLiveOptions) =>
     AppConfig,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      yield* runMigrations()
       const initial = yield* loadAppConfig(options)
       const snapshot = MutableRef.make<AppConfigSnapshot>({ version: 1, config: initial })
       // Serializes reload loads so concurrent swaps cannot regress the version.

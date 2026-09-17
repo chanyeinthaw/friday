@@ -25,7 +25,6 @@ import * as SqlSchema from 'effect/unstable/sql/SqlSchema'
 
 import type { ThreadPersistenceContract } from '../conversation/ThreadPersistence.ts'
 import { PersistenceDecodeError, PersistenceSqlError } from './Errors.ts'
-import { runMigrations } from './Migrations.ts'
 
 const ThreadJson = Schema.fromJsonString(Thread)
 const AgentThreadJson = Schema.fromJsonString(AgentThread)
@@ -95,8 +94,6 @@ export const interruptOrphanedTurns = Effect.fn('interruptOrphanedTurns')(functi
 
 export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistence')(function* () {
   const sql = yield* SqlClient.SqlClient
-
-  yield* runMigrations().pipe(Effect.mapError(toPersistenceError('ThreadPersistence.migrate')))
 
   const insertThread = (thread: ThreadType) =>
     encodeThreadJson(thread).pipe(

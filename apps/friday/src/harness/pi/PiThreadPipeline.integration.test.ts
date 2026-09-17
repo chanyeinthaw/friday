@@ -17,6 +17,7 @@ import { join } from 'node:path'
 
 import { makeThreadCoordinator } from '../../conversation/ThreadCoordinator.ts'
 import { ThreadPersistence } from '../../conversation/ThreadPersistence.ts'
+import { SqliteMigrationsLive } from '../../persistence/Migrations.ts'
 import { makePiThreadRuntime, type PiAgentSessionContract } from './PiThreadRuntime.ts'
 import { makeSqliteThreadPersistence } from '../../persistence/SqliteThreadPersistence.ts'
 
@@ -107,7 +108,14 @@ test('persists a fake Pi tool stream and final response through the full local p
       const persistedThread = Option.getOrThrow(yield* persistence.getThread(thread.id))
       return { persistedThread, persistedTurn }
     }),
-  ).pipe(Effect.provide(Layer.mergeAll(SqliteClient.layer({ filename }), BunCrypto.layer)))
+  ).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        SqliteMigrationsLive.pipe(Layer.provideMerge(SqliteClient.layer({ filename }))),
+        BunCrypto.layer,
+      ),
+    ),
+  )
 
   const result = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })

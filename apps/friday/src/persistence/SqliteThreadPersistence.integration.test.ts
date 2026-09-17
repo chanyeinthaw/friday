@@ -13,6 +13,7 @@ import {
   Turn,
 } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
@@ -21,6 +22,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { interruptOrphanedTurns, makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
+import { SqliteMigrationsLive } from './Migrations.ts'
+
+const database = (filename: string) =>
+  SqliteMigrationsLive.pipe(Layer.provideMerge(SqliteClient.layer({ filename })))
 
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
 const decodeIsoDateTime = Schema.decodeSync(IsoDateTime)
@@ -166,7 +171,7 @@ test('finds a Friday Thread by its Platform conversation', async () => {
       conversationId: thread.conversationBinding.conversationId,
     })
     expect(Option.getOrNull(stored)?.id).toBe(thread.id)
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  }).pipe(Effect.provide(database(filename)))
   await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
 })
@@ -191,7 +196,7 @@ test('retrieves the latest user Turn with a platform message cursor', async () =
     )
     const latest = yield* persistence.getLatestUserTurn(thread.id)
     expect(String(Option.getOrNull(latest)?.input.platformMessageId)).toBe('message-user-1')
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  }).pipe(Effect.provide(database(filename)))
   await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
 })
@@ -206,7 +211,7 @@ test('retrieves the latest Turn for a Thread', async () => {
     yield* persistence.createTurn(secondTurn)
     const latest = yield* persistence.getLatestTurn(thread.id)
     expect(String(Option.getOrNull(latest)?.id)).toBe('turn-2')
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  }).pipe(Effect.provide(database(filename)))
   await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
 })
@@ -221,7 +226,7 @@ test('lists Turns for a Thread in sequence order', async () => {
     yield* persistence.createTurn(turn)
     const turns = yield* persistence.listTurns(thread.id)
     expect(turns.map((entry) => String(entry.id))).toEqual(['turn-1', 'turn-2'])
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  }).pipe(Effect.provide(database(filename)))
   await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
 })
@@ -234,7 +239,7 @@ test('creates and retrieves a channel Thread', async () => {
 
     yield* persistence.createThread(thread)
     return Option.getOrThrow(yield* persistence.getThread(thread.id))
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -275,7 +280,7 @@ test('reads a released linked Discord channel Thread and ignores its retired pro
     `
 
     return Option.getOrThrow(yield* persistence.getThread(thread.id))
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -295,7 +300,7 @@ test('closes a task Thread while retaining it for history', async () => {
       closedAt: '2026-03-21T11:00:00.000Z',
     })
     return yield* persistence.getThread(agentThread.id)
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const stored = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -325,7 +330,7 @@ test('persists a harness session cursor on its Thread', async () => {
       harnessSession,
     })
     return Option.getOrThrow(yield* persistence.getThread(thread.id))
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -352,7 +357,7 @@ test('updates an agent Thread model while keeping its identity and workspace', a
       updatedAt: decodeIsoDateTime('2026-03-21T12:00:00.000Z'),
     })
     return Option.getOrThrow(yield* persistence.getThread(agentThread.id))
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -377,7 +382,7 @@ test('creates and retrieves an agent Thread', async () => {
 
     yield* persistence.createThread(agentThread)
     return Option.getOrThrow(yield* persistence.getThread(agentThread.id))
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -397,7 +402,7 @@ test('lists agent Threads belonging to one parent in creation order', async () =
     yield* persistence.createThread(otherAgentThread)
     yield* persistence.createThread(agentThread)
     return yield* persistence.listAgentThreads({ parentThreadId: thread.id })
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -411,7 +416,7 @@ test('rejects a Turn whose Thread does not exist', async () => {
   const program = Effect.gen(function* () {
     const persistence = yield* makeSqliteThreadPersistence()
     return yield* Effect.flip(persistence.createTurn(turn))
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const error = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -431,7 +436,7 @@ test('creates and retrieves a pending Turn', async () => {
     const persisted = yield* persistence.getTurn(turn.id)
 
     return Option.getOrThrow(persisted)
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -462,14 +467,14 @@ test('interrupts orphaned pending and running Turns after reopening SQLite', asy
     yield* persistence.createTurn(turn)
     yield* persistence.createTurn(runningTurn)
     yield* persistence.createTurn(completedTurn)
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
   const recover = Effect.gen(function* () {
     const persistence = yield* makeSqliteThreadPersistence()
     const interrupted = yield* interruptOrphanedTurns(recoveredAt)
     const interruptedAgain = yield* interruptOrphanedTurns(recoveredAt)
     const turns = yield* persistence.listTurns(thread.id)
     return { interrupted, interruptedAgain, turns }
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   await Effect.runPromise(create)
   const result = await Effect.runPromise(recover)
@@ -503,7 +508,7 @@ test('allocates one durable Activity sequence across runtime events and steering
     )
     const stored = yield* persistence.getTurn(turn.id)
     expect(Option.getOrNull(stored)?.activities.map(({ sequence }) => sequence)).toEqual([0, 1])
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })))
+  }).pipe(Effect.provide(database(filename)))
   await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
 })
@@ -552,7 +557,7 @@ test('persists Turn lifecycle and the latest Activity snapshot', async () => {
       turn: Option.getOrThrow(persistedTurn),
       activity: Option.getOrThrow(persistedActivity),
     }
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   const persisted = await Effect.runPromise(program)
   await rm(directory, { recursive: true, force: true })
@@ -580,11 +585,11 @@ test('retrieves a Turn after reopening its SQLite file', async () => {
     const persistence = yield* makeSqliteThreadPersistence()
     yield* persistence.createThread(thread)
     yield* persistence.createTurn(turn)
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
   const read = Effect.gen(function* () {
     const persistence = yield* makeSqliteThreadPersistence()
     return Option.getOrThrow(yield* persistence.getTurn(turn.id))
-  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   await Effect.runPromise(create)
   const persisted = await Effect.runPromise(read)

@@ -14,8 +14,6 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { runMigrations } from '../persistence/Migrations.ts'
-
 export const FixedModelName = Schema.Literals(['primary', 'utility'])
 export type FixedModelName = typeof FixedModelName.Type
 
@@ -151,8 +149,6 @@ export const ModelConfigurationLive = Layer.effect(
           detail: cause instanceof Error ? cause.message : String(cause),
           cause,
         })
-
-    yield* runMigrations().pipe(Effect.mapError(error('migrate')))
 
     const listModels = Effect.fn('ModelConfiguration.listModels')(function* () {
       const rows = yield* sql<Record<string, unknown>>`

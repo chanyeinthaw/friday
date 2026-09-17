@@ -1,4 +1,5 @@
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
@@ -717,6 +718,8 @@ export const runMigrations = Effect.fn('runMigrations')(function* () {
   yield* runStructuralMigrations()
   yield* migrateConnectionScopedDiscordConfig()
 })
+
+export const SqliteMigrationsLive = Layer.effectDiscard(runMigrations())
 
 /** Parses the guild segment of a Discord conversation id (`discord:{guild}:{channel}[:{thread}]`). */
 const discordGuildFromConversationId = (column: string) =>

@@ -8,8 +8,11 @@ import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 
 import { DiscordAdmins, DiscordAdminsLive, DiscordUserId } from './DiscordAdmins.ts'
+import { SqliteMigrationsLive } from '../persistence/Migrations.ts'
 
-const database = SqliteClient.layer({ filename: ':memory:' })
+const database = SqliteMigrationsLive.pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ':memory:' })),
+)
 const decodeDiscordUserId = Schema.decodeSync(DiscordUserId)
 
 test('manages the admin allow-list idempotently in SQLite', async () =>
@@ -37,8 +40,6 @@ test('manages the admin allow-list idempotently in SQLite', async () =>
 test('initializes the database tables without a prior Friday start', async () =>
   Effect.runPromise(
     Effect.gen(function* () {
-      // The service runs migrations during layer construction, so the CLI can
-      // manage administrators even before Friday has ever started.
       const admins = yield* DiscordAdmins
       assert.deepStrictEqual([...(yield* admins.list())], [])
       assert.strictEqual(yield* admins.add(decodeDiscordUserId('123456789012345678')), 'added')
