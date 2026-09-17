@@ -13,12 +13,14 @@ import * as Semaphore from 'effect/Semaphore'
 
 import type { ThreadRuntimeEvent } from './ThreadRuntime.ts'
 import {
+  PlatformCapabilityUnavailableError,
   PlatformNotFoundError,
   PlatformOperationError,
   PlatformRegistry,
 } from '../platforms/PlatformRegistry.ts'
 
 type ProgressError = PlatformNotFoundError | PlatformOperationError
+type DecorationError = ProgressError | PlatformCapabilityUnavailableError
 type ToolCategory = 'commands' | 'editing' | 'reading' | 'task' | 'tools'
 
 interface ChannelProgressState {
@@ -122,9 +124,12 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
       const operationTimeout = options.operationTimeout ?? '5 seconds'
 
       // Working-message decoration is best-effort and bounded; it must never block a turn.
-      const attempt = (operation: string, effect: Effect.Effect<void, ProgressError>) =>
+      const attempt = (operation: string, effect: Effect.Effect<void, DecorationError>) =>
         effect.pipe(
           Effect.as(true),
+          // Unsupported decoration is a normal signal to use the existing
+          // final-publication fallback, not an operational failure.
+          Effect.catchTag('PlatformCapabilityUnavailableError', () => Effect.succeed(false)),
           Effect.timeoutOrElse({
             duration: operationTimeout,
             orElse: () =>

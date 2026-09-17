@@ -14,7 +14,11 @@ import { TestClock } from 'effect/testing'
 import * as Schema from 'effect/Schema'
 
 import { ChannelProgress, ChannelProgressLive, makeChannelProgressLive } from './ChannelProgress.ts'
-import type { PlatformAdapter } from '../platforms/PlatformAdapter.ts'
+import type {
+  PlatformAdapter,
+  PlatformRegistration,
+  PlatformWorkingMessageCapability,
+} from '../platforms/PlatformAdapter.ts'
 import {
   PlatformOperationError,
   PlatformRegistry,
@@ -52,23 +56,24 @@ const decodePlatformMessageId = Schema.decodeSync(PlatformMessageId)
 const messageId = decodePlatformMessageId('message-progress')
 const otherMessageId = decodePlatformMessageId('message-progress-other')
 
-const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
+const makePlatform = (
+  events: Array<string>,
+): PlatformAdapter<never> & PlatformWorkingMessageCapability<never> => ({
   connectionId: thread.conversationBinding.connectionId,
   kind: 'test',
   publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
   acknowledge: () => Effect.sync(() => events.push('ack')),
-  beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
-  updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
-  setAgentActivity: () => Effect.void,
-  searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
-  setConversationTitle: () => Effect.void,
-  discardWorking: () => Effect.void,
-  finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
+  workingMessages: {
+    begin: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
+    update: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
+    discard: () => Effect.void,
+    finalize: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
+  },
   withTyping: (_binding, effect) => effect,
 })
 
 const makeProgress = (
-  platform: PlatformAdapter<PlatformOperationError>,
+  platform: PlatformRegistration<PlatformOperationError>,
   progressLayer = ChannelProgressLive,
 ) =>
   Effect.gen(function* () {
@@ -101,7 +106,10 @@ it.effect('discards the working placeholder for an empty response', () =>
       const platform = makePlatform(events)
       const progress = yield* makeProgress({
         ...platform,
-        discardWorking: () => Effect.sync(() => events.push('discard')),
+        workingMessages: {
+          ...platform.workingMessages,
+          discard: () => Effect.sync(() => events.push('discard')),
+        },
       })
 
       yield* progress.accept(thread, userMessage('Stop.'), turnId)
@@ -283,10 +291,14 @@ it.effect('falls back to publishing when finalization times out', () =>
     Effect.gen(function* () {
       const events: Array<string> = []
       const finalizationStarted = yield* Deferred.make<void>()
+      const base = makePlatform(events)
       const platform = {
-        ...makePlatform(events),
-        finalizeWorking: () =>
-          Deferred.succeed(finalizationStarted, undefined).pipe(Effect.andThen(Effect.never)),
+        ...base,
+        workingMessages: {
+          ...base.workingMessages,
+          finalize: () =>
+            Deferred.succeed(finalizationStarted, undefined).pipe(Effect.andThen(Effect.never)),
+        },
       }
       const progress = yield* makeProgress(
         platform,
@@ -308,10 +320,14 @@ it.effect('falls back to publishing when finalization fails', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const events: Array<string> = []
+      const base = makePlatform(events)
       const platform = {
-        ...makePlatform(events),
-        finalizeWorking: () =>
-          Effect.fail(new PlatformOperationError({ kind: 'test', cause: 'edit conflict' })),
+        ...base,
+        workingMessages: {
+          ...base.workingMessages,
+          finalize: () =>
+            Effect.fail(new PlatformOperationError({ kind: 'test', cause: 'edit conflict' })),
+        },
       }
       const progress = yield* makeProgress(platform)
 
@@ -319,6 +335,26 @@ it.effect('falls back to publishing when finalization fails', () =>
       yield* progress.finalize(thread, turnId, 'Done.')
 
       assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'publish:Done.'])
+    }),
+  ),
+)
+
+it.effect('publishes directly when working messages are unsupported', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: Array<string> = []
+      const progress = yield* makeProgress({
+        connectionId: thread.conversationBinding.connectionId,
+        kind: 'test',
+        publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
+        acknowledge: () => Effect.sync(() => events.push('ack')),
+        withTyping: (_binding, effect) => effect,
+      })
+
+      yield* progress.accept(thread, userMessage('Do work.'), turnId)
+      yield* progress.finalize(thread, turnId, 'Done.')
+
+      assert.deepStrictEqual(events, ['ack', 'publish:Done.'])
     }),
   ),
 )

@@ -73,24 +73,57 @@ export interface PlatformAgentActivity {
   readonly task?: string
 }
 
-export interface PlatformAdapter<PlatformError> {
+export interface PlatformIdentity {
   readonly connectionId: ConversationBinding['connectionId']
   readonly kind: ConversationBinding['platform']
+}
+
+export interface PlatformMessaging<PlatformError> {
   readonly publish: (publication: PlatformPublication) => Effect.Effect<void, PlatformError>
   readonly acknowledge: (target: PlatformMessageTarget) => Effect.Effect<void, PlatformError>
-  readonly beginWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
-  readonly updateWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
-  readonly finalizeWorking: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
-  readonly discardWorking: (binding: ConversationBinding) => Effect.Effect<void, PlatformError>
-  readonly setConversationTitle: (
-    title: PlatformConversationTitle,
-  ) => Effect.Effect<void, PlatformError>
-  readonly setAgentActivity: (activity: PlatformAgentActivity) => Effect.Effect<void, PlatformError>
-  readonly searchMessages: (
-    query: PlatformMessageQuery,
-  ) => Effect.Effect<PlatformMessageSearchResult, PlatformError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | PlatformError, R>
 }
+
+export interface PlatformAdapter<PlatformError>
+  extends PlatformIdentity, PlatformMessaging<PlatformError> {}
+
+export interface PlatformWorkingMessageCapability<PlatformError> {
+  readonly workingMessages: {
+    readonly begin: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
+    readonly update: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
+    readonly finalize: (message: PlatformWorkingMessage) => Effect.Effect<void, PlatformError>
+    readonly discard: (binding: ConversationBinding) => Effect.Effect<void, PlatformError>
+  }
+}
+
+export interface PlatformConversationTitleCapability<PlatformError> {
+  readonly conversationTitle: {
+    readonly set: (title: PlatformConversationTitle) => Effect.Effect<void, PlatformError>
+  }
+}
+
+export interface PlatformAgentActivityCapability<PlatformError> {
+  readonly agentActivity: {
+    readonly set: (activity: PlatformAgentActivity) => Effect.Effect<void, PlatformError>
+  }
+}
+
+export interface PlatformMessageSearchCapability<PlatformError> {
+  readonly messageSearch: {
+    readonly search: (
+      query: PlatformMessageQuery,
+    ) => Effect.Effect<PlatformMessageSearchResult, PlatformError>
+  }
+}
+
+export type PlatformCapabilities<PlatformError> = PlatformWorkingMessageCapability<PlatformError> &
+  PlatformConversationTitleCapability<PlatformError> &
+  PlatformAgentActivityCapability<PlatformError> &
+  PlatformMessageSearchCapability<PlatformError>
+
+/** A heterogeneous registry accepts any explicit subset of optional capabilities. */
+export type PlatformRegistration<PlatformError> = PlatformAdapter<PlatformError> &
+  Partial<PlatformCapabilities<PlatformError>>

@@ -4,7 +4,14 @@ import type { ConversationBinding, PlatformConnectionId } from '@friday/contract
 import { emoji, type EmojiValue } from 'chat'
 import * as Effect from 'effect/Effect'
 
-import type { PlatformAdapter, PlatformPublication } from '../PlatformAdapter.ts'
+import type {
+  PlatformAgentActivityCapability,
+  PlatformConversationTitleCapability,
+  PlatformMessageSearchCapability,
+  PlatformPublication,
+  PlatformAdapter,
+  PlatformWorkingMessageCapability,
+} from '../PlatformAdapter.ts'
 import {
   formatDiscordWorkingStatus,
   makeWorkingMessageLifecycle,
@@ -40,9 +47,9 @@ export interface ChatSdkPublicationSource {
 
 export interface ChatSdkPlatformOptions {
   readonly maxMessageLength?: number
-  readonly setConversationTitle?: PlatformAdapter<ChatSdkPublicationError>['setConversationTitle']
-  readonly setAgentActivity?: PlatformAdapter<ChatSdkPublicationError>['setAgentActivity']
-  readonly searchMessages?: PlatformAdapter<ChatSdkPublicationError>['searchMessages']
+  readonly setConversationTitle?: PlatformConversationTitleCapability<ChatSdkPublicationError>['conversationTitle']['set']
+  readonly setAgentActivity?: PlatformAgentActivityCapability<ChatSdkPublicationError>['agentActivity']['set']
+  readonly searchMessages?: PlatformMessageSearchCapability<ChatSdkPublicationError>['messageSearch']['search']
   /** Retained for lifecycle compatibility; durable working messages do not refresh typing. */
   readonly typingRefreshInterval?: unknown
 }
@@ -58,7 +65,15 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
     kind: ConversationBinding['platform'],
     chat: ChatSdkPublicationSource,
     options: ChatSdkPlatformOptions = {},
-  ): Effect.Effect<PlatformAdapter<ChatSdkPublicationError>> =>
+  ): Effect.Effect<
+    PlatformAdapter<ChatSdkPublicationError> &
+      PlatformWorkingMessageCapability<ChatSdkPublicationError> &
+      Partial<
+        PlatformConversationTitleCapability<ChatSdkPublicationError> &
+          PlatformAgentActivityCapability<ChatSdkPublicationError> &
+          PlatformMessageSearchCapability<ChatSdkPublicationError>
+      >
+  > =>
     Effect.sync(() => {
       const maxMessageLength =
         options.maxMessageLength ?? (kind === 'discord' ? DiscordMessageLimit : undefined)
@@ -98,7 +113,13 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
         formatWorking: kind === 'discord' ? formatDiscordWorkingStatus : undefined,
       })
 
-      return {
+      const platform: PlatformAdapter<ChatSdkPublicationError> &
+        PlatformWorkingMessageCapability<ChatSdkPublicationError> &
+        Partial<
+          PlatformConversationTitleCapability<ChatSdkPublicationError> &
+            PlatformAgentActivityCapability<ChatSdkPublicationError> &
+            PlatformMessageSearchCapability<ChatSdkPublicationError>
+        > = {
         connectionId,
         kind,
         publish: (publication: PlatformPublication) =>
@@ -136,16 +157,23 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
             },
             catch: (cause) => publicationError('acknowledge', cause),
           }),
-        beginWorking: (message) => workingLifecycle.begin(message),
-        updateWorking: (message) => workingLifecycle.update(message),
-        finalizeWorking: (message) => workingLifecycle.finalize(message),
-        discardWorking: (binding) => workingLifecycle.discard(binding),
-        setConversationTitle: options.setConversationTitle ?? (() => Effect.void),
-        setAgentActivity: options.setAgentActivity ?? (() => Effect.void),
-        searchMessages:
-          options.searchMessages ??
-          (() => Effect.succeed({ messages: [], scannedCount: 0, truncated: false })),
+        workingMessages: {
+          begin: (message) => workingLifecycle.begin(message),
+          update: (message) => workingLifecycle.update(message),
+          finalize: (message) => workingLifecycle.finalize(message),
+          discard: (binding) => workingLifecycle.discard(binding),
+        },
         withTyping: (_binding, effect) => effect,
       }
+      if (options.setConversationTitle !== undefined) {
+        Object.assign(platform, { conversationTitle: { set: options.setConversationTitle } })
+      }
+      if (options.setAgentActivity !== undefined) {
+        Object.assign(platform, { agentActivity: { set: options.setAgentActivity } })
+      }
+      if (options.searchMessages !== undefined) {
+        Object.assign(platform, { messageSearch: { search: options.searchMessages } })
+      }
+      return platform
     }),
 )

@@ -32,7 +32,7 @@ import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
 import { rebindToSlackThread } from './slack/SlackThreadRouting.ts'
-import type { PlatformAdapter, PlatformInput } from './PlatformAdapter.ts'
+import type { PlatformInput, PlatformRegistration } from './PlatformAdapter.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
 const decodeBinding = Schema.decodeSync(ConversationBinding)
@@ -186,18 +186,17 @@ it.effect('starts an independently routed new turn for a parent message after ro
           }),
         observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
       }
-      const platform: PlatformAdapter<never> = {
+      const platform: PlatformRegistration<never> = {
         connectionId: parentBinding.connectionId,
         kind: 'discord',
         publish: () => Effect.void,
         acknowledge: () => Effect.void,
-        beginWorking: () => Effect.void,
-        updateWorking: () => Effect.void,
-        setAgentActivity: () => Effect.void,
-        searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
-        setConversationTitle: () => Effect.void,
-        discardWorking: () => Effect.void,
-        finalizeWorking: () => Effect.void,
+        workingMessages: {
+          begin: () => Effect.void,
+          update: () => Effect.void,
+          discard: () => Effect.void,
+          finalize: () => Effect.void,
+        },
         withTyping: (_binding, effect) => effect,
       }
       const dependencies = Layer.mergeAll(
@@ -335,18 +334,17 @@ it.effect('releases the binding semaphore before terminal waiting so follow-ups 
         openThread: () => Effect.succeed(coordinator),
         observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
       }
-      const platform: PlatformAdapter<never> = {
+      const platform: PlatformRegistration<never> = {
         connectionId: parentBinding.connectionId,
         kind: 'discord',
         publish: () => Effect.void,
         acknowledge: () => Effect.void,
-        beginWorking: () => Effect.void,
-        updateWorking: () => Effect.void,
-        setAgentActivity: () => Effect.void,
-        searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
-        setConversationTitle: () => Effect.void,
-        discardWorking: () => Effect.void,
-        finalizeWorking: () => Effect.void,
+        workingMessages: {
+          begin: () => Effect.void,
+          update: () => Effect.void,
+          discard: () => Effect.void,
+          finalize: () => Effect.void,
+        },
         withTyping: (_binding, effect) => effect,
       }
       const dependencies = Layer.mergeAll(

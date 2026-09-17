@@ -2,7 +2,12 @@ import type { ConversationBinding, PlatformConnectionId } from '@friday/contract
 import * as Effect from 'effect/Effect'
 
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
-import type { PlatformAdapter } from '../PlatformAdapter.ts'
+import type {
+  PlatformAdapter,
+  PlatformConversationTitleCapability,
+  PlatformMessageSearchCapability,
+  PlatformWorkingMessageCapability,
+} from '../PlatformAdapter.ts'
 import {
   makeWorkingMessageLifecycle,
   splitMessage,
@@ -89,7 +94,12 @@ export const makeSlackPlatform = Effect.fn('makeSlackPlatform')(
   (
     connectionId: PlatformConnectionId,
     adapter: SlackAgentAdapter,
-  ): Effect.Effect<PlatformAdapter<ChatSdkPublicationError>> =>
+  ): Effect.Effect<
+    PlatformAdapter<ChatSdkPublicationError> &
+      PlatformWorkingMessageCapability<ChatSdkPublicationError> &
+      PlatformConversationTitleCapability<ChatSdkPublicationError> &
+      PlatformMessageSearchCapability<ChatSdkPublicationError>
+  > =>
     Effect.sync(() => {
       const workingLifecycle = makeWorkingMessageLifecycle<
         SlackWorkingHandle,
@@ -126,30 +136,33 @@ export const makeSlackPlatform = Effect.fn('makeSlackPlatform')(
               ),
             catch: (cause) => publicationError('acknowledge', cause),
           }).pipe(Effect.asVoid),
-        beginWorking: (message) => workingLifecycle.begin(message),
-        updateWorking: (message) => workingLifecycle.update(message),
-        finalizeWorking: (message) => workingLifecycle.finalize(message),
-        discardWorking: (binding) => workingLifecycle.discard(binding),
-        setConversationTitle: (title) =>
-          Effect.gen(function* () {
-            const location = decodeSlackConversationId(String(title.binding.conversationId))
-            if (location === undefined || !isSlackThread(location)) return
-            const trimmed = title.title.trim().slice(0, 80)
-            if (trimmed === '') return
-            yield* Effect.tryPromise({
-              try: () =>
-                adapter.setAssistantTitle(location.channelId, location.threadTs ?? '', trimmed),
-              catch: (cause) => publicationError('set-conversation-title', cause),
-            }).pipe(
-              Effect.tapError((cause) =>
-                Effect.logDebug('slack.session-title.failed', { cause: String(cause) }),
-              ),
-              Effect.ignore,
-            )
-          }),
-        setAgentActivity: () => Effect.void,
-        searchMessages: (query) => searchSlackMessages(adapter, query),
+        workingMessages: {
+          begin: (message) => workingLifecycle.begin(message),
+          update: (message) => workingLifecycle.update(message),
+          finalize: (message) => workingLifecycle.finalize(message),
+          discard: (binding) => workingLifecycle.discard(binding),
+        },
+        conversationTitle: {
+          set: (title) =>
+            Effect.gen(function* () {
+              const location = decodeSlackConversationId(String(title.binding.conversationId))
+              if (location === undefined || !isSlackThread(location)) return
+              const trimmed = title.title.trim().slice(0, 80)
+              if (trimmed === '') return
+              yield* Effect.tryPromise({
+                try: () =>
+                  adapter.setAssistantTitle(location.channelId, location.threadTs ?? '', trimmed),
+                catch: (cause) => publicationError('set-conversation-title', cause),
+              }).pipe(
+                Effect.tapError((cause) =>
+                  Effect.logDebug('slack.session-title.failed', { cause: String(cause) }),
+                ),
+                Effect.ignore,
+              )
+            }),
+        },
+        messageSearch: { search: (query) => searchSlackMessages(adapter, query) },
         withTyping: (_binding, effect) => effect,
-      } satisfies PlatformAdapter<ChatSdkPublicationError>
+      }
     }),
 )
