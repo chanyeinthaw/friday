@@ -3,10 +3,13 @@
 import { BunRuntime } from '@effect/platform-bun'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
+import { IsoDateTime } from '@friday/contracts/conversation'
 import * as Cause from 'effect/Cause'
+import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
+import * as Schema from 'effect/Schema'
 import { readFile } from 'node:fs/promises'
 
 import {
@@ -42,6 +45,7 @@ import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { startSlack } from './platforms/slack/SlackLive.ts'
 import { SlackConnections, SlackConnectionsLive } from './config/SlackConnections.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
+import { interruptOrphanedTurns } from './persistence/SqliteThreadPersistence.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
 import {
   WorkspaceCleanupNotifications,
@@ -96,6 +100,18 @@ const start = Effect.scoped(
       path: FRIDAY_CONTROL_SOCKET_PATH,
       reload: reloadApplicationConfig(config),
     })
+    const recoveryTimestamp = yield* DateTime.now.pipe(
+      Effect.map(DateTime.formatIso),
+      Effect.flatMap(Schema.decodeUnknownEffect(IsoDateTime)),
+    )
+    const interruptedTurnCount = yield* interruptOrphanedTurns(recoveryTimestamp).pipe(
+      Effect.provide(FridaySqliteLive),
+    )
+    if (interruptedTurnCount > 0) {
+      yield* Effect.logWarning('turns.interrupted-after-restart').pipe(
+        Effect.annotateLogs({ interruptedTurnCount }),
+      )
+    }
     yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
     yield* startSlack().pipe(Effect.provide(FridaySqliteLive))
     yield* ensureFridaySkills()

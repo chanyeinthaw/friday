@@ -2,6 +2,7 @@ import {
   Activity,
   ActivityId,
   AgentThread,
+  type IsoDateTime,
   PlatformKind,
   PlatformConnectionId,
   PlatformConversationId,
@@ -51,6 +52,7 @@ const PersistedThreadRow = Schema.Struct({ payload: ThreadJson })
 const PersistedAgentThreadRow = Schema.Struct({ payload: AgentThreadJson })
 const PersistedTurnRow = Schema.Struct({ payload: TurnJson })
 const PersistedActivityRow = Schema.Struct({ payload: ActivityJson })
+const decodePersistedTurnRows = Schema.decodeUnknownEffect(Schema.Array(PersistedTurnRow))
 
 const toPersistenceError = (operation: string) => (cause: unknown) =>
   Schema.isSchemaError(cause)
@@ -60,6 +62,36 @@ const toPersistenceError = (operation: string) => (cause: unknown) =>
         detail: `Failed to execute ${operation}`,
         cause,
       })
+
+export const interruptOrphanedTurns = Effect.fn('interruptOrphanedTurns')(function* (
+  completedAt: IsoDateTime,
+) {
+  const sql = yield* SqlClient.SqlClient
+  const operation = 'ThreadPersistence.interruptOrphanedTurns'
+
+  return yield* sql
+    .withTransaction(
+      sql<{ readonly payload: string }>`
+        UPDATE turns
+        SET
+          status = 'interrupted',
+          completed_at = ${completedAt},
+          payload_json = json_set(
+            payload_json,
+            '$.status',
+            'interrupted',
+            '$.completedAt',
+            ${completedAt}
+          )
+        WHERE status IN ('pending', 'running')
+        RETURNING payload_json AS payload
+      `.pipe(Effect.flatMap(decodePersistedTurnRows)),
+    )
+    .pipe(
+      Effect.map((turns) => turns.length),
+      Effect.mapError(toPersistenceError(operation)),
+    )
+})
 
 export const makeSqliteThreadPersistence = Effect.fn('makeSqliteThreadPersistence')(function* () {
   const sql = yield* SqlClient.SqlClient
