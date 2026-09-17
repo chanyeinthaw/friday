@@ -64,6 +64,15 @@ export interface PlatformIngestionContract {
      * with a routing error: routing failures return the parent input.
      */
     routeThread?: (input: PlatformInput) => Effect.Effect<PlatformInput>,
+    /**
+     * Ownership gate for automatic thread naming, evaluated synchronously
+     * before title generation when a new channel Thread is created.
+     * Returning false skips `TextGeneration.generateThreadTitle` entirely
+     * so pre-existing conversations never trigger a generation request.
+     * Absent means every newly created Thread keeps the existing naming
+     * behavior.
+     */
+    shouldGenerateTitle?: (input: PlatformInput) => Effect.Effect<boolean>,
   ) => Effect.Effect<void, PlatformIngestionError<CreationError> | ContextError, Scope.Scope>
 }
 
@@ -196,6 +205,7 @@ export const PlatformIngestionLive = Layer.effect(
         cursor: IngestCursor,
       ) => Effect.Effect<PlatformInput, ContextError>,
       routeThread?: (input: PlatformInput) => Effect.Effect<PlatformInput>,
+      shouldGenerateTitle?: (input: PlatformInput) => Effect.Effect<boolean>,
     ) {
       const key = ingestKey(input)
       const annotations = ingestAnnotations(input)
@@ -221,7 +231,11 @@ export const PlatformIngestionLive = Layer.effect(
             const targetCreated = isRouted ? Option.isNone(targetLookup) : created
             const thread = yield* resolveChannelThread(targetLookup, routedInput, createThread)
             if (targetCreated) {
-              yield* launchTitleSidecar(thread, input.message.content.text)
+              const shouldGenerate =
+                shouldGenerateTitle !== undefined ? yield* shouldGenerateTitle(routedInput) : true
+              if (shouldGenerate) {
+                yield* launchTitleSidecar(thread, input.message.content.text)
+              }
             }
             return { thread, message: resolveIngestMessage(routedInput) }
           }),

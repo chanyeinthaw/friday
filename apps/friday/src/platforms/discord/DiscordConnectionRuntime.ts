@@ -6,6 +6,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { PlatformIngestion } from '../PlatformIngestion.ts'
+import type { PlatformInput } from '../PlatformAdapter.ts'
 import { PlatformThreadRouter } from '../PlatformThreadRouter.ts'
 import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
 import { AppConfig } from '../../config/AppConfigLive.ts'
@@ -35,6 +36,7 @@ import {
 } from './DiscordChannelAccess.ts'
 import { registerGlobalDiscordCommands } from './DiscordCommandRegistration.ts'
 import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
+import { shouldTitleDiscordThread } from './DiscordThreadOwnership.ts'
 import { discordCanonicalConversationId } from './DiscordConversationScope.ts'
 import { startDiscordGateway } from './DiscordGateway.ts'
 import { loadDiscordInitialContext, shouldLoadDiscordContext } from './DiscordInitialContext.ts'
@@ -139,6 +141,12 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
     decide: (decideInput) => threadRouter.decide(decideInput),
     resolveChannelPolicy,
   })
+  const applicationId = String(discordConfig.credentials.applicationId)
+  // Ownership gate for automatic naming: only threads Discord reports as
+  // owned by Friday keep title generation; pre-existing user threads skip
+  // generation entirely so neither a model request nor a rename happens.
+  const shouldGenerateTitle = (candidate: PlatformInput) =>
+    shouldTitleDiscordThread(discord, applicationId, candidate)
   const botToken = String(discordConfig.credentials.botToken)
   const activity = yield* makeDiscordAgentActivity(discord)
   // Reconnects funnel through the same versioned retry pipeline as task
@@ -307,6 +315,7 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
                   : Effect.succeed(contextInput)
               },
               routeThread,
+              shouldGenerateTitle,
             ),
         },
       ),
