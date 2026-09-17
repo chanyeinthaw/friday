@@ -401,3 +401,57 @@ it.effect('routes reusable material to private documents with explicit reader ch
     assert.include(prompt, 'You own the request from start to finish')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
+
+it.effect('channels include concise response examples after personality', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, '### Examples')
+    const personalityIndex = prompt.indexOf('## Personality')
+    const examplesIndex = prompt.indexOf('### Examples')
+    const channelContextIndex = prompt.indexOf('## Channel context')
+    assert.isAbove(examplesIndex, personalityIndex)
+    assert.isBelow(examplesIndex, channelContextIndex)
+    assert.include(prompt, 'Starting work.')
+    assert.include(prompt, "On it, I'm checking the failing test. Assuming main is green.")
+    assert.include(prompt, 'Correction.')
+    assert.include(prompt, "You're right, I misread the log.")
+    assert.include(prompt, 'Completion.')
+    assert.include(prompt, 'Done, fixed the retry and the focused test passes.')
+    assert.include(prompt, 'Blocker.')
+    assert.include(prompt, 'Should I use the read scope or ask for write?')
+    assert.include(prompt, 'Opinion.')
+    assert.include(prompt, "I'd keep the current schema.")
+    assert.include(prompt, 'Long findings.')
+    assert.include(prompt, 'Full notes are at <link>.')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('examples mark workflow narration as wrong and keep completion generic', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+    const examples = prompt.slice(
+      prompt.indexOf('### Examples'),
+      prompt.indexOf('## Channel context'),
+    )
+
+    assert.include(examples, 'Bad, it narrates workflow.')
+    assert.include(examples, 'background worker')
+    assert.include(examples, 'Say what you started, not how.')
+    assert.notInclude(examples, 'another agent')
+    assert.notInclude(examples, 'delegation')
+    assert.notInclude(examples, 'estimated')
+    assert.notInclude(examples, 'I will do better')
+    assert.notInclude(examples, 'I promise')
+    assert.notInclude(examples, '#64')
+    assert.notInclude(examples, 'nightly')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
