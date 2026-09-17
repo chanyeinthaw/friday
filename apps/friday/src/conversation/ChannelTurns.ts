@@ -84,7 +84,39 @@ export const ChannelTurnsLive = Layer.effect(
     const persistence = yield* ThreadPersistence
     const progress = yield* ChannelProgress
     const crypto = yield* Crypto.Crypto
+    const scope = yield* Effect.scope
     const semaphore = yield* PartitionedSemaphore.make<string>({ permits: 1 })
+
+    const complete = Effect.fn('ChannelTurns.complete')(function* (
+      request: AcceptChannelTurnRequest,
+      accepted: {
+        readonly turnId: TurnType['id']
+        readonly awaitTerminal: Effect.Effect<
+          TerminalTurn,
+          ThreadRuntimeError | ThreadPersistenceError
+        >
+      },
+    ) {
+      const terminal = yield* accepted.awaitTerminal
+      yield* logTerminal(request.thread, terminal)
+      const text = Match.value(terminal).pipe(
+        Match.when({ status: 'completed' }, ({ agentMessage }) => agentMessage),
+        Match.when(
+          { status: 'interrupted' },
+          ({ agentMessage }) => agentMessage ?? 'Work was interrupted before a response was ready.',
+        ),
+        Match.when({ status: 'failed' }, ({ errorMessage }) => `Work failed: ${errorMessage}`),
+        Match.exhaustive,
+      )
+      yield* progress.finalize(request.thread, accepted.turnId, text)
+      yield* Effect.logInfo('publication.completed').pipe(
+        Effect.annotateLogs({
+          threadId: request.thread.id,
+          turnId: terminal.turnId,
+          responseLength: text.length,
+        }),
+      )
+    })
 
     const accept = Effect.fn('ChannelTurns.accept')(function* (request: AcceptChannelTurnRequest) {
       const accepted = yield* semaphore.withPermit(request.thread.id)(
@@ -188,26 +220,11 @@ export const ChannelTurnsLive = Layer.effect(
       )
 
       if (Option.isNone(accepted)) return
-
-      const terminal = yield* accepted.value.awaitTerminal
-      yield* logTerminal(request.thread, terminal)
-      const text = Match.value(terminal).pipe(
-        Match.when({ status: 'completed' }, ({ agentMessage }) => agentMessage),
-        Match.when(
-          { status: 'interrupted' },
-          ({ agentMessage }) => agentMessage ?? 'Work was interrupted before a response was ready.',
-        ),
-        Match.when({ status: 'failed' }, ({ errorMessage }) => `Work failed: ${errorMessage}`),
-        Match.exhaustive,
+      yield* complete(request, accepted.value).pipe(
+        Effect.catchCause((cause) => Effect.logError('Turn completion worker failed', cause)),
+        Effect.forkIn(scope),
       )
-      yield* progress.finalize(request.thread, accepted.value.turnId, text)
-      yield* Effect.logInfo('publication.completed').pipe(
-        Effect.annotateLogs({
-          threadId: request.thread.id,
-          turnId: terminal.turnId,
-          responseLength: text.length,
-        }),
-      )
+      yield* Effect.yieldNow
     })
 
     return ChannelTurns.of({ accept })

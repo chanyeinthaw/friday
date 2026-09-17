@@ -7,6 +7,7 @@ import {
   type Turn as TurnType,
 } from '@friday/contracts/conversation'
 import * as Crypto from 'effect/Crypto'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
@@ -84,11 +85,18 @@ interface FollowupHarness {
   readonly finalizes: Array<string>
 }
 
+interface RunAcceptOptions {
+  readonly terminalGate?: Effect.Effect<void>
+  readonly afterAccept?: Effect.Effect<void>
+  readonly onFinalize?: Effect.Effect<void>
+}
+
 const runAccept = (
   harness: FollowupHarness,
   requestThread: typeof thread,
   latest: Option.Option<TurnType>,
   steerBehavior: 'succeed' | 'reject',
+  options: RunAcceptOptions = {},
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -118,12 +126,14 @@ const runAccept = (
           Effect.sync(() => harness.started.push(String(turn.id))).pipe(
             Effect.as({
               turnId: turn.id,
-              awaitTerminal: Effect.succeed({
-                status: 'completed' as const,
-                turnId: turn.id,
-                agentMessage: 'done',
-                usage: null,
-              }),
+              awaitTerminal: (options.terminalGate ?? Effect.void).pipe(
+                Effect.as({
+                  status: 'completed' as const,
+                  turnId: turn.id,
+                  agentMessage: 'done',
+                  usage: null,
+                }),
+              ),
             }),
           ),
         steer: (turnId) =>
@@ -163,7 +173,7 @@ const runAccept = (
         finalize: (finalizedThread, turnId) =>
           Effect.sync(() =>
             harness.finalizes.push(`${String(finalizedThread.id)}:${String(turnId)}`),
-          ),
+          ).pipe(Effect.andThen(options.onFinalize ?? Effect.void)),
       })
       const TestLive = Layer.mergeAll(
         Layer.succeed(ThreadPersistence, persistence),
@@ -176,6 +186,8 @@ const runAccept = (
       yield* Effect.gen(function* () {
         const turns = yield* ChannelTurns
         yield* turns.accept({ thread: requestThread, message: userMessage('Follow-up') })
+        const afterAccept = options.afterAccept ?? Effect.void
+        yield* afterAccept
       }).pipe(Effect.provide(FullLive))
     }),
   )
@@ -208,6 +220,27 @@ it.effect('falls back exactly once to a new turn when steering is rejected', () 
     assert.lengthOf(harness.started, 1)
     assert.lengthOf(harness.accepts, 1)
     assert.isFalse(harness.accepts[0]?.endsWith(':turn-active'))
+    assert.lengthOf(harness.finalizes, 1)
+  }),
+)
+
+it.effect('returns after dispatch while completion waits for the terminal event', () =>
+  Effect.gen(function* () {
+    const harness = freshHarness()
+    const terminal = yield* Deferred.make<void>()
+    const finalized = yield* Deferred.make<void>()
+
+    yield* runAccept(harness, thread, Option.none(), 'succeed', {
+      terminalGate: Deferred.await(terminal),
+      onFinalize: Deferred.succeed(finalized, undefined),
+      afterAccept: Effect.gen(function* () {
+        assert.lengthOf(harness.started, 1)
+        assert.lengthOf(harness.finalizes, 0)
+        yield* Deferred.succeed(terminal, undefined)
+        yield* Deferred.await(finalized)
+      }),
+    })
+
     assert.lengthOf(harness.finalizes, 1)
   }),
 )
