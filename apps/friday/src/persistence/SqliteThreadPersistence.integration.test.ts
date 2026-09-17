@@ -20,7 +20,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
+import { interruptOrphanedTurns, makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
 
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
 const decodeIsoDateTime = Schema.decodeSync(IsoDateTime)
@@ -437,6 +437,51 @@ test('creates and retrieves a pending Turn', async () => {
   await rm(directory, { recursive: true, force: true })
 
   expect(persisted).toEqual(turn)
+})
+
+test('interrupts orphaned pending and running Turns after reopening SQLite', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'friday-sqlite-test-'))
+  const filename = join(directory, 'friday.sqlite')
+  const runningTurn = decodeTurn({
+    ...secondTurn,
+    status: 'running',
+    startedAt: '2026-03-21T10:01:00.000Z',
+  })
+  const completedTurn = decodeTurn({
+    ...turn,
+    id: 'turn-3',
+    sequence: 3,
+    status: 'completed',
+    agentMessage: 'Already done.',
+    completedAt: '2026-03-21T10:02:00.000Z',
+  })
+  const recoveredAt = decodeIsoDateTime('2026-03-21T11:00:00.000Z')
+  const create = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    yield* persistence.createThread(thread)
+    yield* persistence.createTurn(turn)
+    yield* persistence.createTurn(runningTurn)
+    yield* persistence.createTurn(completedTurn)
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+  const recover = Effect.gen(function* () {
+    const persistence = yield* makeSqliteThreadPersistence()
+    const interrupted = yield* interruptOrphanedTurns(recoveredAt)
+    const interruptedAgain = yield* interruptOrphanedTurns(recoveredAt)
+    const turns = yield* persistence.listTurns(thread.id)
+    return { interrupted, interruptedAgain, turns }
+  }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped)
+
+  await Effect.runPromise(create)
+  const result = await Effect.runPromise(recover)
+  await rm(directory, { recursive: true, force: true })
+
+  expect(result.interrupted).toBe(2)
+  expect(result.interruptedAgain).toBe(0)
+  expect(result.turns).toEqual([
+    { ...turn, status: 'interrupted', completedAt: recoveredAt },
+    { ...runningTurn, status: 'interrupted', completedAt: recoveredAt },
+    completedTurn,
+  ])
 })
 
 test('allocates one durable Activity sequence across runtime events and steering', async () => {
