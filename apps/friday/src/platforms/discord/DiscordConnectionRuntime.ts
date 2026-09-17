@@ -58,7 +58,7 @@ import {
   harnessSubcommand,
 } from './DiscordHarnessCommand.ts'
 import { FridayDiscordAdapter, type FridayDiscordAdapterConfig } from './FridayDiscordAdapter.ts'
-import { searchDiscordMessages } from './DiscordMessageSearch.ts'
+import { getDiscordMessage, searchDiscordMessages } from './DiscordMessageSearch.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
@@ -163,6 +163,9 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
     setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
     setAgentActivity: activity.setAgentActivity,
     searchMessages: (query) => searchDiscordMessages(discord, query),
+    // URL targets gate against the live channel policy snapshot; bare ids
+    // resolve inside the already-admitted conversation scope.
+    getMessage: (query) => getDiscordMessage(discord, query, { resolveChannelPolicy }),
   })
   yield* platforms.register(chatSdkPlatform)
   // Harness reload targets the thread bound to the invoking conversation

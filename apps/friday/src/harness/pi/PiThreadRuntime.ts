@@ -131,7 +131,7 @@ export interface MakePiThreadRuntimeOptions {
   readonly systemPromptTemplates?: SystemPromptTemplatesContract
   readonly availableAgentModels?: () => AppConfig['models']['subagents']
   readonly tasks?: PiTaskOperations
-  readonly platforms?: Pick<PlatformRegistryContract, 'searchMessages'>
+  readonly platforms?: Pick<PlatformRegistryContract, 'searchMessages' | 'getMessage'>
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso)

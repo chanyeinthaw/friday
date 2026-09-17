@@ -1,4 +1,5 @@
 import { DiscordAdapter, type DiscordAdapterConfig } from '@chat-adapter/discord'
+import type { Message } from 'chat'
 import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
@@ -176,6 +177,19 @@ export class FridayDiscordAdapter extends DiscordAdapter {
     messageId: string,
   ): Promise<{ id: string; name: string }> {
     return super.createDiscordThread(channelId, messageId)
+  }
+
+  /**
+   * Direct single-message fetch via Discord's
+   * `GET /channels/{channel}/messages/{id}` endpoint. Callers own policy
+   * gating and collapse failures to not-found. The raw channel id doubles as
+   * the parse hint because only author, text, and id are projected downstream.
+   * Unlike history search, bot authors are preserved.
+   */
+  public async fetchDirectMessage(channelId: string, messageId: string): Promise<Message> {
+    const response = await this.discordFetch(`/channels/${channelId}/messages/${messageId}`, 'GET')
+    const raw = await response.json()
+    return this.parseDiscordMessage(raw, channelId)
   }
 
   /**

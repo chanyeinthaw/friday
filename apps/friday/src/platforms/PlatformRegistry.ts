@@ -5,9 +5,12 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
+import { PlatformMessageNotFoundError } from './PlatformAdapter.ts'
 import type {
   PlatformAgentActivity,
   PlatformConversationTitle,
+  PlatformMessageGetQuery,
+  PlatformMessageGetResult,
   PlatformMessageQuery,
   PlatformMessageSearchResult,
   PlatformMessageTarget,
@@ -33,6 +36,7 @@ const PlatformCapability = Schema.Literals([
   'conversation-title',
   'agent-activity',
   'message-search',
+  'message-get',
 ])
 export type PlatformCapability = typeof PlatformCapability.Type
 
@@ -45,6 +49,7 @@ export class PlatformCapabilityUnavailableError extends Schema.Error<PlatformCap
 }) {}
 
 const isPlatformOperationError = Schema.is(PlatformOperationError)
+const isMessageNotFound = Schema.is(PlatformMessageNotFoundError)
 type RegistryError =
   | PlatformNotFoundError
   | PlatformOperationError
@@ -69,6 +74,9 @@ export interface PlatformRegistryContract {
   readonly searchMessages: (
     query: PlatformMessageQuery,
   ) => Effect.Effect<PlatformMessageSearchResult, RegistryError>
+  readonly getMessage: (
+    query: PlatformMessageGetQuery,
+  ) => Effect.Effect<PlatformMessageGetResult, RegistryError | PlatformMessageNotFoundError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -101,35 +109,35 @@ export const PlatformRegistryLive = Layer.effect(
       operation: (platform: RegisteredPlatform) => Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E | PlatformNotFoundError, R> =>
       find(binding).pipe(Effect.flatMap(operation))
-    const invokeCapability = <A>(
+    const invokeCapability = <A, E>(
       binding: ConversationBinding,
       capability: PlatformCapability,
-      operation: (
-        platform: RegisteredPlatform,
-      ) => Effect.Effect<A, PlatformOperationError> | undefined,
-    ): Effect.Effect<A, RegistryError> =>
-      invoke(
-        binding,
-        (
-          platform,
-        ): Effect.Effect<A, PlatformOperationError | PlatformCapabilityUnavailableError> => {
-          const effect = operation(platform)
-          return effect === undefined
-            ? Effect.fail(
-                new PlatformCapabilityUnavailableError({ kind: platform.kind, capability }),
-              )
-            : effect
-        },
-      )
+      operation: (platform: RegisteredPlatform) => Effect.Effect<A, E> | undefined,
+    ): Effect.Effect<A, E | PlatformNotFoundError | PlatformCapabilityUnavailableError> =>
+      invoke(binding, (platform): Effect.Effect<A, E | PlatformCapabilityUnavailableError> => {
+        const effect = operation(platform)
+        return effect === undefined
+          ? Effect.fail(new PlatformCapabilityUnavailableError({ kind: platform.kind, capability }))
+          : effect
+      })
 
     return PlatformRegistry.of({
       register: <E>(platform: PlatformRegistration<E>) => {
         const wrap = <A>(effect: Effect.Effect<A, E>) =>
           effect.pipe(Effect.mapError((cause) => operationError(platform.kind, cause)))
+        // Single-message retrieval preserves its generic not-found across the
+        // boundary; every other platform failure still becomes an operation error.
+        const wrapGet = <A>(effect: Effect.Effect<A, E | PlatformMessageNotFoundError>) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              isMessageNotFound(cause) ? cause : operationError(platform.kind, cause),
+            ),
+          )
         const workingMessages = platform.workingMessages
         const conversationTitle = platform.conversationTitle
         const agentActivity = platform.agentActivity
         const messageSearch = platform.messageSearch
+        const messageGet = platform.messageGet
         const registered: RegisteredPlatform = {
           connectionId: platform.connectionId,
           kind: platform.kind,
@@ -176,6 +184,13 @@ export const PlatformRegistryLive = Layer.effect(
             },
           })
         }
+        if (messageGet !== undefined) {
+          Object.assign(registered, {
+            messageGet: {
+              get: (query: PlatformMessageGetQuery) => wrapGet(messageGet.get(query)),
+            },
+          })
+        }
         return Effect.acquireRelease(
           Effect.sync(() => void platforms.set(platform.connectionId, registered)),
           () =>
@@ -216,6 +231,10 @@ export const PlatformRegistryLive = Layer.effect(
       searchMessages: (query) =>
         invokeCapability(query.binding, 'message-search', (platform) =>
           platform.messageSearch?.search(query),
+        ),
+      getMessage: (query) =>
+        invokeCapability(query.binding, 'message-get', (platform) =>
+          platform.messageGet?.get(query),
         ),
       withTyping: (binding, effect) =>
         invoke(binding, (platform) => platform.withTyping(binding, effect)),
