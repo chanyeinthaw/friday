@@ -10,7 +10,12 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Ref from 'effect/Ref'
 
-import type { PlatformAdapter, PlatformInput, PlatformPublication } from '../PlatformAdapter.ts'
+import type {
+  PlatformAdapter,
+  PlatformInput,
+  PlatformPublication,
+  PlatformWorkingMessageCapability,
+} from '../PlatformAdapter.ts'
 
 export type TestPlatformEvent =
   | {
@@ -39,7 +44,8 @@ export type TestPlatformEvent =
       readonly text?: string
     }
 
-export interface TestPlatformContract extends PlatformAdapter<never> {
+export interface TestPlatformContract
+  extends PlatformAdapter<never>, PlatformWorkingMessageCapability<never> {
   readonly connect: (
     onInbound: (inbound: PlatformInput) => Effect.Effect<void>,
   ) => Effect.Effect<boolean>
@@ -77,13 +83,12 @@ export const TestPlatformLive = Layer.effect(
         }),
       publish: (publication) => record({ type: 'message-published', publication }),
       acknowledge: ({ binding }) => record({ type: 'message-acknowledged', binding }),
-      beginWorking: ({ binding, text }) => record({ type: 'working-started', binding, text }),
-      updateWorking: ({ binding, text }) => record({ type: 'working-updated', binding, text }),
-      finalizeWorking: ({ binding, text }) => record({ type: 'working-finalized', binding, text }),
-      discardWorking: () => Effect.void,
-      setConversationTitle: () => Effect.void,
-      setAgentActivity: () => Effect.void,
-      searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
+      workingMessages: {
+        begin: ({ binding, text }) => record({ type: 'working-started', binding, text }),
+        update: ({ binding, text }) => record({ type: 'working-updated', binding, text }),
+        finalize: ({ binding, text }) => record({ type: 'working-finalized', binding, text }),
+        discard: () => Effect.void,
+      },
       withTyping: (binding, effect) =>
         Effect.acquireUseRelease(
           record({ type: 'typing-started', binding }),

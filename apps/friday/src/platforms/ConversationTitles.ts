@@ -77,6 +77,7 @@ export const ConversationTitlesLive = Layer.effect(
               : { binding: thread.conversationBinding, taskId, active, task },
           )
           .pipe(
+            Effect.catchTag('PlatformCapabilityUnavailableError', () => Effect.void),
             Effect.matchEffect({
               onFailure: (cause) =>
                 Effect.logWarning('platform.agent-activity.failed').pipe(
@@ -96,9 +97,10 @@ export const ConversationTitlesLive = Layer.effect(
       generated: (thread, title) =>
         serialized(
           thread,
-          platforms
-            .setConversationTitle({ binding: thread.conversationBinding, title })
-            .pipe(Effect.ignore),
+          platforms.setConversationTitle({ binding: thread.conversationBinding, title }).pipe(
+            Effect.catchTag('PlatformCapabilityUnavailableError', () => Effect.void),
+            Effect.ignore,
+          ),
         ),
       taskStarted: (thread, taskId, task) => updateActivity(thread, taskId, true, task),
       taskFinished: (thread, taskId) => updateActivity(thread, taskId, false),

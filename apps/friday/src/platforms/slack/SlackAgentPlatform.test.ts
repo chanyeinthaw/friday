@@ -2,7 +2,6 @@ import {
   ConversationBinding,
   PlatformConnectionId,
   PlatformMessageId,
-  TaskId,
 } from '@friday/contracts/conversation'
 import { assert, it } from '@effect/vitest'
 import { Message } from 'chat'
@@ -18,7 +17,6 @@ const isPublicationError = Schema.is(ChatSdkPublicationError)
 const decodeBinding = Schema.decodeSync(ConversationBinding)
 const decodeConnectionId = Schema.decodeSync(PlatformConnectionId)
 const decodeMessageId = Schema.decodeUnknownSync(PlatformMessageId)
-const decodeTaskId = Schema.decodeUnknownSync(TaskId)
 
 const connectionId = decodeConnectionId('slack-personal')
 
@@ -168,16 +166,16 @@ it.effect('chunks long publications and edits visible working messages', () =>
     assert.ok(text.length > SlackMaxMessageLength)
     yield* platform.publish({ binding: channelBinding, text })
     assert.ok(fake.posted.length > 1)
-    yield* platform.beginWorking({ binding: channelBinding, text: 'working…' })
-    yield* platform.updateWorking({ binding: channelBinding, text: 'still working…' })
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'working…' })
+    yield* platform.workingMessages.update({ binding: channelBinding, text: 'still working…' })
     assert.strictEqual(fake.edited.length, 1)
     assert.strictEqual(fake.edited[0]?.text, 'still working…')
-    yield* platform.finalizeWorking({ binding: channelBinding, text: 'done' })
+    yield* platform.workingMessages.finalize({ binding: channelBinding, text: 'done' })
     assertNoNativeStatus(fake)
   }),
 )
 
-it.effect('acknowledges, titles threads only, and passes typing through', () =>
+it.effect('acknowledges, titles threads only, omits activity, and passes typing through', () =>
   Effect.gen(function* () {
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
@@ -188,24 +186,20 @@ it.effect('acknowledges, titles threads only, and passes typing through', () =>
     assert.strictEqual(platform.kind, 'slack')
     assert.strictEqual(fake.reactions.length, 1)
     assert.strictEqual(fake.reactions[0]?.emoji, 'eyes')
-    yield* platform.setConversationTitle({ binding: channelBinding, title: 'ignored' })
+    yield* platform.conversationTitle.set({ binding: channelBinding, title: 'ignored' })
     assert.strictEqual(fake.titles.length, 0)
-    yield* platform.setConversationTitle({ binding: threadBinding, title: '  Deploy work  ' })
+    yield* platform.conversationTitle.set({ binding: threadBinding, title: '  Deploy work  ' })
     assert.strictEqual(fake.titles.length, 1)
     assert.strictEqual(fake.titles[0]?.channel, 'C456')
     assert.strictEqual(fake.titles[0]?.title, 'Deploy work')
-    yield* platform.setConversationTitle({
+    yield* platform.conversationTitle.set({
       binding: threadBinding,
       title: `Deploy ${'plan '.repeat(40)}`,
     })
     assert.strictEqual(fake.titles[1]?.title.length, 80)
-    yield* platform.setConversationTitle({ binding: threadBinding, title: '   ' })
+    yield* platform.conversationTitle.set({ binding: threadBinding, title: '   ' })
     assert.strictEqual(fake.titles.length, 2)
-    yield* platform.setAgentActivity({
-      binding: channelBinding,
-      taskId: decodeTaskId('task-1'),
-      active: true,
-    })
+    assert.strictEqual('agentActivity' in platform, false)
     const typed = yield* platform.withTyping(channelBinding, Effect.succeed('typed'))
     assert.strictEqual(typed, 'typed')
     const postedBefore = fake.posted.length
@@ -223,10 +217,10 @@ it.effect('discards working messages best-effort', () =>
   Effect.gen(function* () {
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
-    yield* platform.beginWorking({ binding: channelBinding, text: 'working…' })
-    yield* platform.discardWorking(channelBinding)
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'working…' })
+    yield* platform.workingMessages.discard(channelBinding)
     assert.strictEqual(fake.deleted.length, 1)
-    yield* platform.discardWorking(channelBinding)
+    yield* platform.workingMessages.discard(channelBinding)
     assert.strictEqual(fake.deleted.length, 1)
     assertNoNativeStatus(fake)
   }),
@@ -237,9 +231,9 @@ it.effect('keeps plain working messages without Discord decoration', () =>
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
 
-    yield* platform.beginWorking({ binding: channelBinding, text: 'Thinking...' })
-    yield* platform.updateWorking({ binding: channelBinding, text: 'Reading files...' })
-    yield* platform.finalizeWorking({ binding: channelBinding, text: 'Final answer.' })
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.update({ binding: channelBinding, text: 'Reading files...' })
+    yield* platform.workingMessages.finalize({ binding: channelBinding, text: 'Final answer.' })
 
     assert.strictEqual(fake.posted.length, 1)
     assert.strictEqual(fake.posted[0]?.text, 'Thinking...')
@@ -257,9 +251,9 @@ it.effect('deletes an overtaken working message and posts fresh at the bottom', 
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
 
-    yield* platform.beginWorking({ binding: channelBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'Thinking...' })
     fake.overtakeChannel('1234567890.222222')
-    yield* platform.finalizeWorking({ binding: channelBinding, text: 'Final answer.' })
+    yield* platform.workingMessages.finalize({ binding: channelBinding, text: 'Final answer.' })
 
     assert.strictEqual(fake.posted.length, 2)
     assert.strictEqual(fake.posted[1]?.text, 'Final answer.')
@@ -276,9 +270,9 @@ it.effect('deletes an overtaken thread working message and posts fresh', () =>
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
 
-    yield* platform.beginWorking({ binding: threadBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding: threadBinding, text: 'Thinking...' })
     fake.overtakeThread('1234567890.333333')
-    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Thread done.' })
+    yield* platform.workingMessages.finalize({ binding: threadBinding, text: 'Thread done.' })
 
     assert.strictEqual(fake.posted.length, 2)
     assert.strictEqual(fake.posted[1]?.threadId, 'slack:C456:1234567890.111111')
@@ -294,9 +288,9 @@ it.effect('splits a long final answer after editing the latest working message',
     const text = `line\n${'word '.repeat(2000)}`
     assert.ok(text.length > SlackMaxMessageLength)
 
-    yield* platform.beginWorking({ binding: channelBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'Thinking...' })
     const postedBefore = fake.posted.length
-    yield* platform.finalizeWorking({ binding: channelBinding, text })
+    yield* platform.workingMessages.finalize({ binding: channelBinding, text })
 
     assert.strictEqual(fake.deleted.length, 0)
     assert.strictEqual(fake.edited.length, 1)
@@ -312,10 +306,10 @@ it.effect('splits a long final answer after deleting a stale working message', (
     const text = `line\n${'word '.repeat(2000)}`
     assert.ok(text.length > SlackMaxMessageLength)
 
-    yield* platform.beginWorking({ binding: channelBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'Thinking...' })
     fake.overtakeChannel('1234567890.222222')
     const postedBefore = fake.posted.length
-    yield* platform.finalizeWorking({ binding: channelBinding, text })
+    yield* platform.workingMessages.finalize({ binding: channelBinding, text })
 
     assert.strictEqual(fake.deleted.length, 1)
     assert.strictEqual(fake.edited.length, 0)
@@ -329,15 +323,15 @@ it.effect('keeps long visible statuses without native status calls', () =>
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
 
-    yield* platform.beginWorking({ binding: channelBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'Thinking...' })
     assert.strictEqual(fake.posted[0]?.text, 'Thinking...')
     assert.strictEqual(fake.posted[0]?.threadId, 'slack:C456:')
 
-    yield* platform.updateWorking({ binding: channelBinding, text: 'Running commands...' })
+    yield* platform.workingMessages.update({ binding: channelBinding, text: 'Running commands...' })
     assert.strictEqual(fake.edited[0]?.text, 'Running commands...')
 
     const long = `status ${'word '.repeat(60)}`
-    yield* platform.updateWorking({ binding: channelBinding, text: long })
+    yield* platform.workingMessages.update({ binding: channelBinding, text: long })
     assert.strictEqual(fake.edited[1]?.text, long)
     assertNoNativeStatus(fake)
   }),
@@ -348,8 +342,8 @@ it.effect('edits the thread working message when it remains latest', () =>
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
 
-    yield* platform.beginWorking({ binding: threadBinding, text: 'Thinking...' })
-    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Thread answer.' })
+    yield* platform.workingMessages.begin({ binding: threadBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.finalize({ binding: threadBinding, text: 'Thread answer.' })
 
     assert.strictEqual(fake.posted.length, 1)
     assert.strictEqual(fake.edited.length, 1)
@@ -365,17 +359,17 @@ it.effect('reposts fresh when history is empty instead of throwing', () =>
     const fake = makeFakeAdapter()
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
 
-    yield* platform.beginWorking({ binding: channelBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding: channelBinding, text: 'Thinking...' })
     fake.clearHistories()
-    yield* platform.finalizeWorking({ binding: channelBinding, text: 'Final answer.' })
+    yield* platform.workingMessages.finalize({ binding: channelBinding, text: 'Final answer.' })
 
     assert.strictEqual(fake.posted.length, 2)
     assert.strictEqual(fake.posted[1]?.text, 'Final answer.')
     assert.strictEqual(fake.edited.length, 0)
 
-    yield* platform.beginWorking({ binding: threadBinding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding: threadBinding, text: 'Thinking...' })
     fake.clearHistories()
-    yield* platform.finalizeWorking({ binding: threadBinding, text: 'Thread answer.' })
+    yield* platform.workingMessages.finalize({ binding: threadBinding, text: 'Thread answer.' })
 
     assert.strictEqual(fake.posted[fake.posted.length - 1]?.text, 'Thread answer.')
     assert.strictEqual(
@@ -404,8 +398,8 @@ it.effect('tags publication failures with the failing operation', () =>
       if (isPublicationError(error)) assert.strictEqual(error.operation, 'publish')
     }
 
-    const beginExit = yield* platform
-      .beginWorking({ binding: channelBinding, text: 'working…' })
+    const beginExit = yield* platform.workingMessages
+      .begin({ binding: channelBinding, text: 'working…' })
       .pipe(Effect.exit)
     assert.strictEqual(beginExit._tag, 'Failure')
     if (beginExit._tag === 'Failure') {
@@ -424,9 +418,9 @@ it.effect('tags update and finalize failures with the failing operation', () =>
       editMessage: () => Promise.reject(new Error('edit down')),
     }
     const editPlatform = yield* makeSlackPlatform(connectionId, failingEdit)
-    yield* editPlatform.beginWorking({ binding: channelBinding, text: 'working…' })
-    const updateExit = yield* editPlatform
-      .updateWorking({ binding: channelBinding, text: 'still working…' })
+    yield* editPlatform.workingMessages.begin({ binding: channelBinding, text: 'working…' })
+    const updateExit = yield* editPlatform.workingMessages
+      .update({ binding: channelBinding, text: 'still working…' })
       .pipe(Effect.exit)
     assert.strictEqual(updateExit._tag, 'Failure')
     if (updateExit._tag === 'Failure') {
@@ -467,7 +461,7 @@ it.effect('searches channel history through the adapter', () =>
     const platform = yield* makeSlackPlatform(connectionId, fake.adapter)
     yield* platform.publish({ binding: channelBinding, text: 'deploy pipeline notes' })
 
-    const result = yield* platform.searchMessages({
+    const result = yield* platform.messageSearch.search({
       binding: channelBinding,
       query: 'deploy',
       limit: 10,

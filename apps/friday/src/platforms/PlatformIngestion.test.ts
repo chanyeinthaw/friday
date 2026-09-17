@@ -32,7 +32,7 @@ import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
-import type { PlatformAdapter } from './PlatformAdapter.ts'
+import type { PlatformRegistration } from './PlatformAdapter.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
 const binding = Schema.decodeSync(ConversationBinding)({
@@ -454,18 +454,17 @@ it.effect('dies without accepting when the resolved Thread is not a user channel
   ),
 )
 
-const makePlatform = (events: Array<string>): PlatformAdapter<never> => ({
+const makePlatform = (events: Array<string>): PlatformRegistration<never> => ({
   connectionId: binding.connectionId,
   kind: 'discord',
   publish: ({ text }) => Effect.sync(() => events.push(`publish:${text}`)),
   acknowledge: () => Effect.sync(() => events.push('acknowledge')),
-  beginWorking: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
-  updateWorking: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
-  setAgentActivity: () => Effect.void,
-  searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
-  setConversationTitle: () => Effect.void,
-  discardWorking: () => Effect.void,
-  finalizeWorking: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
+  workingMessages: {
+    begin: ({ text }) => Effect.sync(() => events.push(`working:${text}`)),
+    update: ({ text }) => Effect.sync(() => events.push(`update:${text}`)),
+    discard: () => Effect.void,
+    finalize: ({ text }) => Effect.sync(() => events.push(`finalize:${text}`)),
+  },
   withTyping: (_binding, effect) =>
     Effect.sync(() => events.push('typing-started')).pipe(
       Effect.andThen(effect),

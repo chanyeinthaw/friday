@@ -151,6 +151,22 @@ it.effect('acknowledges an accepted user message', () =>
   }),
 )
 
+it.effect('advertises only the optional capabilities supplied by its connection builder', () =>
+  Effect.gen(function* () {
+    const test = makeSource()
+    const base = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
+    const titled = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source, {
+      setConversationTitle: () => Effect.void,
+    })
+
+    assert.strictEqual('workingMessages' in base, true)
+    assert.strictEqual('conversationTitle' in base, false)
+    assert.strictEqual('agentActivity' in base, false)
+    assert.strictEqual('messageSearch' in base, false)
+    assert.strictEqual('conversationTitle' in titled, true)
+  }),
+)
+
 it.effect('acknowledges a thread starter through the parent channel', () =>
   Effect.gen(function* () {
     const test = makeSource()
@@ -171,9 +187,9 @@ it.effect('decorates plain working statuses as Discord subtext', () =>
     const test = makeSource()
     const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
-    yield* platform.beginWorking({ binding, text: 'Thinking...' })
-    yield* platform.updateWorking({ binding, text: 'Reading files...' })
-    yield* platform.finalizeWorking({ binding, text: 'Final answer.' })
+    yield* platform.workingMessages.begin({ binding, text: 'Thinking...' })
+    yield* platform.workingMessages.update({ binding, text: 'Reading files...' })
+    yield* platform.workingMessages.finalize({ binding, text: 'Final answer.' })
 
     assert.deepStrictEqual(test.events, [
       'post:bot-1:-# Thinking...',
@@ -190,8 +206,8 @@ it.effect('splits a long final answer after editing the latest working message',
       maxMessageLength: 10,
     })
 
-    yield* platform.beginWorking({ binding, text: 'Thinking' })
-    yield* platform.finalizeWorking({ binding, text: '1234567890abcdefghijXYZ' })
+    yield* platform.workingMessages.begin({ binding, text: 'Thinking' })
+    yield* platform.workingMessages.finalize({ binding, text: '1234567890abcdefghijXYZ' })
 
     assert.deepStrictEqual(test.events, [
       'post:bot-1:-# Thinking',
@@ -209,9 +225,9 @@ it.effect('splits a long final answer after deleting a stale working message', (
       maxMessageLength: 10,
     })
 
-    yield* platform.beginWorking({ binding, text: 'Thinking' })
+    yield* platform.workingMessages.begin({ binding, text: 'Thinking' })
     test.addUser('steering-message')
-    yield* platform.finalizeWorking({ binding, text: '1234567890abcdefghijXYZ' })
+    yield* platform.workingMessages.finalize({ binding, text: '1234567890abcdefghijXYZ' })
 
     assert.deepStrictEqual(test.events, [
       'post:bot-1:-# Thinking',
@@ -228,9 +244,9 @@ it.effect('deletes a stale working message and posts the final answer at the bot
     const test = makeSource()
     const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
-    yield* platform.beginWorking({ binding, text: 'Thinking...' })
+    yield* platform.workingMessages.begin({ binding, text: 'Thinking...' })
     test.addUser('steering-message')
-    yield* platform.finalizeWorking({ binding, text: 'Final answer.' })
+    yield* platform.workingMessages.finalize({ binding, text: 'Final answer.' })
 
     assert.deepStrictEqual(test.events, [
       'post:bot-1:-# Thinking...',
@@ -245,8 +261,8 @@ it.effect('posts fresh when no working message is tracked', () =>
     const test = makeSource()
     const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
-    yield* platform.updateWorking({ binding, text: 'ignored' })
-    yield* platform.finalizeWorking({ binding, text: 'Fresh.' })
+    yield* platform.workingMessages.update({ binding, text: 'ignored' })
+    yield* platform.workingMessages.finalize({ binding, text: 'Fresh.' })
 
     assert.deepStrictEqual(test.events, ['post:bot-1:Fresh.'])
   }),
@@ -257,12 +273,12 @@ it.effect('deletes the tracked message on empty finalize and discard', () =>
     const test = makeSource()
     const platform = yield* makeChatSdkPlatform(binding.connectionId, 'discord', test.source)
 
-    yield* platform.beginWorking({ binding, text: 'Thinking...' })
-    yield* platform.finalizeWorking({ binding, text: '   ' })
+    yield* platform.workingMessages.begin({ binding, text: 'Thinking...' })
+    yield* platform.workingMessages.finalize({ binding, text: '   ' })
     assert.deepStrictEqual(test.events, ['post:bot-1:-# Thinking...', 'delete:bot-1'])
 
-    yield* platform.beginWorking({ binding, text: 'Thinking...' })
-    yield* platform.discardWorking(binding)
+    yield* platform.workingMessages.begin({ binding, text: 'Thinking...' })
+    yield* platform.workingMessages.discard(binding)
     assert.deepStrictEqual(test.events, [
       'post:bot-1:-# Thinking...',
       'delete:bot-1',

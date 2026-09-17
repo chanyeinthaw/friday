@@ -29,7 +29,7 @@ import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
 import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
-import type { PlatformAdapter, PlatformInput } from './PlatformAdapter.ts'
+import type { PlatformInput, PlatformRegistration } from './PlatformAdapter.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
 const GUILD = '111111111111111111'
@@ -183,7 +183,7 @@ const runIngestion = (
     }),
   )
 
-const makePlatform = (harness: RoutingHarness): PlatformAdapter<never> => ({
+const makePlatform = (harness: RoutingHarness): PlatformRegistration<never> => ({
   connectionId: parentBinding.connectionId,
   kind: 'discord',
   publish: ({ binding, text }) =>
@@ -194,19 +194,18 @@ const makePlatform = (harness: RoutingHarness): PlatformAdapter<never> => ({
     Effect.sync(() =>
       harness.platformEvents.push(`acknowledge:${String(binding.conversationId)}:${messageId}`),
     ),
-  beginWorking: ({ binding, text }) =>
-    Effect.sync(() =>
-      harness.platformEvents.push(`working:${String(binding.conversationId)}:${text}`),
-    ),
-  updateWorking: ({ text }) => Effect.sync(() => harness.platformEvents.push(`update:${text}`)),
-  setAgentActivity: () => Effect.void,
-  searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
-  setConversationTitle: () => Effect.void,
-  discardWorking: () => Effect.void,
-  finalizeWorking: ({ binding, text }) =>
-    Effect.sync(() =>
-      harness.platformEvents.push(`finalize:${String(binding.conversationId)}:${text}`),
-    ),
+  workingMessages: {
+    begin: ({ binding, text }) =>
+      Effect.sync(() =>
+        harness.platformEvents.push(`working:${String(binding.conversationId)}:${text}`),
+      ),
+    update: ({ text }) => Effect.sync(() => harness.platformEvents.push(`update:${text}`)),
+    discard: () => Effect.void,
+    finalize: ({ binding, text }) =>
+      Effect.sync(() =>
+        harness.platformEvents.push(`finalize:${String(binding.conversationId)}:${text}`),
+      ),
+  },
   withTyping: (_binding, effect) => effect,
 })
 
