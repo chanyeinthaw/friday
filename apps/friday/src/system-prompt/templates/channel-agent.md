@@ -109,7 +109,7 @@ Task output is evidence, not automatic acceptance. Check it against the objectiv
 
 Attributed user messages arrive as an Effect Schema JSON envelope with `kind: "user-message"`. The top level contains `participants`, `historicalContext`, an optional `replyTarget`, and exactly one `trigger`.
 
-`participants` maps envelope-local IDs such as `p1` to a platform user ID and nullable native mention, username, and display name. Messages refer to people by `participantId`. The trigger may include `replyTargetParticipantId`. Platform message IDs are optional. Supported image attachments may include an `images` array whose `storageReference` is the URL to inspect. See Platform context for what the current platform supplies. Steering and other unattributed input may arrive as raw text.
+`participants` maps envelope-local IDs such as `p1` to a platform user ID and nullable native mention, username, and display name. Messages refer to people by `participantId`. The trigger may include `replyTargetParticipantId`. Platform message IDs are optional. Supported attachments (images, HTML, Markdown, and plain text) arrive in the legacy-named `images` array whose `storageReference` is the URL to inspect. See Platform context for what the current platform supplies. Steering and other unattributed input may arrive as raw text.
 
 Track each participant's requests, preferences, decisions, and pronouns separately. A new message may come from someone else. Conversation context belongs to the channel, but preferences and authorization belong to the participant who supplied them.
 

@@ -232,7 +232,12 @@ it.effect('injects distinct platform blocks for Slack and Discord bindings', () 
     assert.include(discordPrompt, '## Platform context')
     assert.include(slackPrompt, '## Platform context')
     assert.include(discordPrompt, 'This conversation runs in Discord.')
-    assert.include(discordPrompt, 'Supported image attachments can arrive on inbound messages.')
+    assert.include(
+      discordPrompt,
+      'Supported attachments (images, HTML, Markdown, and plain text) can arrive',
+    )
+    assert.include(discordPrompt, 'legacy-named `images`')
+    assert.notInclude(discordPrompt, 'Supported image attachments')
     assert.include(slackPrompt, 'This conversation runs in Slack.')
     assert.include(slackPrompt, '<@U...>')
     assert.include(slackPrompt, 'You cannot see files or images for now.')
@@ -240,10 +245,21 @@ it.effect('injects distinct platform blocks for Slack and Discord bindings', () 
     assert.notInclude(discordPrompt, 'This conversation runs in Slack.')
     assert.notInclude(slackPrompt, 'This conversation runs in Discord.')
     assert.notInclude(slackPrompt, 'Discord image attachments')
-    assert.notInclude(slackPrompt, 'Supported image attachments can arrive on inbound messages.')
+    assert.notInclude(
+      slackPrompt,
+      'Supported attachments (images, HTML, Markdown, and plain text) can arrive',
+    )
     assert.notInclude(discordPrompt, 'Discord image attachments')
-    assert.include(discordPrompt, 'Supported image attachments may include')
-    assert.include(slackPrompt, 'Supported image attachments may include')
+    assert.notInclude(discordPrompt, 'Supported image attachments may include')
+    assert.notInclude(slackPrompt, 'Supported image attachments may include')
+    assert.include(
+      discordPrompt,
+      'Supported attachments (images, HTML, Markdown, and plain text) arrive in the legacy-named `images` array',
+    )
+    assert.include(
+      slackPrompt,
+      'Supported attachments (images, HTML, Markdown, and plain text) arrive in the legacy-named `images` array',
+    )
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
 

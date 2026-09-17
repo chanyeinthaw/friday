@@ -293,7 +293,7 @@ it('keeps malformed, unavailable, and unsupported Discord attachments non-fatal'
     raw: {
       attachments: [
         { ...image, url: null },
-        { ...image, id: 'attachment-2', filename: 'notes.txt', content_type: 'text/plain' },
+        { ...image, id: 'attachment-2', filename: 'archive.zip', content_type: 'application/zip' },
         { filename: 'broken.png' },
       ],
     },
@@ -310,9 +310,303 @@ it('keeps malformed, unavailable, and unsupported Discord attachments non-fatal'
   assert.strictEqual(
     context.content.text,
     '[Discord attachment unavailable: diagram.png]\n' +
-      '[Discord attachment unsupported: notes.txt (text/plain)]\n' +
+      '[Discord attachment unsupported: archive.zip (application/zip)]\n' +
       '[Discord attachment metadata malformed: unnamed attachment]',
   )
+})
+
+it('projects every supported text extension from raw Discord payloads', () => {
+  const context = projectChatSdkContextMessage('discord', {
+    id: 'discord-message-3',
+    text: 'see files',
+    raw: {
+      attachments: [
+        {
+          id: 'html-1',
+          filename: 'page.html',
+          content_type: 'application/octet-stream',
+          size: 100,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/page.html',
+        },
+        {
+          id: 'htm-1',
+          filename: 'PAGE.HTM',
+          content_type: 'application/octet-stream',
+          size: 110,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/PAGE.HTM',
+        },
+        {
+          id: 'md-1',
+          filename: 'NOTES.MD',
+          content_type: 'application/octet-stream',
+          size: 200,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/NOTES.MD',
+        },
+        {
+          id: 'markdown-1',
+          filename: 'Notes.Markdown',
+          content_type: 'application/octet-stream',
+          size: 210,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/Notes.Markdown',
+        },
+        {
+          id: 'txt-1',
+          filename: 'README.TXT',
+          content_type: 'application/octet-stream',
+          size: 300,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/README.TXT',
+        },
+      ],
+    },
+    author: {
+      userId: 'user-2',
+      userName: 'alice',
+      fullName: 'Alice',
+      isBot: false,
+      isMe: false,
+    },
+  })
+
+  assert.strictEqual(context.content.text, 'see files')
+  assert.deepStrictEqual(context.content.images, [
+    decodeImage({
+      id: 'html-1',
+      name: 'page.html',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 100,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/page.html',
+    }),
+    decodeImage({
+      id: 'htm-1',
+      name: 'PAGE.HTM',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 110,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/PAGE.HTM',
+    }),
+    decodeImage({
+      id: 'md-1',
+      name: 'NOTES.MD',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 200,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/NOTES.MD',
+    }),
+    decodeImage({
+      id: 'markdown-1',
+      name: 'Notes.Markdown',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 210,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/Notes.Markdown',
+    }),
+    decodeImage({
+      id: 'txt-1',
+      name: 'README.TXT',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 300,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/README.TXT',
+    }),
+  ])
+})
+
+it('supports attachments by MIME type regardless of file extension', () => {
+  const context = projectChatSdkContextMessage('discord', {
+    id: 'discord-message-4',
+    text: '',
+    raw: {
+      attachments: [
+        {
+          id: 'mime-1',
+          filename: 'report.bin',
+          content_type: 'Text/HTML; charset=utf-8',
+          size: 100,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/report.bin',
+        },
+        {
+          id: 'mime-2',
+          filename: 'notes.bin',
+          content_type: 'text/markdown',
+          size: 200,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/notes.bin',
+        },
+        {
+          id: 'mime-3',
+          filename: 'readme.bin',
+          content_type: 'text/plain',
+          size: 300,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/readme.bin',
+        },
+      ],
+    },
+    author: {
+      userId: 'user-2',
+      userName: 'alice',
+      fullName: 'Alice',
+      isBot: false,
+      isMe: false,
+    },
+  })
+
+  assert.strictEqual(context.content.text, '')
+  assert.deepStrictEqual(context.content.images, [
+    decodeImage({
+      id: 'mime-1',
+      name: 'report.bin',
+      mediaType: 'Text/HTML; charset=utf-8',
+      sizeBytes: 100,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/report.bin',
+    }),
+    decodeImage({
+      id: 'mime-2',
+      name: 'notes.bin',
+      mediaType: 'text/markdown',
+      sizeBytes: 200,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/notes.bin',
+    }),
+    decodeImage({
+      id: 'mime-3',
+      name: 'readme.bin',
+      mediaType: 'text/plain',
+      sizeBytes: 300,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/readme.bin',
+    }),
+  ])
+})
+
+it('keeps representative unsupported files as notices', () => {
+  const context = projectChatSdkContextMessage('discord', {
+    id: 'discord-message-5',
+    text: 'files',
+    raw: {
+      attachments: [
+        {
+          id: 'pdf-1',
+          filename: 'paper.pdf',
+          content_type: 'application/pdf',
+          size: 400,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/paper.pdf',
+        },
+        {
+          id: 'zip-1',
+          filename: 'archive.zip',
+          content_type: 'application/zip',
+          size: 500,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/archive.zip',
+        },
+        {
+          id: 'mp4-1',
+          filename: 'clip.mp4',
+          content_type: 'video/mp4',
+          size: 600,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/clip.mp4',
+        },
+      ],
+    },
+    author: {
+      userId: 'user-2',
+      userName: 'alice',
+      fullName: 'Alice',
+      isBot: false,
+      isMe: false,
+    },
+  })
+
+  assert.deepStrictEqual(context.content.images, [])
+  assert.strictEqual(
+    context.content.text,
+    'files\n' +
+      '[Discord attachment unsupported: paper.pdf (application/pdf)]\n' +
+      '[Discord attachment unsupported: archive.zip (application/zip)]\n' +
+      '[Discord attachment unsupported: clip.mp4 (video/mp4)]',
+  )
+})
+
+it('projects every supported text extension from history metadata', () => {
+  const context = projectChatSdkContextMessage('discord', {
+    id: 'discord-message-6',
+    text: 'history',
+    author: {
+      userId: 'user-2',
+      userName: 'alice',
+      fullName: 'Alice',
+      isBot: false,
+      isMe: false,
+    },
+    attachments: [
+      {
+        type: 'file',
+        name: 'PAGE.HTML',
+        mimeType: 'application/octet-stream',
+        size: 100,
+        url: 'https://cdn.discordapp.com/attachments/channel/attachment/PAGE.HTML',
+      },
+      {
+        type: 'file',
+        name: 'page.htm',
+        mimeType: 'application/octet-stream',
+        size: 110,
+        url: 'https://cdn.discordapp.com/attachments/channel/attachment/page.htm',
+      },
+      {
+        type: 'file',
+        name: 'notes.md',
+        mimeType: 'application/octet-stream',
+        size: 200,
+        url: 'https://cdn.discordapp.com/attachments/channel/attachment/notes.md',
+      },
+      {
+        type: 'file',
+        name: 'NOTES.MARKDOWN',
+        mimeType: 'application/octet-stream',
+        size: 210,
+        url: 'https://cdn.discordapp.com/attachments/channel/attachment/NOTES.MARKDOWN',
+      },
+      {
+        type: 'file',
+        name: 'readme.txt',
+        mimeType: 'application/octet-stream',
+        size: 300,
+        url: 'https://cdn.discordapp.com/attachments/channel/attachment/readme.txt',
+      },
+    ],
+  })
+
+  assert.strictEqual(context.content.text, 'history')
+  assert.deepStrictEqual(context.content.images, [
+    decodeImage({
+      id: 'attachment-discord-message-6-1',
+      name: 'PAGE.HTML',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 100,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/PAGE.HTML',
+    }),
+    decodeImage({
+      id: 'attachment-discord-message-6-2',
+      name: 'page.htm',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 110,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/page.htm',
+    }),
+    decodeImage({
+      id: 'attachment-discord-message-6-3',
+      name: 'notes.md',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 200,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/notes.md',
+    }),
+    decodeImage({
+      id: 'attachment-discord-message-6-4',
+      name: 'NOTES.MARKDOWN',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 210,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/NOTES.MARKDOWN',
+    }),
+    decodeImage({
+      id: 'attachment-discord-message-6-5',
+      name: 'readme.txt',
+      mediaType: 'application/octet-stream',
+      sizeBytes: 300,
+      storageReference: 'https://cdn.discordapp.com/attachments/channel/attachment/readme.txt',
+    }),
+  ])
 })
 
 it('drops reply context when the raw Discord message type is not 19', () => {

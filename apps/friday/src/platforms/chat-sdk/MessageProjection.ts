@@ -130,6 +130,41 @@ interface AttachmentProjection {
   readonly notices: Array<string>
 }
 
+const SupportedTextMediaTypes: ReadonlySet<string> = new Set([
+  'text/html',
+  'text/markdown',
+  'text/x-markdown',
+  'text/plain',
+])
+
+const normalizedMediaType = (mediaType: string): string => {
+  const [base = ''] = mediaType.toLowerCase().split(';')
+  return base.trim()
+}
+
+// HTML, Markdown, and plain-text attachments are supported wherever images
+// are, matched by file extension or MIME type so raw Discord payloads and
+// Chat SDK history metadata agree.
+const isSupportedAttachment = (
+  name: string | undefined,
+  mediaType: string | null | undefined,
+): boolean => {
+  if (mediaType !== undefined && mediaType !== null) {
+    const normalized = normalizedMediaType(mediaType)
+    if (normalized.startsWith('image/')) return true
+    if (SupportedTextMediaTypes.has(normalized)) return true
+  }
+  const lowerName = name?.trim().toLowerCase()
+  return (
+    lowerName !== undefined &&
+    (lowerName.endsWith('.html') ||
+      lowerName.endsWith('.htm') ||
+      lowerName.endsWith('.md') ||
+      lowerName.endsWith('.markdown') ||
+      lowerName.endsWith('.txt'))
+  )
+}
+
 const attachmentNotice = (
   kind: AttachmentNoticeKind,
   name?: string,
@@ -163,7 +198,7 @@ const projectAttachment = (
   ) {
     return noticeEntry(attachmentNotice('malformed', name))
   }
-  if (!mediaType.toLowerCase().startsWith('image/')) {
+  if (!isSupportedAttachment(name, mediaType)) {
     return noticeEntry(attachmentNotice('unsupported', name, mediaType))
   }
   const storageReference = candidate.storageReference
@@ -210,7 +245,7 @@ const normalizedCandidates = (
   attachments: ReadonlyArray<ChatSdkAttachmentProjectionSource>,
 ): ReadonlyArray<AttachmentEntry> =>
   attachments.map((attachment) =>
-    attachment.type === 'image'
+    attachment.type === 'image' || isSupportedAttachment(attachment.name, attachment.mimeType)
       ? {
           _tag: 'candidate',
           id: '',

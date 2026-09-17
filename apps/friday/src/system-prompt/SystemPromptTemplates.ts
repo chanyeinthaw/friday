@@ -93,7 +93,7 @@ export const renderPlatformContext = (platform: PlatformKind): string => {
       return [
         '- This conversation runs in Discord. It can cover a channel or a native thread.',
         '- Copy a supplied native mention exactly. Never build one from an ID or name.',
-        '- Supported image attachments can arrive on inbound messages. When an `images` entry is present, its `storageReference` is the URL to inspect.',
+        '- Supported attachments (images, HTML, Markdown, and plain text) can arrive on inbound messages in the legacy-named `images` field. When an `images` entry is present, its `storageReference` is the URL to inspect.',
       ].join('\n')
     default:
       return [
