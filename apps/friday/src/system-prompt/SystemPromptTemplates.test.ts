@@ -345,3 +345,59 @@ it.effect('allows explicit external paths while keeping task work inside the wor
     assert.notInclude(prompt, 'Never use `/tmp`')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
+
+it.effect('channels share a capable-teammate personality', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, '## Personality')
+    assert.include(prompt, 'Talk like a capable teammate in an active channel.')
+    assert.include(prompt, 'Lead with the answer.')
+    assert.include(prompt, 'Prefer the simplest solution that works.')
+    assert.include(prompt, 'Ask a direct question when you need a decision.')
+    assert.include(prompt, 'Match the tone of the channel.')
+    assert.include(prompt, 'private document, then share the conclusion and its link.')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('keeps start and progress updates brief without workflow narration', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, 'brief acknowledgement')
+    assert.include(prompt, 'only what the reader needs now')
+    assert.include(prompt, 'Do not list internal steps')
+    assert.include(prompt, 'upcoming routine steps')
+    assert.include(prompt, 'checklist-like status prose')
+    assert.include(prompt, 'Do not narrate routine internal activity')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('routes reusable material to private documents with explicit reader choice', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, 'reports, guides, detailed investigations')
+    assert.include(prompt, 'reusable reference')
+    assert.include(prompt, 'short summary and the link')
+    assert.include(prompt, 'ordinary discussion')
+    assert.include(prompt, 'explicitly asks for chat or a document')
+    assert.include(prompt, 'Tasks cannot publish')
+    assert.include(prompt, 'reuse the same key for updates')
+    assert.include(prompt, 'friday document save')
+    assert.include(prompt, '`get` and `list` never return URLs')
+    assert.include(prompt, 'You own the request from start to finish')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)

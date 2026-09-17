@@ -50,4 +50,29 @@ describe('Friday skills', () => {
     assert.isTrue(userSkills.some((path) => path.endsWith('friday-update')))
     assert.deepStrictEqual(agentSkills, [])
   })
+
+  it.effect('routes reusable material to documents with a short chat summary', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'friday-skills-docs-')))
+      const skillsDirectory = join(root, 'skills')
+      yield* ensureFridaySkills(skillsDirectory).pipe(Effect.provide(NodeFileSystem.layer))
+      const written = yield* FileSystem.FileSystem.pipe(
+        Effect.flatMap((fileSystem) =>
+          fileSystem.readFileString(join(skillsDirectory, 'friday-document', 'SKILL.md')),
+        ),
+        Effect.provide(NodeFileSystem.layer),
+      )
+      assert.include(written, 'reports, guides, detailed investigations')
+      assert.include(written, 'reusable reference')
+      assert.include(written, 'short summary and the link')
+      assert.include(written, 'ordinary discussion')
+      assert.include(written, 'short explanations')
+      assert.include(written, 'small code samples')
+      assert.include(written, 'explicitly asks for chat or a document')
+      assert.include(written, 'reuse the same key for updates')
+      assert.include(written, 'readability')
+      assert.include(written, 'document revoke')
+      assert.include(written, '`get` and `list` never return URLs')
+    }),
+  )
 })

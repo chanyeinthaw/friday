@@ -1,6 +1,6 @@
 ---
 name: friday-update
-description: Update or restart Friday safely in the packaged Supervisor deployment.
+description: Use when updating Friday, restarting its service, or recovering from a failed update.
 ---
 
 # Update Friday
