@@ -1,7 +1,7 @@
 import { assert, it } from '@effect/vitest'
 
 import { FridaySlackAdapter } from './FridaySlackAdapter.ts'
-import { makeMessageDedup } from './SlackLive.ts'
+import { makeMessageDedup } from './SlackConnectionRuntime.ts'
 import { shouldInvokeSlack } from './SlackChannelAccess.ts'
 
 it('fixes the Agent/AI experience over Socket Mode', () => {

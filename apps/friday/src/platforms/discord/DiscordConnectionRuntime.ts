@@ -1,0 +1,344 @@
+import { DiscordInteractionResponseFlag } from '@chat-adapter/discord'
+import { Chat, type SlashCommandEvent } from 'chat'
+import { PlatformConversationId } from '@friday/contracts/conversation'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
+
+import { PlatformIngestion } from '../PlatformIngestion.ts'
+import { PlatformThreadRouter } from '../PlatformThreadRouter.ts'
+import { isAllowedByPolicy } from '../chat-sdk/AccessPolicy.ts'
+import { AppConfig } from '../../config/AppConfigLive.ts'
+import {
+  findDiscordConnection,
+  type AdminConfig,
+  type DiscordPlatformConfig,
+} from '../../config/AppConfig.ts'
+import { reloadApplicationConfig } from '../../config/ConfigReload.ts'
+import { reloadConversationHarness } from '../../conversation/HarnessReload.ts'
+import { ThreadPersistence } from '../../conversation/ThreadPersistence.ts'
+import { ThreadRuntimePool } from '../../conversation/ThreadRuntimePool.ts'
+import { harnessReloadRefused } from '../../conversation/ThreadRuntime.ts'
+import { ChatSdkCallbackError, ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
+import { PlatformRegistry } from '../PlatformRegistry.ts'
+import { admitPlatformMessage } from '../PlatformAdmission.ts'
+import { startChatSdkLifecycle } from '../chat-sdk/ChatSdkLifecycle.ts'
+import { makeChatSdkPlatform } from '../chat-sdk/ChatSdkPlatform.ts'
+import { makeSqliteChatStateAdapter } from '../chat-sdk/SqliteChatStateAdapter.ts'
+import { makeDiscordAgentActivity } from './DiscordAgentActivity.ts'
+import {
+  replyInChannelChannelIds,
+  resolveDiscordChannelPolicy,
+  shouldInvoke,
+  type DiscordConnectionPolicies,
+  type DiscordPolicyProvider,
+} from './DiscordChannelAccess.ts'
+import { registerGlobalDiscordCommands } from './DiscordCommandRegistration.ts'
+import { setDiscordConversationTitle } from './DiscordConversationTitle.ts'
+import { discordCanonicalConversationId } from './DiscordConversationScope.ts'
+import { startDiscordGateway } from './DiscordGateway.ts'
+import { loadDiscordInitialContext, shouldLoadDiscordContext } from './DiscordInitialContext.ts'
+import { projectDiscordMessage } from './DiscordMessageProjection.ts'
+import {
+  FRIDAY_COMMAND_PATHS,
+  decideFridayCommand,
+  decodeFridayInteraction,
+  fridayCommandReply,
+  fridayReloadReply,
+  fridaySubcommand,
+} from './DiscordSlashCommand.ts'
+import {
+  HARNESS_COMMAND_PATHS,
+  decideHarnessCommand,
+  decodeHarnessInteraction,
+  harnessCommandReply,
+  harnessReloadReply,
+  harnessSubcommand,
+} from './DiscordHarnessCommand.ts'
+import { FridayDiscordAdapter, type FridayDiscordAdapterConfig } from './FridayDiscordAdapter.ts'
+import { searchDiscordMessages } from './DiscordMessageSearch.ts'
+import {
+  makeDiscordThreadBootstrap,
+  type DiscordThreadBootstrapOptions,
+} from './DiscordChannelBootstrap.ts'
+import { makeDiscordThreadRoute } from './DiscordThreadRouting.ts'
+
+const decodePlatformConversationId = Schema.decodeOption(PlatformConversationId)
+
+export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRuntime')(function* (
+  discordConfig: DiscordPlatformConfig,
+  admin: AdminConfig,
+) {
+  const platforms = yield* PlatformRegistry
+  const ingestion = yield* PlatformIngestion
+  const threadRouter = yield* PlatformThreadRouter
+  const config = yield* AppConfig
+  const state = yield* makeSqliteChatStateAdapter(`friday:${discordConfig.connectionId}`)
+  // Reloadable policies are read from the in-memory snapshot on every
+  // message; the Discord resources above never observe partial swaps.
+  const policies: DiscordPolicyProvider = () =>
+    Option.map(
+      findDiscordConnection(config.current(), discordConfig.connectionId),
+      (connection): DiscordConnectionPolicies => ({
+        users: connection.users,
+        guilds: connection.guilds,
+      }),
+    )
+  const currentPolicies = (): DiscordConnectionPolicies =>
+    Option.getOrElse(policies(), (): DiscordConnectionPolicies => ({
+      users: { mode: 'deny', ids: [] },
+      guilds: [],
+    }))
+  const resolveChannelPolicy = (guildId: string, channelId: string) =>
+    Option.getOrUndefined(resolveDiscordChannelPolicy(currentPolicies(), guildId, channelId))
+  const discord = yield* Effect.try({
+    try: () =>
+      new FridayDiscordAdapter({
+        botToken: String(discordConfig.credentials.botToken),
+        applicationId: String(discordConfig.credentials.applicationId),
+        publicKey: String(discordConfig.credentials.publicKey),
+        mentionRoleIds: [...discordConfig.mentionRoleIds],
+        respondToGlobalMentions: discordConfig.respondToGlobalMentions,
+        // Friday owns invocation, reply mode, and permission policy
+        // through the snapshot; the adapter drops anything unresolved.
+        resolveChannelPolicy,
+        replyInChannelChannelIds: () => replyInChannelChannelIds(currentPolicies()),
+        // The adapter flattens (or drops) subcommands in the command
+        // path depending on arguments; match every produced path and
+        // make the Friday and harness command replies ephemeral.
+        interactionFlags: (context) =>
+          [...FRIDAY_COMMAND_PATHS, ...HARNESS_COMMAND_PATHS].includes(context.command)
+            ? DiscordInteractionResponseFlag.Ephemeral
+            : undefined,
+      } satisfies FridayDiscordAdapterConfig),
+    catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
+  })
+  const chat = yield* Effect.try({
+    try: () =>
+      new Chat({
+        userName: 'Friday',
+        // SAFETY: Chat SDK 4.38's generic Adapter declaration is not exact-optional
+        // compatible with its concrete DiscordAdapter declaration under this repo's TS settings.
+        adapters: { discord: discord as never },
+        state,
+        concurrency: 'concurrent',
+      }),
+    catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-chat', cause }),
+  })
+  const bootstrapOptions: DiscordThreadBootstrapOptions = {
+    discord,
+    model: () => config.current().models.primary,
+  }
+  const bootstrap = yield* makeDiscordThreadBootstrap(bootstrapOptions)
+  // Adaptive thread routing runs after projection and context
+  // enrichment but before the agent turn. It rebinds top-level
+  // reply-in-channel messages to a new native thread without
+  // re-ingesting through Chat SDK; failures return the parent input.
+  const routeThread = makeDiscordThreadRoute({
+    discord,
+    decide: (decideInput) => threadRouter.decide(decideInput),
+    resolveChannelPolicy,
+  })
+  const botToken = String(discordConfig.credentials.botToken)
+  const activity = yield* makeDiscordAgentActivity(discord)
+  // Reconnects funnel through the same versioned retry pipeline as task
+  // transitions: the adapter only notifies, the shared lifecycle owns
+  // backoff, attempt budget, safe logging, and newer-wins. The captured
+  // runtime lets the gateway callback trigger the Effect resync.
+  const effectContext = yield* Effect.context()
+  const runResync = Effect.runPromiseWith(effectContext)
+  const unsubscribeReconnect = discord.onReconnect(() => {
+    void runResync(activity.resyncPresence())
+  })
+  yield* Effect.addFinalizer(() => Effect.sync(unsubscribeReconnect))
+  const chatSdkPlatform = yield* makeChatSdkPlatform(discordConfig.connectionId, 'discord', chat, {
+    setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
+    setAgentActivity: activity.setAgentActivity,
+    searchMessages: (query) => searchDiscordMessages(discord, query),
+  })
+  yield* platforms.register(chatSdkPlatform)
+  // Harness reload targets the thread bound to the invoking conversation
+  // and its already-open runtime; both lookups are connection-scoped.
+  const persistence = yield* ThreadPersistence
+  const pool = yield* ThreadRuntimePool
+  const runFridayCommand = (event: SlashCommandEvent) =>
+    Effect.gen(function* () {
+      const decision = decideFridayCommand({
+        subcommand: Option.flatMap(decodeFridayInteraction(event.raw), fridaySubcommand),
+        userId: event.user.userId,
+        admin,
+      })
+      if (decision.kind !== 'reload') {
+        yield* respondEphemeral(event, fridayCommandReply(decision))
+        return
+      }
+      const outcome = yield* reloadApplicationConfig(config)
+      yield* respondEphemeral(event, fridayReloadReply(outcome))
+      yield* Effect.logInfo('discord.command.reload').pipe(
+        Effect.annotateLogs({
+          component: 'discord',
+          connectionId: discordConfig.connectionId,
+          userId: event.user.userId,
+        }),
+      )
+    }).pipe(Effect.catchCause((cause) => Effect.logError('Friday slash command failed', cause)))
+  chat.onSlashCommand(FRIDAY_COMMAND_PATHS, (event) =>
+    Effect.runPromise(runFridayCommand(event)).then(() => undefined),
+  )
+  const runHarnessCommand = (event: SlashCommandEvent) =>
+    Effect.gen(function* () {
+      // No authorization guard: /harness reload is intentionally open to
+      // any caller, unlike /friday reload.
+      const decision = decideHarnessCommand({
+        subcommand: Option.flatMap(decodeHarnessInteraction(event.raw), harnessSubcommand),
+      })
+      if (decision.kind !== 'reload') {
+        yield* respondEphemeral(event, harnessCommandReply(decision))
+        return
+      }
+      const canonicalConversationId = yield* Effect.try(() =>
+        discordCanonicalConversationId(discord, event.channel.id),
+      ).pipe(Effect.option)
+      const conversationId = Option.flatMap(canonicalConversationId, decodePlatformConversationId)
+      if (Option.isNone(conversationId)) {
+        yield* respondEphemeral(
+          event,
+          harnessReloadReply(
+            harnessReloadRefused(
+              'unknown-thread',
+              'No Friday thread is bound to this conversation; run the command inside a Friday thread.',
+            ),
+          ),
+        )
+        return
+      }
+      const outcome = yield* reloadConversationHarness({
+        findThread: persistence.findPlatformThread,
+        reloadRuntime: pool.reloadHarness,
+      })({
+        platform: 'discord',
+        connectionId: discordConfig.connectionId,
+        conversationId: conversationId.value,
+      })
+      yield* respondEphemeral(event, harnessReloadReply(outcome))
+      yield* Effect.logInfo('discord.command.harness-reload').pipe(
+        Effect.annotateLogs({
+          component: 'discord',
+          connectionId: discordConfig.connectionId,
+          conversationId: event.channel.id,
+          userId: event.user.userId,
+          outcome: outcome.ok ? 'reloaded' : outcome.reason,
+        }),
+      )
+    }).pipe(Effect.catchCause((cause) => Effect.logError('Harness slash command failed', cause)))
+  chat.onSlashCommand(HARNESS_COMMAND_PATHS, (event) =>
+    Effect.runPromise(runHarnessCommand(event)).then(() => undefined),
+  )
+  // No `shouldHandleMessage` here: the adapter preflight
+  // (`FridayDiscordAdapter`) already drops unknown/disabled guilds and
+  // denied users before upstream thread creation, and the shared
+  // admission below is the authoritative gate after projection. Keeping a
+  // second full invocation check here would duplicate policy, binding,
+  // and logging orchestration that `PlatformAdmission` now owns.
+  yield* startChatSdkLifecycle({
+    connectionId: discordConfig.connectionId,
+    chat,
+    normalizeInboundMessage: (thread, message) =>
+      projectDiscordMessage(discordConfig.connectionId, discord, thread, message),
+    onInboundMessage: (input, kind) =>
+      admitPlatformMessage(
+        input,
+        kind,
+        {
+          platform: 'discord',
+          connectionId: String(discordConfig.connectionId),
+          // Canonical conversation ids encode the parent channel, so
+          // policy resolves from the parent channel while the message
+          // stays in its thread. Decode failures drop instead of
+          // throwing: raw decode failures already fail in projection.
+          resolvePolicy: (canonical) => {
+            try {
+              const location = discord.decodeThreadId(String(canonical.binding.conversationId))
+              if (location.guildId === undefined || location.channelId === undefined) {
+                return undefined
+              }
+              return Option.getOrUndefined(
+                resolveDiscordChannelPolicy(
+                  currentPolicies(),
+                  location.guildId,
+                  location.channelId,
+                ),
+              )
+            } catch {
+              return undefined
+            }
+          },
+          isUserAdmitted: (canonical, policy) =>
+            canonical.message.author !== undefined &&
+            isAllowedByPolicy(String(canonical.message.author.platformUserId), policy.users),
+          shouldInvoke: ({ policy, hasBinding, kind: invocationKind }) =>
+            shouldInvoke({
+              kind: invocationKind,
+              mode: policy.invocationMode,
+              hasBinding,
+            }),
+        },
+        {
+          hasBinding: (canonical) => ingestion.hasBinding(canonical),
+          onAdmit: (admitted) =>
+            ingestion.ingest(
+              admitted,
+              bootstrap,
+              (contextInput, cursor) => {
+                const location = discord.decodeThreadId(String(contextInput.binding.conversationId))
+                const policy = resolveChannelPolicy(location.guildId, location.channelId)
+                return policy !== undefined &&
+                  shouldLoadDiscordContext({
+                    created: cursor.created,
+                    invocationMode: policy.invocationMode,
+                    replyMode: policy.replyMode,
+                  })
+                  ? loadDiscordInitialContext(
+                      discord,
+                      config.current().agent.recentMessageCount,
+                      contextInput,
+                      cursor,
+                    )
+                  : Effect.succeed(contextInput)
+              },
+              routeThread,
+            ),
+        },
+      ),
+  })
+  // Register the application commands before the gateway starts so a
+  // registration failure cannot leave partially started Discord resources.
+  yield* registerGlobalDiscordCommands({
+    botToken,
+    applicationId: String(discordConfig.credentials.applicationId),
+  })
+  yield* startDiscordGateway(discord)
+  yield* Effect.logInfo('discord.started').pipe(
+    Effect.annotateLogs({
+      component: 'discord',
+      connectionId: discordConfig.connectionId,
+      userAccessMode: discordConfig.users.mode,
+      userAccessCount: discordConfig.users.ids.length,
+      guildCount: discordConfig.guilds.length,
+      enabledGuildCount: discordConfig.guilds.filter((guild) => guild.enabled).length,
+    }),
+  )
+  return { connectionId: discordConfig.connectionId, platform: chatSdkPlatform }
+})
+
+const respondEphemeral = (event: SlashCommandEvent, message: string) =>
+  Effect.tryPromise({
+    // The Discord adapter (chat SDK 4.38) implements no postEphemeral, so a
+    // direct postEphemeral call returns null and leaves the deferred interaction
+    // response hanging. Posting through the channel is intercepted by the
+    // adapter's slash-command context and completes the interaction webhook's
+    // original response; the Ephemeral interactionFlags set at deferReply keep
+    // it visible only to the caller.
+    try: () => event.channel.post(message),
+    catch: (cause) => new ChatSdkCallbackError({ operation: 'slash-command', cause }),
+  }).pipe(Effect.asVoid)

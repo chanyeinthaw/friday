@@ -4,11 +4,22 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const liveSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'DiscordConnectionRuntime.ts'),
+  'utf8',
+)
+const startupSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), 'DiscordLive.ts'),
   'utf8',
 )
 
-describe('DiscordLive wiring', () => {
+describe('Discord connection runtime wiring', () => {
+  it('keeps startup focused on dispatching configured connections', () => {
+    expect(startupSource).toContain('makeDiscordConnectionRuntime(connection, startup.admin)')
+    expect(startupSource).not.toContain('new FridayDiscordAdapter')
+    expect(startupSource).not.toContain('startChatSdkLifecycle')
+    expect(liveSource).toContain("Effect.fn('makeDiscordConnectionRuntime')")
+  })
+
   it('completes slash responses through the channel, never postEphemeral', () => {
     // The Discord adapter (chat SDK 4.38) implements no postEphemeral, so a
     // postEphemeral call returns null and leaves the deferred interaction
