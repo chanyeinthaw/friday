@@ -4,11 +4,22 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const liveSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'SlackConnectionRuntime.ts'),
+  'utf8',
+)
+const startupSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), 'SlackLive.ts'),
   'utf8',
 )
 
-describe('SlackLive wiring', () => {
+describe('Slack connection runtime wiring', () => {
+  it('keeps startup focused on dispatching configured connections', () => {
+    expect(startupSource).toContain('Effect.forEach(socketConnections, makeSlackConnectionRuntime')
+    expect(startupSource).not.toContain('new FridaySlackAdapter')
+    expect(startupSource).not.toContain('startChatSdkLifecycle')
+    expect(liveSource).toContain("Effect.fn('makeSlackConnectionRuntime')")
+  })
+
   it('delegates admission to the shared layer instead of a second invocation implementation', () => {
     // The authoritative admission/invocation flow lives in PlatformAdmission:
     // policy resolve, user admission, duplicate check, binding lookup,
