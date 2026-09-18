@@ -238,30 +238,41 @@ describe('document lifecycle', () => {
 })
 
 describe('document HTTP behavior', () => {
-  it.effect('serves valid URLs and returns one identical 404 otherwise', () =>
+  it.effect('serves stored bytes exactly and returns one identical 404 otherwise', () =>
     Effect.gen(function* () {
       const directory = yield* freshDirectory('friday-documents-http-')
       const program = Effect.gen(function* () {
         const documents = yield* Documents
-        const saved = yield* documents.save(decodeKey('report'), 'markdown', '# Report')
-        const ok = yield* serveDocumentRequest('GET', saved.url)
-        assert.strictEqual(ok.status, 200)
-        assert.strictEqual(ok.headers['content-type'], 'text/html; charset=utf-8')
-        assert.strictEqual(ok.headers['cache-control'], 'private, no-store')
-        assert.strictEqual(ok.headers['referrer-policy'], 'no-referrer')
-        assert.strictEqual(ok.headers['x-content-type-options'], 'nosniff')
-        assert.strictEqual(ok.headers['x-robots-tag'], 'noindex, nofollow, noarchive')
-        assert.match(ok.headers['content-security-policy'] ?? '', /script-src 'none'/)
-        assert.include(ok.body, '<h1>Report</h1>')
-        assert.notInclude(ok.body, '<script')
+        const markdownSource = '# Report\n\n<script>alert(1)</script>\n'
+        const markdown = yield* documents.save(decodeKey('report'), 'markdown', markdownSource)
+        const servedMarkdown = yield* serveDocumentRequest('GET', markdown.url)
+        assert.strictEqual(servedMarkdown.status, 200)
+        assert.strictEqual(servedMarkdown.headers['content-type'], 'text/markdown; charset=utf-8')
+        assert.strictEqual(servedMarkdown.body, markdownSource)
 
-        const valid = authOf(saved.url)
+        const htmlSource = '<h1>Hi</h1><script>alert(1)</script>'
+        const html = yield* documents.save(decodeKey('page'), 'html', htmlSource)
+        const servedHtml = yield* serveDocumentRequest('GET', html.url)
+        assert.strictEqual(servedHtml.status, 200)
+        assert.strictEqual(servedHtml.headers['content-type'], 'text/html; charset=utf-8')
+        assert.strictEqual(servedHtml.body, htmlSource)
+
+        for (const response of [servedMarkdown, servedHtml]) {
+          assert.deepStrictEqual(Object.keys(response.headers).toSorted(), ['content-type'])
+          assert.isFalse('cache-control' in response.headers)
+          assert.isFalse('referrer-policy' in response.headers)
+          assert.isFalse('x-content-type-options' in response.headers)
+          assert.isFalse('x-robots-tag' in response.headers)
+          assert.isFalse('content-security-policy' in response.headers)
+        }
+
+        const valid = authOf(markdown.url)
         const failures = yield* Effect.all([
           serveDocumentRequest('GET', 'http://127.0.0.1:4020/files/absent?auth=anything'),
           serveDocumentRequest('GET', `http://127.0.0.1:4020/files/report?auth=${valid}x`),
           serveDocumentRequest('GET', 'http://127.0.0.1:4020/files/report'),
           serveDocumentRequest('GET', 'http://127.0.0.1:4020/files/report?auth='),
-          serveDocumentRequest('POST', saved.url),
+          serveDocumentRequest('POST', markdown.url),
           serveDocumentRequest('GET', 'http://127.0.0.1:4020/files/../evil?auth=x'),
           serveDocumentRequest('GET', 'http://127.0.0.1:4020/index'),
           serveDocumentRequest('GET', 'not a url'),
@@ -270,6 +281,7 @@ describe('document HTTP behavior', () => {
           assert.deepStrictEqual(failure, failures[0])
           assert.strictEqual(failure.status, 404)
           assert.strictEqual(failure.body, 'Not found\n')
+          assert.deepStrictEqual(failure.headers, { 'content-type': 'text/plain; charset=utf-8' })
           assert.notInclude(JSON.stringify(failure), valid)
         }
         return undefined

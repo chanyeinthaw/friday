@@ -5,7 +5,7 @@ description: Use when asked to create a document, or when sharing a long report,
 
 # friday-document
 
-Publish content that would be hard to read, format, or deliver reliably across chat messages as a private document. The reader opens a bare page with the content only.
+Publish content that would be hard to read, format, or deliver reliably across chat messages as a private document. The reader opens the stored content directly: HTML is served as-is and Markdown as its original text.
 
 ## When to publish
 

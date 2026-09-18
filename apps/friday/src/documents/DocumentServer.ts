@@ -1,13 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 
-import {
-  DocumentNotFoundBody,
-  documentNotFoundHeaders,
-  documentResponseHeaders,
-  renderDocumentBody,
-  renderDocumentPage,
-} from './DocumentRendering.ts'
+import type { DocumentFormat } from './Documents.ts'
 import { Documents } from './Documents.ts'
 
 export interface ServedDocumentResponse {
@@ -15,6 +9,27 @@ export interface ServedDocumentResponse {
   readonly headers: Record<string, string>
   readonly body: string
 }
+
+/**
+ * Headers for a directly served document. Stored bytes are returned exactly
+ * as saved with no sanitization, viewer wrapper, or browser content
+ * protections: HTML renders with `text/html`, Markdown is returned as its
+ * original text with `text/markdown`. The format-correct `content-type` is
+ * the only header; no `Content-Security-Policy`, `X-Content-Type-Options`,
+ * `Referrer-Policy`, `X-Robots-Tag`, or `Cache-Control` is sent.
+ */
+export const documentResponseHeaders = (format: DocumentFormat) =>
+  ({
+    'content-type': format === 'html' ? 'text/html; charset=utf-8' : 'text/markdown; charset=utf-8',
+  }) satisfies Record<string, string>
+
+/** Indistinguishable missing/unauthorized response headers: content type only. */
+export const documentNotFoundHeaders = () =>
+  ({
+    'content-type': 'text/plain; charset=utf-8',
+  }) satisfies Record<string, string>
+
+export const DocumentNotFoundBody = 'Not found\n'
 
 const notFound = (): ServedDocumentResponse => ({
   status: 404,
@@ -53,11 +68,10 @@ export const serveDocumentRequest = Effect.fn('DocumentServer.serveRequest')(fun
   if (request === null) return notFound()
   const found = yield* documents.verify(request.key, request.auth)
   if (Option.isNone(found)) return notFound()
-  const body = renderDocumentBody(found.value.content, found.value.metadata.format)
   return {
     status: 200,
-    headers: documentResponseHeaders(),
-    body: renderDocumentPage(body),
+    headers: documentResponseHeaders(found.value.metadata.format),
+    body: found.value.content,
   } satisfies ServedDocumentResponse
 })
 
