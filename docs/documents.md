@@ -39,14 +39,19 @@ Missing documents, missing credentials, and wrong credentials all return the
 same `404` response. Credentials are compared in constant time and never
 logged. The `auth` query value stays out of `list` and `get` output by design.
 
-## Rendering and security headers
+## Rendering and response headers
 
-Markdown is rendered to structural HTML and every document is sanitized:
-scripts, frames, forms, styling, event handlers, and unsafe links are removed.
-Pages are bare content only, with no branding, navigation, or JavaScript, and
-are served with `Cache-Control: private, no-store`, `Referrer-Policy:
-no-referrer`, `X-Content-Type-Options: nosniff`, an `X-Robots-Tag` opting out
-of indexing, and a restrictive content security policy.
+Documents are served exactly as stored, with no sanitization, viewer
+wrapper, or browser content protections: HTML is returned byte-for-byte
+with `Content-Type: text/html; charset=utf-8`, and Markdown is returned as
+its original text with `Content-Type: text/markdown; charset=utf-8`. That
+`Content-Type` is the only response header; responses carry no
+`Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`,
+`X-Robots-Tag`, or `Cache-Control`.
+
+Because stored HTML reaches readers unsanitized and without browser
+restrictions, only publish content meant for the intended reader: anyone
+holding the URL receives the exact stored bytes.
 
 ## Configuration and deployment
 
