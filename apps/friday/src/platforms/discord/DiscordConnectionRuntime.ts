@@ -140,6 +140,7 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
     discord,
     decide: (decideInput) => threadRouter.decide(decideInput),
     resolveChannelPolicy,
+    utility: () => config.current().models.utility,
   })
   const applicationId = String(discordConfig.credentials.applicationId)
   // Ownership gate for automatic naming: only threads Discord reports as

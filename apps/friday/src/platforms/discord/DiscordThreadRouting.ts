@@ -11,6 +11,7 @@ import type {
 } from '../PlatformThreadRouter.ts'
 import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 import { isDiscordThread } from './DiscordConversationScope.ts'
+import { utilityFailureAnnotations, type UtilityModelSnapshot } from '../UtilityModelLogging.ts'
 
 const decodeConversationId = Schema.decodeSync(PlatformConversationId)
 
@@ -36,6 +37,12 @@ export interface DiscordThreadRouteOptions {
     guildId: string,
     channelId: string,
   ) => DiscordResolvedChannelPolicy | undefined
+  /**
+   * Current utility model identity for failure logs. Read on every failure
+   * so configuration reloads apply without a restart; absent means logs
+   * retain domain error detail without utility identity.
+   */
+  readonly utility?: () => UtilityModelSnapshot | undefined
 }
 
 /**
@@ -99,7 +106,7 @@ export const makeDiscordThreadRoute =
               component: 'discord',
               channelId: location.channelId,
               conversationId: String(input.binding.conversationId),
-              cause: String(cause),
+              ...utilityFailureAnnotations(cause, options.utility?.()),
             }),
           ),
         ),
