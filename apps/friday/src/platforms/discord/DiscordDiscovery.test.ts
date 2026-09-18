@@ -12,10 +12,12 @@ import {
 } from '../PlatformAdapter.ts'
 import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 import {
+  canDiscordMemberViewChannel,
   discoverDiscord,
   listDiscordMembers,
   type DiscordDiscoveryAdapter,
   type DiscordDiscoveryPolicy,
+  type DiscordGuildMembersOptions,
   type DiscordThreadMembersOptions,
 } from './DiscordDiscovery.ts'
 
@@ -84,6 +86,17 @@ interface StubMemberRow {
   }
 }
 
+interface StubGuildMember {
+  readonly user: {
+    readonly id: string
+    readonly username: string
+    readonly global_name: string
+    readonly bot: boolean
+  }
+  readonly nick: null
+  readonly roles: ReadonlyArray<string>
+}
+
 interface StubOptions {
   readonly threadMembers?: ReadonlyArray<StubMemberRow>
   readonly threads?: Array<{
@@ -92,6 +105,10 @@ interface StubOptions {
     readonly replyCount?: number
   }>
   readonly threadsCursor?: string | undefined
+  readonly channelRaw?: unknown
+  readonly guildRoles?: ReadonlyArray<unknown>
+  readonly guildMembers?: ReadonlyArray<StubGuildMember>
+  readonly guildMembersError?: unknown
 }
 
 const stubAdapter = (
@@ -101,13 +118,28 @@ const stubAdapter = (
     readonly limit?: number | undefined
     readonly after?: string | undefined
   }>
+  readonly channelCalls: Array<string>
+  readonly roleCalls: Array<string>
+  readonly guildMemberCalls: Array<{
+    readonly limit?: number | undefined
+    readonly after?: string | undefined
+  }>
 } => {
   const memberCalls: Array<{
     readonly limit?: number | undefined
     readonly after?: string | undefined
   }> = []
+  const channelCalls: Array<string> = []
+  const roleCalls: Array<string> = []
+  const guildMemberCalls: Array<{
+    readonly limit?: number | undefined
+    readonly after?: string | undefined
+  }> = []
   return {
     memberCalls,
+    channelCalls,
+    roleCalls,
+    guildMemberCalls,
     decodeThreadId: (id: string): DiscordThreadId => {
       const [, guildId, channelId, threadId] = id.split(':')
       if (guildId === undefined || channelId === undefined) {
@@ -120,12 +152,17 @@ const stubAdapter = (
         ? `discord:${guildId}:${channelId}`
         : `discord:${guildId}:${channelId}:${threadId}`,
     fetchChannelInfo: (channelId: string) => {
+      channelCalls.push(channelId)
       const parts = channelId.split(':')
       const rawId = parts[3] ?? parts[2] ?? ''
       const threadParent = rawId === 'thread-9' ? 'channel-1' : undefined
+      const raw =
+        threadParent !== undefined
+          ? threadRaw(rawId, threadParent)
+          : (options.channelRaw ?? { id: rawId, type: 0, permission_overwrites: [] })
       const info: ChannelInfo = {
         id: channelId,
-        metadata: { raw: threadParent === undefined ? {} : threadRaw(rawId, threadParent) },
+        metadata: { raw },
       }
       const name = channelNameFor(channelId)
       if (name !== undefined) info.name = name
@@ -163,8 +200,61 @@ const stubAdapter = (
           : rows.slice(start, start + fetchOptions.limit),
       )
     },
+    fetchGuildRoles: (guildId: string) => {
+      roleCalls.push(guildId)
+      return Promise.resolve([...(options.guildRoles ?? [])])
+    },
+    fetchGuildMembers: (
+      guildId: string,
+      fetchOptions: { readonly limit?: number; readonly after?: string } = {},
+    ) => {
+      const call: DiscordGuildMembersOptions = {}
+      if (fetchOptions.limit !== undefined) call.limit = fetchOptions.limit
+      if (fetchOptions.after !== undefined) call.after = fetchOptions.after
+      guildMemberCalls.push(call)
+      if (options.guildMembersError !== undefined) {
+        return Promise.reject(options.guildMembersError)
+      }
+      void guildId
+      const rows = [...(options.guildMembers ?? [])]
+      const start =
+        fetchOptions.after === undefined
+          ? 0
+          : rows.findIndex((row) => row.user.id === fetchOptions.after) + 1
+      return Promise.resolve(
+        fetchOptions.limit === undefined
+          ? rows.slice(start)
+          : rows.slice(start, start + fetchOptions.limit),
+      )
+    },
   }
 }
+
+const guildRole = (id: string, permissions: string) => ({ id, permissions })
+
+const guildMember = (
+  userId: string,
+  username: string,
+  roles: ReadonlyArray<string>,
+  bot = false,
+): StubGuildMember => ({
+  user: { id: userId, username, global_name: username, bot },
+  nick: null,
+  roles,
+})
+
+const channelWithOverwrites = (overwrites: ReadonlyArray<unknown>) => ({
+  id: 'channel-1',
+  type: 0,
+  permission_overwrites: [...overwrites],
+})
+
+const overwrite = (id: string, type: 0 | 1, allow: string, deny: string) => ({
+  id,
+  type,
+  allow,
+  deny,
+})
 
 const memberRow = (
   userId: string,
@@ -390,16 +480,230 @@ it.effect('lists thread members with minimal safe fields', () =>
   }),
 )
 
-it.effect('rejects channel member listing with an unsupported-scope error', () =>
+it.effect('lists public channel members who can view via @everyone', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter({
+      channelRaw: channelWithOverwrites([]),
+      guildRoles: [guildRole('guild-1', '1024')],
+      guildMembers: [guildMember('U1', 'alice', []), guildMember('U2', 'bob', [])],
+    })
+    const result = yield* listDiscordMembers(
+      adapter,
+      { binding, target: channelTarget, limit: 20 },
+      policy,
+    )
+
+    assert.deepStrictEqual(
+      result.members.map((member) => member.platformUserId),
+      ['U1', 'U2'],
+    )
+    assert.isFalse(result.truncated)
+    assert.isUndefined(result.nextCursor)
+  }),
+)
+
+it.effect('applies role overwrites for allow and deny', () =>
+  Effect.gen(function* () {
+    const denied = stubAdapter({
+      channelRaw: channelWithOverwrites([overwrite('role-1', 0, '0', '1024')]),
+      guildRoles: [guildRole('guild-1', '1024'), guildRole('role-1', '0')],
+      guildMembers: [guildMember('U1', 'alice', ['role-1']), guildMember('U2', 'bob', [])],
+    })
+    const deniedResult = yield* listDiscordMembers(
+      denied,
+      { binding, target: channelTarget, limit: 20 },
+      policy,
+    )
+    assert.deepStrictEqual(
+      deniedResult.members.map((member) => member.platformUserId),
+      ['U2'],
+    )
+
+    const allowed = stubAdapter({
+      channelRaw: channelWithOverwrites([overwrite('role-1', 0, '1024', '0')]),
+      guildRoles: [guildRole('guild-1', '0'), guildRole('role-1', '0')],
+      guildMembers: [guildMember('U1', 'alice', ['role-1']), guildMember('U2', 'bob', [])],
+    })
+    const allowedResult = yield* listDiscordMembers(
+      allowed,
+      { binding, target: channelTarget, limit: 20 },
+      policy,
+    )
+    assert.deepStrictEqual(
+      allowedResult.members.map((member) => member.platformUserId),
+      ['U1'],
+    )
+  }),
+)
+
+it.effect('gives member overwrites precedence over role overwrites', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter({
+      channelRaw: channelWithOverwrites([
+        overwrite('role-1', 0, '1024', '0'),
+        overwrite('U1', 1, '0', '1024'),
+        overwrite('U3', 1, '1024', '0'),
+      ]),
+      guildRoles: [guildRole('guild-1', '0'), guildRole('role-1', '0'), guildRole('role-2', '0')],
+      guildMembers: [
+        guildMember('U1', 'alice', ['role-1']),
+        guildMember('U2', 'bob', ['role-1']),
+        guildMember('U3', 'cara', ['role-2']),
+      ],
+    })
+    const result = yield* listDiscordMembers(
+      adapter,
+      { binding, target: channelTarget, limit: 20 },
+      policy,
+    )
+
+    assert.deepStrictEqual(
+      result.members.map((member) => member.platformUserId),
+      ['U2', 'U3'],
+    )
+  }),
+)
+
+it.effect('lets administrators view despite deny overwrites', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter({
+      channelRaw: channelWithOverwrites([overwrite('guild-1', 0, '0', '1024')]),
+      guildRoles: [guildRole('guild-1', '0'), guildRole('role-admin', '8')],
+      guildMembers: [guildMember('U1', 'admin', ['role-admin']), guildMember('U2', 'bob', [])],
+    })
+    const result = yield* listDiscordMembers(
+      adapter,
+      { binding, target: channelTarget, limit: 20 },
+      policy,
+    )
+
+    assert.deepStrictEqual(
+      result.members.map((member) => member.platformUserId),
+      ['U1'],
+    )
+    assert.isTrue(
+      canDiscordMemberViewChannel({
+        guildId: 'guild-1',
+        memberId: 'U1',
+        memberRoleIds: ['role-admin'],
+        rolesById: new Map([
+          ['guild-1', 0n],
+          ['role-admin', 8n],
+        ]),
+        overwrites: [{ id: 'guild-1', type: 0, allow: '0', deny: '1024' }],
+      }),
+    )
+  }),
+)
+
+it.effect('paginates channel members with an opaque after cursor', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter({
+      channelRaw: channelWithOverwrites([]),
+      guildRoles: [guildRole('guild-1', '1024')],
+      guildMembers: [
+        guildMember('U1', 'alice', []),
+        guildMember('U2', 'bob', []),
+        guildMember('U3', 'cara', []),
+      ],
+    })
+    const first = yield* listDiscordMembers(
+      adapter,
+      { binding, target: channelTarget, limit: 2 },
+      policy,
+    )
+    assert.deepStrictEqual(
+      first.members.map((member) => member.platformUserId),
+      ['U1', 'U2'],
+    )
+    assert.isTrue(first.truncated)
+    assert.strictEqual(first.nextCursor, 'U2')
+
+    const second = yield* listDiscordMembers(
+      adapter,
+      { binding, target: channelTarget, limit: 2, cursor: first.nextCursor },
+      policy,
+    )
+    assert.deepStrictEqual(
+      second.members.map((member) => member.platformUserId),
+      ['U3'],
+    )
+    assert.isFalse(second.truncated)
+    assert.isUndefined(second.nextCursor)
+  }),
+)
+
+it.effect('returns bots with minimal safe fields only', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter({
+      channelRaw: channelWithOverwrites([]),
+      guildRoles: [guildRole('guild-1', '1024')],
+      guildMembers: [guildMember('U1', 'alice', []), guildMember('B1', 'botty', [], true)],
+    })
+    const result = yield* listDiscordMembers(
+      adapter,
+      { binding, target: channelTarget, limit: 20 },
+      policy,
+    )
+
+    assert.strictEqual(result.members.length, 2)
+    assert.deepStrictEqual(result.members[1], {
+      platformUserId: 'B1',
+      username: 'botty',
+      displayName: 'botty',
+      mention: '<@B1>',
+      isBot: true,
+    })
+    for (const member of result.members) {
+      assert.deepStrictEqual(Object.keys(member).sort(), [
+        'displayName',
+        'isBot',
+        'mention',
+        'platformUserId',
+        'username',
+      ])
+    }
+  }),
+)
+
+it.effect('fails cleanly when guild member enumeration is unavailable', () =>
   Effect.gen(function* () {
     const error = yield* listDiscordMembers(
-      stubAdapter(),
+      stubAdapter({
+        channelRaw: channelWithOverwrites([]),
+        guildRoles: [guildRole('guild-1', '1024')],
+        guildMembersError: new Error('Discord API error: 403 Missing Access'),
+      }),
       { binding, target: channelTarget, limit: 20 },
       policy,
     ).pipe(Effect.flip)
 
     assert(isMembersUnsupported(error))
-    assert.include(error.detail, 'thread target')
+    assert.include(error.detail, 'Server Members')
+  }),
+)
+
+it.effect('makes no adapter call for policy-denied channel targets', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter({
+      channelRaw: channelWithOverwrites([]),
+      guildRoles: [guildRole('guild-1', '1024')],
+      guildMembers: [guildMember('U1', 'alice', [])],
+    })
+    const error = yield* listDiscordMembers(
+      adapter,
+      {
+        binding,
+        target: { platform: 'discord', guildId: 'guild-9', channelId: 'channel-9' },
+        limit: 20,
+      },
+      policy,
+    ).pipe(Effect.flip)
+
+    assert(isTargetNotFound(error))
+    assert.deepStrictEqual(adapter.channelCalls, [])
+    assert.deepStrictEqual(adapter.roleCalls, [])
+    assert.deepStrictEqual(adapter.guildMemberCalls, [])
   }),
 )
 

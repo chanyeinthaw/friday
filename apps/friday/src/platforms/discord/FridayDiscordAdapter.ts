@@ -214,6 +214,39 @@ export class FridayDiscordAdapter extends DiscordAdapter {
   }
 
   /**
+   * List roles of a Discord guild via `GET /guilds/{guild}/roles`.
+   * Callers own policy gating and map access failures to a typed
+   * unsupported scope (missing Server Members intent or API permissions).
+   * Returns raw role rows for Schema decoding upstream.
+   */
+  public async fetchGuildRoles(guildId: string): Promise<ReadonlyArray<unknown>> {
+    const response = await this.discordFetch(`/guilds/${guildId}/roles`, 'GET')
+    const raw: unknown = await response.json()
+    return Array.isArray(raw) ? raw : []
+  }
+
+  /**
+   * List members of a Discord guild via `GET /guilds/{guild}/members`.
+   * Callers own policy gating, ViewChannel filtering, and bounded pagination.
+   * Supports the native `limit` (1-1000) and `after` (user id) pagination;
+   * returns raw member rows for Schema decoding upstream. Requires the
+   * privileged Server Members (GuildMembers) intent and list-members API
+   * permission; failures surface to the caller for typed mapping.
+   */
+  public async fetchGuildMembers(
+    guildId: string,
+    options: { readonly limit?: number; readonly after?: string } = {},
+  ): Promise<ReadonlyArray<unknown>> {
+    const params = new URLSearchParams()
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    if (options.after !== undefined) params.set('after', options.after)
+    const suffix = params.size === 0 ? '' : `?${params.toString()}`
+    const response = await this.discordFetch(`/guilds/${guildId}/members${suffix}`, 'GET')
+    const raw: unknown = await response.json()
+    return Array.isArray(raw) ? raw : []
+  }
+
+  /**
    * Guild gate for application commands (`/friday`, `/harness`): an interaction
    * from an unregistered or disabled guild is dropped before any handler runs,
    * so it can neither invoke configuration operations nor receive a Friday

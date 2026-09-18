@@ -184,11 +184,11 @@ export interface PlatformMembersResult {
 }
 
 /**
- * Honest unsupported scope for member listing. Discord channel targets have
- * no bounded reliable member API (guild member listing is privileged and
- * expensive), so only thread targets are supported there; Slack thread
- * targets inherit their parent channel membership. Unlike not-found, this
- * never hides an admitted target: it names the limitation.
+ * Honest unsupported scope for member listing. Discord channel targets list
+ * guild members who can view the channel and fail with this error only when
+ * guild enumeration is unavailable (missing Server Members intent or API
+ * permissions); Slack thread targets inherit their parent channel membership.
+ * Unlike not-found, this never hides an admitted target: it names the limitation.
  */
 export class PlatformMembersUnsupportedError extends Schema.Error<PlatformMembersUnsupportedError>(
   'PlatformMembersUnsupportedError',
