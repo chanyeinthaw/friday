@@ -5,12 +5,14 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
-import { PlatformMessageNotFoundError } from './PlatformAdapter.ts'
+import { PlatformMessageNotFoundError, PlatformTargetNotFoundError } from './PlatformAdapter.ts'
 import type {
   PlatformAgentActivity,
   PlatformConversationTitle,
   PlatformMessageGetQuery,
   PlatformMessageGetResult,
+  PlatformMessagePostQuery,
+  PlatformMessagePostResult,
   PlatformMessageQuery,
   PlatformMessageSearchResult,
   PlatformMessageTarget,
@@ -37,6 +39,7 @@ const PlatformCapability = Schema.Literals([
   'agent-activity',
   'message-search',
   'message-get',
+  'message-post',
 ])
 export type PlatformCapability = typeof PlatformCapability.Type
 
@@ -50,6 +53,7 @@ export class PlatformCapabilityUnavailableError extends Schema.Error<PlatformCap
 
 const isPlatformOperationError = Schema.is(PlatformOperationError)
 const isMessageNotFound = Schema.is(PlatformMessageNotFoundError)
+const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
 type RegistryError =
   | PlatformNotFoundError
   | PlatformOperationError
@@ -73,10 +77,13 @@ export interface PlatformRegistryContract {
   readonly setAgentActivity: (activity: PlatformAgentActivity) => Effect.Effect<void, RegistryError>
   readonly searchMessages: (
     query: PlatformMessageQuery,
-  ) => Effect.Effect<PlatformMessageSearchResult, RegistryError>
+  ) => Effect.Effect<PlatformMessageSearchResult, RegistryError | PlatformTargetNotFoundError>
   readonly getMessage: (
     query: PlatformMessageGetQuery,
   ) => Effect.Effect<PlatformMessageGetResult, RegistryError | PlatformMessageNotFoundError>
+  readonly postMessage: (
+    query: PlatformMessagePostQuery,
+  ) => Effect.Effect<PlatformMessagePostResult, RegistryError | PlatformTargetNotFoundError>
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -133,11 +140,20 @@ export const PlatformRegistryLive = Layer.effect(
               isMessageNotFound(cause) ? cause : operationError(platform.kind, cause),
             ),
           )
+        // Target admission preserves its generic not-found across the
+        // boundary; it never exposes whether a channel exists.
+        const wrapTarget = <A>(effect: Effect.Effect<A, E | PlatformTargetNotFoundError>) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              isTargetNotFound(cause) ? cause : operationError(platform.kind, cause),
+            ),
+          )
         const workingMessages = platform.workingMessages
         const conversationTitle = platform.conversationTitle
         const agentActivity = platform.agentActivity
         const messageSearch = platform.messageSearch
         const messageGet = platform.messageGet
+        const messagePost = platform.messagePost
         const registered: RegisteredPlatform = {
           connectionId: platform.connectionId,
           kind: platform.kind,
@@ -180,7 +196,14 @@ export const PlatformRegistryLive = Layer.effect(
         if (messageSearch !== undefined) {
           Object.assign(registered, {
             messageSearch: {
-              search: (query: PlatformMessageQuery) => wrap(messageSearch.search(query)),
+              search: (query: PlatformMessageQuery) => wrapTarget(messageSearch.search(query)),
+            },
+          })
+        }
+        if (messagePost !== undefined) {
+          Object.assign(registered, {
+            messagePost: {
+              post: (query: PlatformMessagePostQuery) => wrapTarget(messagePost.post(query)),
             },
           })
         }
@@ -231,6 +254,10 @@ export const PlatformRegistryLive = Layer.effect(
       searchMessages: (query) =>
         invokeCapability(query.binding, 'message-search', (platform) =>
           platform.messageSearch?.search(query),
+        ),
+      postMessage: (query) =>
+        invokeCapability(query.binding, 'message-post', (platform) =>
+          platform.messagePost?.post(query),
         ),
       getMessage: (query) =>
         invokeCapability(query.binding, 'message-get', (platform) =>

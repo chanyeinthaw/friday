@@ -8,6 +8,7 @@ import type {
   PlatformAgentActivityCapability,
   PlatformConversationTitleCapability,
   PlatformMessageGetCapability,
+  PlatformMessagePostCapability,
   PlatformMessageSearchCapability,
   PlatformPublication,
   PlatformAdapter,
@@ -52,6 +53,7 @@ export interface ChatSdkPlatformOptions {
   readonly setAgentActivity?: PlatformAgentActivityCapability<ChatSdkPublicationError>['agentActivity']['set']
   readonly searchMessages?: PlatformMessageSearchCapability<ChatSdkPublicationError>['messageSearch']['search']
   readonly getMessage?: PlatformMessageGetCapability<ChatSdkPublicationError>['messageGet']['get']
+  readonly postMessage?: PlatformMessagePostCapability<ChatSdkPublicationError>['messagePost']['post']
   /** Retained for lifecycle compatibility; durable working messages do not refresh typing. */
   readonly typingRefreshInterval?: unknown
 }
@@ -74,7 +76,8 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
         PlatformConversationTitleCapability<ChatSdkPublicationError> &
           PlatformAgentActivityCapability<ChatSdkPublicationError> &
           PlatformMessageSearchCapability<ChatSdkPublicationError> &
-          PlatformMessageGetCapability<ChatSdkPublicationError>
+          PlatformMessageGetCapability<ChatSdkPublicationError> &
+          PlatformMessagePostCapability<ChatSdkPublicationError>
       >
   > =>
     Effect.sync(() => {
@@ -122,7 +125,8 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
           PlatformConversationTitleCapability<ChatSdkPublicationError> &
             PlatformAgentActivityCapability<ChatSdkPublicationError> &
             PlatformMessageSearchCapability<ChatSdkPublicationError> &
-            PlatformMessageGetCapability<ChatSdkPublicationError>
+            PlatformMessageGetCapability<ChatSdkPublicationError> &
+            PlatformMessagePostCapability<ChatSdkPublicationError>
         > = {
         connectionId,
         kind,
@@ -180,6 +184,9 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
       }
       if (options.getMessage !== undefined) {
         Object.assign(platform, { messageGet: { get: options.getMessage } })
+      }
+      if (options.postMessage !== undefined) {
+        Object.assign(platform, { messagePost: { post: options.postMessage } })
       }
       return platform
     }),

@@ -39,6 +39,7 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
   _tag: Schema.tag('ChatSdkPublicationError'),
   operation: Schema.Literals([
     'publish',
+    'post',
     'acknowledge',
     'begin-working',
     'update-working',

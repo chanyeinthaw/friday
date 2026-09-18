@@ -18,8 +18,6 @@ export interface PlatformInput {
   readonly discordHistorySource?: 'channel' | 'thread'
 }
 
-export type PlatformMessageScope = 'thread' | 'channel'
-
 /** Reads the normalized history source across the renamed field and its Discord alias. */
 export const platformHistorySource = (input: PlatformInput): 'channel' | 'thread' | undefined =>
   input.historySource ?? input.discordHistorySource
@@ -34,9 +32,86 @@ export interface PlatformMessageRecord {
   readonly attachments: ReadonlyArray<ImageAttachment>
 }
 
+const TargetId = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
+
+/**
+ * Explicit Discord query/post target. A `threadId` addresses a thread (with an
+ * optional parent `channelId` hint); otherwise `channelId` addresses a channel.
+ * Guild-scoped only: direct messages have no guild and are never valid targets.
+ */
+const DiscordQueryTargetRaw = Schema.Struct({
+  platform: Schema.Literal('discord'),
+  guildId: TargetId,
+  channelId: Schema.optionalKey(TargetId),
+  threadId: Schema.optionalKey(TargetId),
+})
+type DiscordQueryTargetRaw = typeof DiscordQueryTargetRaw.Type
+
+export const DiscordQueryTarget = DiscordQueryTargetRaw.pipe(
+  Schema.check(
+    Schema.makeFilter((target: DiscordQueryTargetRaw): string | undefined =>
+      target.threadId !== undefined || target.channelId !== undefined
+        ? undefined
+        : 'Discord targets need a channelId, or a threadId with an optional parent channelId.',
+    ),
+  ),
+)
+export type DiscordQueryTarget = typeof DiscordQueryTarget.Type
+
+/** True when the target is a Discord thread target rather than a channel target. */
+export const isDiscordThreadTarget = (
+  target: PlatformQueryTarget,
+): target is DiscordQueryTarget & { readonly threadId: string } =>
+  target.platform === 'discord' && target.threadId !== undefined
+
+/**
+ * Explicit Slack query/post target. A `threadTs` addresses a thread; otherwise
+ * `channelId` addresses the channel root.
+ */
+export const SlackQueryTarget = Schema.Struct({
+  platform: Schema.Literal('slack'),
+  workspaceId: TargetId,
+  channelId: TargetId,
+  threadTs: Schema.optionalKey(TargetId),
+})
+export type SlackQueryTarget = typeof SlackQueryTarget.Type
+
+/** True when the target is a Slack thread target rather than a channel target. */
+export const isSlackThreadTarget = (
+  target: PlatformQueryTarget,
+): target is SlackQueryTarget & { readonly threadTs: string } =>
+  target.platform === 'slack' && target.threadTs !== undefined
+
+/**
+ * Explicit platform target for queries and posts. Targets always resolve
+ * through the current thread's existing platform connection: there is no
+ * `connectionId` input, no cross-connection selection, and the target
+ * platform must match the current connection kind. A single shared shape
+ * keeps query and post validation identical.
+ */
+export const PlatformQueryTarget = Schema.Union([DiscordQueryTarget, SlackQueryTarget])
+export type PlatformQueryTarget = typeof PlatformQueryTarget.Type
+
+/**
+ * Generic not-found for target admission. Unknown, disabled, unadmitted,
+ * inaccessible, and missing search/post targets collapse here so reads and
+ * posts never expose channel existence. Single-message retrieval keeps its
+ * own `PlatformMessageNotFoundError`.
+ */
+export class PlatformTargetNotFoundError extends Schema.Error<PlatformTargetNotFoundError>(
+  'PlatformTargetNotFoundError',
+)({
+  _tag: Schema.tag('PlatformTargetNotFoundError'),
+  kind: Schema.String,
+}) {
+  override get message(): string {
+    return 'Target not found or not accessible.'
+  }
+}
+
 export interface PlatformMessageQuery {
   readonly binding: ConversationBinding
-  readonly scope: PlatformMessageScope
+  readonly target: PlatformQueryTarget
   readonly limit: number
   readonly before?: PlatformMessageId | undefined
   readonly query?: string | undefined
@@ -69,9 +144,23 @@ export class PlatformMessageNotFoundError extends Schema.Error<PlatformMessageNo
 
 export interface PlatformMessageGetQuery {
   readonly binding: ConversationBinding
-  readonly scope: PlatformMessageScope
+  readonly target?: PlatformQueryTarget | undefined
   readonly messageId?: PlatformMessageId | undefined
   readonly messageUrl?: string | undefined
+}
+
+export interface PlatformMessagePostQuery {
+  readonly binding: ConversationBinding
+  readonly target: PlatformQueryTarget
+  readonly text: string
+}
+
+export interface PlatformMessagePostResult {
+  /**
+   * Native platform message id when the transport exposes one. Null means the
+   * post succeeded without an exposed id; ids are never fabricated.
+   */
+  readonly messageId: PlatformMessageId | null
 }
 
 export interface PlatformMessageGetResult {
@@ -143,7 +232,7 @@ export interface PlatformMessageSearchCapability<PlatformError> {
   readonly messageSearch: {
     readonly search: (
       query: PlatformMessageQuery,
-    ) => Effect.Effect<PlatformMessageSearchResult, PlatformError>
+    ) => Effect.Effect<PlatformMessageSearchResult, PlatformError | PlatformTargetNotFoundError>
   }
 }
 
@@ -155,11 +244,20 @@ export interface PlatformMessageGetCapability<PlatformError> {
   }
 }
 
+export interface PlatformMessagePostCapability<PlatformError> {
+  readonly messagePost: {
+    readonly post: (
+      query: PlatformMessagePostQuery,
+    ) => Effect.Effect<PlatformMessagePostResult, PlatformError | PlatformTargetNotFoundError>
+  }
+}
+
 export type PlatformCapabilities<PlatformError> = PlatformWorkingMessageCapability<PlatformError> &
   PlatformConversationTitleCapability<PlatformError> &
   PlatformAgentActivityCapability<PlatformError> &
   PlatformMessageSearchCapability<PlatformError> &
-  PlatformMessageGetCapability<PlatformError>
+  PlatformMessageGetCapability<PlatformError> &
+  PlatformMessagePostCapability<PlatformError>
 
 /** A heterogeneous registry accepts any explicit subset of optional capabilities. */
 export type PlatformRegistration<PlatformError> = PlatformAdapter<PlatformError> &

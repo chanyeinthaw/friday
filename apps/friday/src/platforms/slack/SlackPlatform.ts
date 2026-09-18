@@ -5,6 +5,8 @@ import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 import type {
   PlatformAdapter,
   PlatformConversationTitleCapability,
+  PlatformMessageGetCapability,
+  PlatformMessagePostCapability,
   PlatformMessageSearchCapability,
   PlatformWorkingMessageCapability,
 } from '../PlatformAdapter.ts'
@@ -19,7 +21,12 @@ import {
   toSlackAdapterChannelId,
   toSlackAdapterThreadId,
 } from './SlackConversationScope.ts'
-import { searchSlackMessages } from './SlackMessageSearch.ts'
+import {
+  getSlackMessage,
+  postSlackMessage,
+  searchSlackMessages,
+  type SlackMessageQueryPolicy,
+} from './SlackMessageSearch.ts'
 
 /** Slack message limit with headroom; chunks stay readable and fence-aware. */
 export const SlackMaxMessageLength = 3500
@@ -30,12 +37,14 @@ const publicationError = (operation: ChatSdkPublicationError['operation'], cause
 export interface SlackAgentAdapter extends Pick<
   SlackAdapter,
   | 'postMessage'
+  | 'postChannelMessage'
   | 'editMessage'
   | 'deleteMessage'
   | 'addReaction'
   | 'setAssistantTitle'
   | 'fetchMessages'
   | 'fetchChannelMessages'
+  | 'fetchMessage'
 > {}
 
 const chunksFor = (text: string): ReadonlyArray<string> => splitMessage(text, SlackMaxMessageLength)
@@ -94,11 +103,14 @@ export const makeSlackPlatform = Effect.fn('makeSlackPlatform')(
   (
     connectionId: PlatformConnectionId,
     adapter: SlackAgentAdapter,
+    policy: SlackMessageQueryPolicy,
   ): Effect.Effect<
     PlatformAdapter<ChatSdkPublicationError> &
       PlatformWorkingMessageCapability<ChatSdkPublicationError> &
       PlatformConversationTitleCapability<ChatSdkPublicationError> &
-      PlatformMessageSearchCapability<ChatSdkPublicationError>
+      PlatformMessageSearchCapability<ChatSdkPublicationError> &
+      PlatformMessageGetCapability<ChatSdkPublicationError> &
+      PlatformMessagePostCapability<ChatSdkPublicationError>
   > =>
     Effect.sync(() => {
       const workingLifecycle = makeWorkingMessageLifecycle<
@@ -161,7 +173,9 @@ export const makeSlackPlatform = Effect.fn('makeSlackPlatform')(
               )
             }),
         },
-        messageSearch: { search: (query) => searchSlackMessages(adapter, query) },
+        messageSearch: { search: (query) => searchSlackMessages(adapter, query, policy) },
+        messageGet: { get: (query) => getSlackMessage(adapter, query, policy) },
+        messagePost: { post: (query) => postSlackMessage(adapter, query, policy) },
         withTyping: (_binding, effect) => effect,
       }
     }),
