@@ -135,6 +135,23 @@ const makeFakeAdapter = () => {
         channelHistory.push(messageWithId(id, channelId, text))
         return { id, threadId: channelId, raw: {} }
       }),
+    // Discovery and member stubs: channel names echo the raw channel id and
+    // membership is empty unless a test overrides the webClient.
+    fetchChannelInfo: (channelId: string) =>
+      Promise.resolve({
+        id: channelId,
+        name: channelId.split(':')[1] ?? channelId,
+        metadata: {},
+      }),
+    listThreads: () => Promise.resolve({ threads: [] }),
+    webClient: {
+      conversations: {
+        members: () => Promise.resolve({ members: [], response_metadata: {} }),
+      },
+      users: {
+        info: () => Promise.resolve({}),
+      },
+    },
   }
   const overtakeChannel = (id: string): void => {
     channelHistory.push(messageWithId(id, 'slack:C456:'))

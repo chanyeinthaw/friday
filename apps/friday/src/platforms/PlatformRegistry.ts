@@ -5,10 +5,18 @@ import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
-import { PlatformMessageNotFoundError, PlatformTargetNotFoundError } from './PlatformAdapter.ts'
+import {
+  PlatformMembersUnsupportedError,
+  PlatformMessageNotFoundError,
+  PlatformTargetNotFoundError,
+} from './PlatformAdapter.ts'
 import type {
   PlatformAgentActivity,
   PlatformConversationTitle,
+  PlatformDiscoveryQuery,
+  PlatformDiscoveryResult,
+  PlatformMembersQuery,
+  PlatformMembersResult,
   PlatformMessageGetQuery,
   PlatformMessageGetResult,
   PlatformMessagePostQuery,
@@ -40,6 +48,8 @@ const PlatformCapability = Schema.Literals([
   'message-search',
   'message-get',
   'message-post',
+  'message-members',
+  'platform-discovery',
 ])
 export type PlatformCapability = typeof PlatformCapability.Type
 
@@ -54,6 +64,7 @@ export class PlatformCapabilityUnavailableError extends Schema.Error<PlatformCap
 const isPlatformOperationError = Schema.is(PlatformOperationError)
 const isMessageNotFound = Schema.is(PlatformMessageNotFoundError)
 const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
+const isMembersUnsupported = Schema.is(PlatformMembersUnsupportedError)
 type RegistryError =
   | PlatformNotFoundError
   | PlatformOperationError
@@ -84,6 +95,18 @@ export interface PlatformRegistryContract {
   readonly postMessage: (
     query: PlatformMessagePostQuery,
   ) => Effect.Effect<PlatformMessagePostResult, RegistryError | PlatformTargetNotFoundError>
+  readonly listMembers: (
+    query: PlatformMembersQuery,
+  ) => Effect.Effect<
+    PlatformMembersResult,
+    RegistryError | PlatformTargetNotFoundError | PlatformMembersUnsupportedError
+  >
+  readonly discoverPlatforms: (
+    query: PlatformDiscoveryQuery,
+  ) => Effect.Effect<
+    PlatformDiscoveryResult,
+    RegistryError | PlatformTargetNotFoundError | PlatformMembersUnsupportedError
+  >
   readonly withTyping: <A, E, R>(
     binding: ConversationBinding,
     effect: Effect.Effect<A, E, R>,
@@ -141,11 +164,25 @@ export const PlatformRegistryLive = Layer.effect(
             ),
           )
         // Target admission preserves its generic not-found across the
-        // boundary; it never exposes whether a channel exists.
+        // boundary; it never exposes whether a channel exists. Honest
+        // unsupported-scope failures preserve their typed detail the same way.
         const wrapTarget = <A>(effect: Effect.Effect<A, E | PlatformTargetNotFoundError>) =>
           effect.pipe(
             Effect.mapError((cause) =>
               isTargetNotFound(cause) ? cause : operationError(platform.kind, cause),
+            ),
+          )
+        const wrapScoped = <A>(
+          effect: Effect.Effect<
+            A,
+            E | PlatformTargetNotFoundError | PlatformMembersUnsupportedError
+          >,
+        ) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              isTargetNotFound(cause) || isMembersUnsupported(cause)
+                ? cause
+                : operationError(platform.kind, cause),
             ),
           )
         const workingMessages = platform.workingMessages
@@ -154,6 +191,8 @@ export const PlatformRegistryLive = Layer.effect(
         const messageSearch = platform.messageSearch
         const messageGet = platform.messageGet
         const messagePost = platform.messagePost
+        const members = platform.members
+        const discovery = platform.discovery
         const registered: RegisteredPlatform = {
           connectionId: platform.connectionId,
           kind: platform.kind,
@@ -214,6 +253,20 @@ export const PlatformRegistryLive = Layer.effect(
             },
           })
         }
+        if (members !== undefined) {
+          Object.assign(registered, {
+            members: {
+              list: (query: PlatformMembersQuery) => wrapScoped(members.list(query)),
+            },
+          })
+        }
+        if (discovery !== undefined) {
+          Object.assign(registered, {
+            discovery: {
+              discover: (query: PlatformDiscoveryQuery) => wrapScoped(discovery.discover(query)),
+            },
+          })
+        }
         return Effect.acquireRelease(
           Effect.sync(() => void platforms.set(platform.connectionId, registered)),
           () =>
@@ -258,6 +311,14 @@ export const PlatformRegistryLive = Layer.effect(
       postMessage: (query) =>
         invokeCapability(query.binding, 'message-post', (platform) =>
           platform.messagePost?.post(query),
+        ),
+      listMembers: (query) =>
+        invokeCapability(query.binding, 'message-members', (platform) =>
+          platform.members?.list(query),
+        ),
+      discoverPlatforms: (query) =>
+        invokeCapability(query.binding, 'platform-discovery', (platform) =>
+          platform.discovery?.discover(query),
         ),
       getMessage: (query) =>
         invokeCapability(query.binding, 'message-get', (platform) =>

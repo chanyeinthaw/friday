@@ -6,6 +6,7 @@ import type {
   PlatformMessageId,
 } from '@friday/contracts/conversation'
 import type * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 export interface PlatformInput {
@@ -21,6 +22,31 @@ export interface PlatformInput {
 /** Reads the normalized history source across the renamed field and its Discord alias. */
 export const platformHistorySource = (input: PlatformInput): 'channel' | 'thread' | undefined =>
   input.historySource ?? input.discordHistorySource
+
+/**
+ * Decodes an offset pagination cursor for policy-snapshot discovery listings.
+ * Absent cursors start at zero; Some(offset) is the validated start index and
+ * None means the cursor is malformed and the caller must fail closed.
+ */
+export const decodeDiscoveryOffset = (cursor: string | undefined): Option.Option<number> => {
+  if (cursor === undefined || cursor.trim() === '') return Option.some(0)
+  const offset = Number(cursor.trim())
+  return Number.isInteger(offset) && offset >= 0 ? Option.some(offset) : Option.none()
+}
+
+/**
+ * Case-insensitive substring match for discovery search filters. An absent or
+ * blank needle matches everything; otherwise at least one defined haystack
+ * must contain it.
+ */
+export const matchesDiscoveryQuery = (
+  haystacks: ReadonlyArray<string | undefined>,
+  needle: string | undefined,
+): boolean => {
+  if (needle === undefined || needle.trim() === '') return true
+  const lowered = needle.trim().toLocaleLowerCase()
+  return haystacks.some((haystack) => haystack?.toLocaleLowerCase().includes(lowered) === true)
+}
 
 export interface PlatformMessageRecord {
   readonly id: PlatformMessageId
@@ -128,6 +154,134 @@ export interface PlatformMessageTarget {
   readonly binding: ConversationBinding
   readonly messageId: PlatformMessageId
 }
+
+/**
+ * One channel or thread member with only the fields the model needs to
+ * identify participants. Usernames and display names are untrusted and
+ * changeable; the canonical `platformUserId` is the stable identity. Emails,
+ * profile metadata beyond names, roles, permissions, and presence are never
+ * exposed here.
+ */
+export interface PlatformMember {
+  readonly platformUserId: string
+  readonly username: string
+  readonly displayName: string
+  readonly mention: string
+  readonly isBot: boolean | 'unknown'
+}
+
+export interface PlatformMembersQuery {
+  readonly binding: ConversationBinding
+  readonly target: PlatformQueryTarget
+  readonly limit: number
+  readonly cursor?: string | undefined
+}
+
+export interface PlatformMembersResult {
+  readonly members: ReadonlyArray<PlatformMember>
+  readonly nextCursor?: string | undefined
+  readonly truncated: boolean
+}
+
+/**
+ * Honest unsupported scope for member listing. Discord channel targets have
+ * no bounded reliable member API (guild member listing is privileged and
+ * expensive), so only thread targets are supported there; Slack thread
+ * targets inherit their parent channel membership. Unlike not-found, this
+ * never hides an admitted target: it names the limitation.
+ */
+export class PlatformMembersUnsupportedError extends Schema.Error<PlatformMembersUnsupportedError>(
+  'PlatformMembersUnsupportedError',
+)({
+  _tag: Schema.tag('PlatformMembersUnsupportedError'),
+  kind: Schema.String,
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return this.detail
+  }
+}
+
+/** Discovery actions for the read-only `discover_platforms` tool. */
+export type PlatformDiscoveryAction = 'current' | 'scopes' | 'channels' | 'threads'
+
+export interface PlatformDiscoveryQuery {
+  readonly binding: ConversationBinding
+  readonly action: PlatformDiscoveryAction
+  /** Discord-only guild filter for the `channels` action. Omit for all admitted guilds. */
+  readonly guildId?: string | undefined
+  /** Explicit parent channel target for the `threads` action. Must be a channel, not a thread. */
+  readonly channelTarget?: PlatformQueryTarget | undefined
+  /** Optional case-insensitive substring filter over names and IDs. */
+  readonly query?: string | undefined
+  readonly limit: number
+  /** Opaque pagination cursor: offset string for scopes/channels, adapter cursor for threads. */
+  readonly cursor?: string | undefined
+}
+
+export interface PlatformDiscoveryCurrentTarget {
+  readonly target: PlatformQueryTarget
+  readonly targetType: 'channel' | 'thread'
+  readonly name?: string | undefined
+  readonly isDirectMessage: boolean
+}
+
+export interface PlatformDiscoveryScope {
+  readonly kind: 'guild' | 'workspace'
+  readonly id: string
+  readonly isCurrent: boolean
+}
+
+export interface PlatformDiscoveryChannel {
+  readonly target: PlatformQueryTarget
+  readonly name?: string | undefined
+  readonly isCurrent: boolean
+  readonly isDirectMessage: boolean
+}
+
+export interface PlatformDiscoveryThread {
+  readonly target: PlatformQueryTarget
+  readonly name?: string | undefined
+  readonly rootSnippet?: string | undefined
+  readonly replyCount?: number | undefined
+  readonly isCurrent: boolean
+}
+
+export type PlatformDiscoveryResult =
+  | {
+      readonly action: 'current'
+      readonly platform: ConversationBinding['platform']
+      readonly connectionId: ConversationBinding['connectionId']
+      readonly workspaceId?: string | undefined
+      readonly current: PlatformDiscoveryCurrentTarget
+    }
+  | {
+      readonly action: 'scopes'
+      readonly platform: ConversationBinding['platform']
+      readonly connectionId: ConversationBinding['connectionId']
+      readonly workspaceId?: string | undefined
+      readonly scopes: ReadonlyArray<PlatformDiscoveryScope>
+      readonly nextCursor?: string | undefined
+      readonly truncated: boolean
+    }
+  | {
+      readonly action: 'channels'
+      readonly platform: ConversationBinding['platform']
+      readonly connectionId: ConversationBinding['connectionId']
+      readonly workspaceId?: string | undefined
+      readonly channels: ReadonlyArray<PlatformDiscoveryChannel>
+      readonly nextCursor?: string | undefined
+      readonly truncated: boolean
+    }
+  | {
+      readonly action: 'threads'
+      readonly platform: ConversationBinding['platform']
+      readonly connectionId: ConversationBinding['connectionId']
+      readonly workspaceId?: string | undefined
+      readonly threads: ReadonlyArray<PlatformDiscoveryThread>
+      readonly nextCursor?: string | undefined
+      readonly truncated: boolean
+    }
 
 /** Generic not-found for single-message retrieval. Inaccessible and missing targets collapse here. */
 export class PlatformMessageNotFoundError extends Schema.Error<PlatformMessageNotFoundError>(
@@ -252,12 +406,36 @@ export interface PlatformMessagePostCapability<PlatformError> {
   }
 }
 
+export interface PlatformMembersCapability<PlatformError> {
+  readonly members: {
+    readonly list: (
+      query: PlatformMembersQuery,
+    ) => Effect.Effect<
+      PlatformMembersResult,
+      PlatformError | PlatformTargetNotFoundError | PlatformMembersUnsupportedError
+    >
+  }
+}
+
+export interface PlatformDiscoveryCapability<PlatformError> {
+  readonly discovery: {
+    readonly discover: (
+      query: PlatformDiscoveryQuery,
+    ) => Effect.Effect<
+      PlatformDiscoveryResult,
+      PlatformError | PlatformTargetNotFoundError | PlatformMembersUnsupportedError
+    >
+  }
+}
+
 export type PlatformCapabilities<PlatformError> = PlatformWorkingMessageCapability<PlatformError> &
   PlatformConversationTitleCapability<PlatformError> &
   PlatformAgentActivityCapability<PlatformError> &
   PlatformMessageSearchCapability<PlatformError> &
   PlatformMessageGetCapability<PlatformError> &
-  PlatformMessagePostCapability<PlatformError>
+  PlatformMessagePostCapability<PlatformError> &
+  PlatformMembersCapability<PlatformError> &
+  PlatformDiscoveryCapability<PlatformError>
 
 /** A heterogeneous registry accepts any explicit subset of optional capabilities. */
 export type PlatformRegistration<PlatformError> = PlatformAdapter<PlatformError> &

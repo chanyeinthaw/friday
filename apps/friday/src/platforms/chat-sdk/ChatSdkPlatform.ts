@@ -7,6 +7,8 @@ import * as Effect from 'effect/Effect'
 import type {
   PlatformAgentActivityCapability,
   PlatformConversationTitleCapability,
+  PlatformDiscoveryCapability,
+  PlatformMembersCapability,
   PlatformMessageGetCapability,
   PlatformMessagePostCapability,
   PlatformMessageSearchCapability,
@@ -54,6 +56,8 @@ export interface ChatSdkPlatformOptions {
   readonly searchMessages?: PlatformMessageSearchCapability<ChatSdkPublicationError>['messageSearch']['search']
   readonly getMessage?: PlatformMessageGetCapability<ChatSdkPublicationError>['messageGet']['get']
   readonly postMessage?: PlatformMessagePostCapability<ChatSdkPublicationError>['messagePost']['post']
+  readonly listMembers?: PlatformMembersCapability<ChatSdkPublicationError>['members']['list']
+  readonly discoverPlatforms?: PlatformDiscoveryCapability<ChatSdkPublicationError>['discovery']['discover']
   /** Retained for lifecycle compatibility; durable working messages do not refresh typing. */
   readonly typingRefreshInterval?: unknown
 }
@@ -77,7 +81,9 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
           PlatformAgentActivityCapability<ChatSdkPublicationError> &
           PlatformMessageSearchCapability<ChatSdkPublicationError> &
           PlatformMessageGetCapability<ChatSdkPublicationError> &
-          PlatformMessagePostCapability<ChatSdkPublicationError>
+          PlatformMessagePostCapability<ChatSdkPublicationError> &
+          PlatformMembersCapability<ChatSdkPublicationError> &
+          PlatformDiscoveryCapability<ChatSdkPublicationError>
       >
   > =>
     Effect.sync(() => {
@@ -126,7 +132,9 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
             PlatformAgentActivityCapability<ChatSdkPublicationError> &
             PlatformMessageSearchCapability<ChatSdkPublicationError> &
             PlatformMessageGetCapability<ChatSdkPublicationError> &
-            PlatformMessagePostCapability<ChatSdkPublicationError>
+            PlatformMessagePostCapability<ChatSdkPublicationError> &
+            PlatformMembersCapability<ChatSdkPublicationError> &
+            PlatformDiscoveryCapability<ChatSdkPublicationError>
         > = {
         connectionId,
         kind,
@@ -187,6 +195,12 @@ export const makeChatSdkPlatform = Effect.fn('makeChatSdkPlatform')(
       }
       if (options.postMessage !== undefined) {
         Object.assign(platform, { messagePost: { post: options.postMessage } })
+      }
+      if (options.listMembers !== undefined) {
+        Object.assign(platform, { members: { list: options.listMembers } })
+      }
+      if (options.discoverPlatforms !== undefined) {
+        Object.assign(platform, { discovery: { discover: options.discoverPlatforms } })
       }
       return platform
     }),

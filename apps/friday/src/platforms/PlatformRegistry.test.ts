@@ -9,11 +9,17 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import type {
+  PlatformDiscoveryQuery,
+  PlatformMembersQuery,
   PlatformMessageGetQuery,
   PlatformMessagePostQuery,
   PlatformRegistration,
 } from './PlatformAdapter.ts'
-import { PlatformMessageNotFoundError, PlatformTargetNotFoundError } from './PlatformAdapter.ts'
+import {
+  PlatformMembersUnsupportedError,
+  PlatformMessageNotFoundError,
+  PlatformTargetNotFoundError,
+} from './PlatformAdapter.ts'
 import {
   PlatformCapabilityUnavailableError,
   PlatformRegistry,
@@ -221,3 +227,64 @@ const postQuery = (text: string): PlatformMessagePostQuery => ({
   target: { platform: 'discord', guildId: 'guild-1', channelId: 'channel-1' },
   text,
 })
+
+const membersQuery = (): PlatformMembersQuery => ({
+  binding: discordBinding,
+  target: { platform: 'discord', guildId: 'guild-1', channelId: 'channel-1', threadId: 'thread-1' },
+  limit: 20,
+})
+
+const discoveryQuery = (): PlatformDiscoveryQuery => ({
+  binding: discordBinding,
+  action: 'scopes',
+  limit: 20,
+})
+
+it.effect('reports member listing and discovery as unavailable without the capability', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry.pipe(Effect.provide(PlatformRegistryLive))
+      yield* platforms.register(makePlatform('discord', []))
+
+      const membersError = yield* platforms.listMembers(membersQuery()).pipe(Effect.flip)
+      assert(isCapabilityUnavailable(membersError))
+      assert.strictEqual(membersError.capability, 'message-members')
+
+      const discoveryError = yield* platforms.discoverPlatforms(discoveryQuery()).pipe(Effect.flip)
+      assert(isCapabilityUnavailable(discoveryError))
+      assert.strictEqual(discoveryError.capability, 'platform-discovery')
+    }),
+  ),
+)
+
+it.effect('preserves scoped not-found and unsupported failures across the boundary', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry.pipe(Effect.provide(PlatformRegistryLive))
+      yield* platforms.register({
+        ...makePlatform('discord', []),
+        members: {
+          list: () => Effect.fail(new PlatformTargetNotFoundError({ kind: 'discord' })),
+        },
+        discovery: {
+          discover: () =>
+            Effect.fail(
+              new PlatformMembersUnsupportedError({
+                kind: 'discord',
+                detail: 'thread targets only',
+              }),
+            ),
+        },
+      })
+      const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
+      const isMembersUnsupported = Schema.is(PlatformMembersUnsupportedError)
+
+      const membersError = yield* platforms.listMembers(membersQuery()).pipe(Effect.flip)
+      assert(isTargetNotFound(membersError))
+
+      const discoveryError = yield* platforms.discoverPlatforms(discoveryQuery()).pipe(Effect.flip)
+      assert(isMembersUnsupported(discoveryError))
+      assert.strictEqual(discoveryError.detail, 'thread targets only')
+    }),
+  ),
+)

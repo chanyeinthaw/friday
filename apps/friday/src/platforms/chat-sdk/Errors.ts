@@ -47,6 +47,8 @@ export class ChatSdkPublicationError extends Schema.Error<ChatSdkPublicationErro
     'discard-working',
     'set-conversation-title',
     'set-agent-activity',
+    'discover',
+    'list-members',
   ]),
   cause: Schema.Defect(),
 }) {
