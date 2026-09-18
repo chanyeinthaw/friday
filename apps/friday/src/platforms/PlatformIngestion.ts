@@ -14,6 +14,7 @@ import { ChannelTurns, type ChannelTurnError } from '../conversation/ChannelTurn
 import { AppConfig } from '../config/AppConfigLive.ts'
 import { TextGeneration } from '../harness/TextGeneration.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
+import { utilityFailureAnnotations } from './UtilityModelLogging.ts'
 import {
   ThreadPersistence,
   type ThreadPersistenceError,
@@ -185,7 +186,10 @@ export const PlatformIngestionLive = Layer.effect(
         Effect.matchEffect({
           onFailure: (cause) =>
             Effect.logWarning('conversation.title.failed').pipe(
-              Effect.annotateLogs({ threadId: thread.id, cause: String(cause) }),
+              Effect.annotateLogs({
+                threadId: thread.id,
+                ...utilityFailureAnnotations(cause, currentModels.utility),
+              }),
             ),
           onSuccess: () => Effect.void,
         }),
