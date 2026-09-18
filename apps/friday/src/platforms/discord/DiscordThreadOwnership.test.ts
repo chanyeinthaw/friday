@@ -45,6 +45,9 @@ const channelBinding = () =>
 const threadLocation = { guildId: GUILD, channelId: CHANNEL, threadId: THREAD }
 const channelLocation = { guildId: GUILD, channelId: CHANNEL, threadId: CHANNEL }
 
+const THREAD_CHANNEL_ID = `discord:${GUILD}:${THREAD}`
+const THREAD_CONVERSATION_ID = `discord:${GUILD}:${CHANNEL}:${THREAD}`
+
 const discordStub = (raw: unknown) => ({
   decodeThreadId: () => threadLocation,
   fetchChannelInfo: (_conversationId: string) =>
@@ -58,30 +61,93 @@ const discordStub = (raw: unknown) => ({
 
 it.effect('titles a Discord thread owned by Friday', () =>
   Effect.gen(function* () {
+    let fetchedId: string | undefined
+    const discord = {
+      decodeThreadId: () => threadLocation,
+      fetchChannelInfo: (channelId: string) => {
+        fetchedId = channelId
+        return Promise.resolve({
+          id: channelId,
+          name: 'thread',
+          isDM: false,
+          metadata: { raw: { id: THREAD, parent_id: CHANNEL, type: 11, owner_id: APPLICATION_ID } },
+        })
+      },
+    }
     const should = yield* shouldTitleDiscordThread(
       // SAFETY: the ownership check only reads decodeThreadId and
       // fetchChannelInfo; the wider DiscordAdapter surface is never touched.
-      discordStub({ id: THREAD, parent_id: CHANNEL, type: 11, owner_id: APPLICATION_ID }) as never,
+      discord as never,
       APPLICATION_ID,
       inputFor(threadBinding()),
     )
+    assert.strictEqual(fetchedId, THREAD_CHANNEL_ID)
+    assert.strictEqual(should, true)
+  }),
+)
+
+it.effect('reads ownership from the thread when the parent has no owner', () =>
+  Effect.gen(function* () {
+    let fetchedId: string | undefined
+    const discord = {
+      decodeThreadId: () => threadLocation,
+      fetchChannelInfo: (channelId: string) => {
+        fetchedId = channelId
+        const raw =
+          channelId === THREAD_CHANNEL_ID
+            ? { id: THREAD, parent_id: CHANNEL, type: 11, owner_id: APPLICATION_ID }
+            : { id: CHANNEL, type: 0 }
+        return Promise.resolve({
+          id: channelId,
+          name: 'thread',
+          isDM: false,
+          metadata: { raw },
+        })
+      },
+    }
+    const should = yield* shouldTitleDiscordThread(
+      // SAFETY: same narrow adapter surface as above.
+      discord as never,
+      APPLICATION_ID,
+      inputFor(threadBinding()),
+    )
+    // A four-part conversation id would fetch the parent channel, which
+    // has no owner; the thread-scoped three-part id returns Friday as owner.
+    assert.strictEqual(fetchedId, THREAD_CHANNEL_ID)
+    assert.notStrictEqual(fetchedId, THREAD_CONVERSATION_ID)
     assert.strictEqual(should, true)
   }),
 )
 
 it.effect('skips a Discord thread owned by another user', () =>
   Effect.gen(function* () {
+    let fetchedId: string | undefined
+    const discord = {
+      decodeThreadId: () => threadLocation,
+      fetchChannelInfo: (channelId: string) => {
+        fetchedId = channelId
+        return Promise.resolve({
+          id: channelId,
+          name: 'thread',
+          isDM: false,
+          metadata: {
+            raw: {
+              id: THREAD,
+              parent_id: CHANNEL,
+              type: 11,
+              owner_id: '111111111111111111',
+            },
+          },
+        })
+      },
+    }
     const should = yield* shouldTitleDiscordThread(
       // SAFETY: same narrow adapter surface as above.
-      discordStub({
-        id: THREAD,
-        parent_id: CHANNEL,
-        type: 11,
-        owner_id: '111111111111111111',
-      }) as never,
+      discord as never,
       APPLICATION_ID,
       inputFor(threadBinding()),
     )
+    assert.strictEqual(fetchedId, THREAD_CHANNEL_ID)
     assert.strictEqual(should, false)
   }),
 )

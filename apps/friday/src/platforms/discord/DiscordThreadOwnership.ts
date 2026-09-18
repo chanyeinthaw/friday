@@ -33,8 +33,15 @@ export const shouldTitleDiscordThread = Effect.fn('DiscordThreadOwnership.should
   }).pipe(Effect.orElseSucceed(() => null))
   if (location === null) return false
   if (!isDiscordThread(location)) return false
+  const guildId = location.guildId
+  const threadId = location.threadId
+  if (guildId === undefined || threadId === undefined) return false
+  // fetchChannelInfo routes on the third colon-separated segment, so a
+  // four-part conversation id would fetch the parent channel. Query the
+  // thread-scoped three-part id to read the thread's owner.
+  const threadChannelId = `discord:${guildId}:${threadId}`
   const info = yield* Effect.tryPromise({
-    try: () => discord.fetchChannelInfo(conversationId),
+    try: () => discord.fetchChannelInfo(threadChannelId),
     catch: () => 'fetch-failed' as const,
   }).pipe(Effect.orElseSucceed(() => null))
   if (info === null) return false
