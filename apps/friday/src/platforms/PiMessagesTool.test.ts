@@ -22,6 +22,7 @@ const message9 = {
   text: 'hello',
   sentAt: null,
   replyToMessageId: null,
+  attachments: [],
 }
 
 const thread = Schema.decodeSync(ChannelThread)({

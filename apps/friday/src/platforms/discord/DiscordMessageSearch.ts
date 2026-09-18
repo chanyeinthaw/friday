@@ -41,6 +41,7 @@ const recordFrom = (message: Message): PlatformMessageRecord => {
     text: context.content.text,
     sentAt: message.metadata.dateSent.toISOString(),
     replyToMessageId: message.replyTo ? decodeMessageId(message.replyTo.id) : null,
+    attachments: context.content.images,
   }
 }
 
