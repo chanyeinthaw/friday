@@ -455,3 +455,56 @@ it.effect('examples mark workflow narration as wrong and keep completion generic
     assert.notInclude(examples, 'nightly')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )
+
+it.effect('keeps document delivery to one conclusion plus link', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+    const examples = prompt.slice(
+      prompt.indexOf('### Examples'),
+      prompt.indexOf('## Channel context'),
+    )
+
+    assert.include(examples, 'Document delivery.')
+    assert.include(examples, 'The schema change is safe to ship. Details are at <link>.')
+    assert.include(examples, 'Task completion.')
+    assert.include(examples, 'Done, updated the same link.')
+    assert.include(examples, 'Do not recite changed, preserved, or verified details unless asked.')
+    assert.include(examples, 'Bad, it dumps the document.')
+    assert.include(examples, 'TL;DR')
+    assert.include(examples, 'Questions:')
+    assert.include(
+      examples,
+      'Keep the detail in the document and share one conclusion with its link.',
+    )
+    assert.isBelow(examples.indexOf('Long findings.'), examples.indexOf('Document delivery.'))
+    assert.isBelow(examples.indexOf('Document delivery.'), examples.indexOf('Task completion.'))
+    assert.isBelow(
+      examples.indexOf('Task completion.'),
+      examples.indexOf('Bad, it dumps the document.'),
+    )
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
+
+it.effect('keeps task acknowledgement brief without promises or previews', () =>
+  Effect.gen(function* () {
+    const templates = yield* SystemPromptTemplates
+    const prompt = yield* templates.renderChannelAgent({
+      thread,
+      availableAgentModels: [],
+    })
+
+    assert.include(prompt, 'what is being checked or changed')
+    assert.include(prompt, 'Do not promise coverage')
+    assert.include(prompt, 'list what will be preserved')
+    assert.include(prompt, 'or preview the final response')
+    assert.include(prompt, 'Do not mention delegation')
+    assert.include(prompt, 'another agent')
+    assert.include(prompt, 'estimated completion time')
+    assert.include(prompt, 'Do not list internal steps')
+    assert.include(prompt, 'upcoming routine steps')
+  }).pipe(Effect.provide(SystemPromptTemplatesLive)),
+)
