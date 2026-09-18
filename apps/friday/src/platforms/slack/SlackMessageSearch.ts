@@ -51,6 +51,14 @@ export interface SlackMessageQueryAdapter extends Pick<
 > {}
 
 export interface SlackMessageQueryPolicy {
+  /**
+   * Single workspace (team) bound to this connection's bot token, resolved
+   * once during connection initialization via `auth.test`. Explicit targets
+   * outside this workspace fail closed before policy lookup or any adapter
+   * call. Slack bot tokens are single-workspace; the workspace allow-list
+   * still gates inbound events but never widens explicit targets.
+   */
+  readonly workspaceId: string
   readonly resolveChannelPolicy: (
     teamId: string,
     channelId: string,
@@ -125,10 +133,13 @@ interface SlackResolvedTarget {
 }
 
 /**
- * Resolves an explicit Slack target against the live admission policy.
- * Fail-closed: workspaces or channels outside the configured scope collapse
- * to a generic not-found that never exposes channel existence. The inbound
- * user allowlist is deliberately not applied: the invoking user/thread is
+ * Resolves an explicit Slack target against the connection's bound workspace
+ * and the live admission policy. Fail-closed: a workspace outside the
+ * connection's actual workspace collapses to a generic not-found before
+ * policy lookup or any adapter call, so a policy that admits another team
+ * never widens explicit targets beyond the current connection. Channels
+ * outside the configured scope collapse the same way. The inbound user
+ * allowlist is deliberately not applied: the invoking user/thread is
  * already admitted, and scope admission is the only read gate. Direct-message
  * channels (`D...`) are admitted exactly when the configured channel scope
  * admits them.
@@ -138,6 +149,9 @@ const resolveSlackTarget = (
   policy: SlackMessageQueryPolicy,
 ): Effect.Effect<SlackResolvedTarget, PlatformTargetNotFoundError> =>
   Effect.gen(function* () {
+    if (target.workspaceId !== policy.workspaceId) {
+      return yield* targetNotFound()
+    }
     if (policy.resolveChannelPolicy(target.workspaceId, target.channelId) === undefined) {
       return yield* targetNotFound()
     }

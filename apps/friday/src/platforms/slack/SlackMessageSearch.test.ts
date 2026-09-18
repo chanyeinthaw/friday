@@ -73,7 +73,11 @@ const admittedPolicy = (): SlackResolvedChannelPolicy => ({
   users: { mode: 'all', ids: [] },
 })
 
-const policyFor = (admittedPairs: ReadonlyArray<string>): SlackMessageQueryPolicy => ({
+const policyFor = (
+  admittedPairs: ReadonlyArray<string>,
+  workspaceId = 'T123',
+): SlackMessageQueryPolicy => ({
+  workspaceId,
   resolveChannelPolicy: (teamId, channelId) =>
     admittedPairs.includes(`${teamId}:${channelId}`) ? admittedPolicy() : undefined,
 })
@@ -170,20 +174,39 @@ it('orders Slack timestamps without float precision loss', () => {
   assert.isBelow(compareSlackMessageTs('999.999999', '1000.000000'), 0)
 })
 
-it.effect('searches a cross-workspace channel target admitted on this connection', () =>
+it.effect('rejects cross-workspace targets before policy lookup or any adapter call', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter({
+      channelPages: [[slackMessage('100.1', 'deploy pipeline notes')]],
+    })
+    // Even though the channel policy would admit T999:C789, the connection
+    // is bound to T123, so the mismatched workspace fails closed first.
+    const error = yield* searchSlackMessages(
+      adapter,
+      { binding, target: channelTarget('T999', 'C789'), query: 'deploy', limit: 10 },
+      policyFor(['T999:C789']),
+    ).pipe(Effect.flip)
+
+    assert(isTargetNotFound(error))
+    assert.strictEqual(error.message, 'Target not found or not accessible.')
+    assert.deepStrictEqual(adapter.seen, [])
+  }),
+)
+
+it.effect('searches a matching-workspace channel target on this connection', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter({
       channelPages: [[slackMessage('100.1', 'deploy pipeline notes')]],
     })
     const result = yield* searchSlackMessages(
       adapter,
-      { binding, target: channelTarget('T999', 'C789'), query: 'deploy', limit: 10 },
-      policyFor(['T999:C789']),
+      { binding, target: channelTarget('T123', 'C456'), query: 'deploy', limit: 10 },
+      policyFor(['T123:C456']),
     )
 
     assert.deepStrictEqual(
       adapter.seen.map(({ kind, address }) => `${kind}:${address}`),
-      ['channel:slack:C789'],
+      ['channel:slack:C456'],
     )
     assert.strictEqual(result.messages.length, 1)
     assert.strictEqual(result.messages[0]?.text, 'deploy pipeline notes')
@@ -381,6 +404,27 @@ it.effect('collapses missing, mismatched, and unadmitted gets to a generic not-f
   }),
 )
 
+it.effect('collapses cross-workspace gets to a generic not-found without adapter calls', () =>
+  Effect.gen(function* () {
+    const calls: Array<[string, string]> = []
+    const adapter = stubAdapter({
+      direct: (threadId, messageId) => {
+        calls.push([threadId, messageId])
+        return Promise.resolve(slackMessage(messageId, 'other workspace'))
+      },
+    })
+    const error = yield* getSlackMessage(
+      adapter,
+      { binding, target: channelTarget('T999', 'C789'), messageId: decodeMessageId('200.2') },
+      policyFor(['T999:C789']),
+    ).pipe(Effect.flip)
+
+    assert(isMessageNotFound(error))
+    assert.strictEqual(error.message, 'Message not found.')
+    assert.deepStrictEqual(calls, [])
+  }),
+)
+
 it.effect('posts top-level to a channel target and returns the native timestamp id', () =>
   Effect.gen(function* () {
     const posted: Array<{ readonly address: string; readonly text: string }> = []
@@ -426,6 +470,23 @@ it.effect('posts to an admitted DM channel and denies unadmitted ones', () =>
     ).pipe(Effect.flip)
     assert(isTargetNotFound(denied))
     assert.strictEqual(posted.length, 1)
+  }),
+)
+
+it.effect('rejects cross-workspace posts before policy lookup or any adapter call', () =>
+  Effect.gen(function* () {
+    const posted: Array<{ readonly address: string; readonly text: string }> = []
+    const adapter = stubAdapter({ posted })
+    const error = yield* postSlackMessage(
+      adapter,
+      { binding, target: channelTarget('T999', 'C789'), text: 'hello other' },
+      policyFor(['T999:C789']),
+    ).pipe(Effect.flip)
+
+    assert(isTargetNotFound(error))
+    assert.strictEqual(error.message, 'Target not found or not accessible.')
+    assert.deepStrictEqual(posted, [])
+    assert.deepStrictEqual(adapter.seen, [])
   }),
 )
 

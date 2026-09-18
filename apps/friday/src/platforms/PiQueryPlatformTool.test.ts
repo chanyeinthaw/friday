@@ -152,6 +152,45 @@ it('dispatches fetch without a query and defaults the limit', async () => {
   })
 })
 
+it('dispatches a matching-workspace Slack fetch on the current connection', async () => {
+  const slackThread = decodeSlackThread({
+    ...encodeThread(thread),
+    conversationBinding: {
+      platform: 'slack',
+      connectionId: 'slack',
+      channelId: 'slack:T123:C456',
+      sourceMessageId: '1234567890.111111',
+      conversationId: 'slack:T123:C456',
+    },
+  })
+  const requests: Array<PlatformMessageQuery> = []
+  const tool = makePiQueryPlatformTool({
+    thread: slackThread,
+    platforms: searchStub(requests),
+    runPromise: Effect.runPromise,
+  })
+
+  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  await tool.execute(
+    'call-1',
+    {
+      action: 'fetch',
+      target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
+      limit: 10,
+    },
+    undefined,
+    undefined,
+    extensionContext,
+  )
+
+  assert.strictEqual(requests.length, 1)
+  assert.deepStrictEqual(requests[0]?.target, {
+    platform: 'slack',
+    workspaceId: 'T123',
+    channelId: 'C456',
+  })
+})
+
 it('rejects cross-connection targets', async () => {
   const tool = makePiQueryPlatformTool({
     thread,

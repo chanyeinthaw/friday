@@ -117,6 +117,46 @@ it('returns a posted result without fabricating an id', async () => {
   assert.deepStrictEqual(result.details, { messageId: null })
 })
 
+it('posts to a matching-workspace Slack target on the current connection', async () => {
+  const slackThread = decodePostThread({
+    ...encodePostThread(thread),
+    conversationBinding: {
+      platform: 'slack',
+      connectionId: 'slack-main',
+      channelId: 'slack:T123:C456',
+      sourceMessageId: '1234567890.111111',
+      conversationId: 'slack:T123:C456',
+    },
+  })
+  const requests: Array<PlatformMessagePostQuery> = []
+  const tool = makePiPostPlatformTool({
+    thread: slackThread,
+    platforms: postStub(requests),
+    idempotency: new PlatformPostIdempotency(),
+    runPromise: Effect.runPromise,
+  })
+
+  const result = await tool.execute(
+    'call-1',
+    {
+      target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
+      text: 'hello slack',
+      idempotencyKey: 'slack-1',
+    },
+    undefined,
+    undefined,
+    extensionContext,
+  )
+
+  assert.strictEqual(requests.length, 1)
+  assert.deepStrictEqual(requests[0]?.target, {
+    platform: 'slack',
+    workspaceId: 'T123',
+    channelId: 'C456',
+  })
+  assert.deepStrictEqual(result.details, { messageId: decodeMessageId('posted-1') })
+})
+
 it('rejects cross-connection targets', async () => {
   const tool = makePiPostPlatformTool({
     thread,

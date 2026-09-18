@@ -1,6 +1,7 @@
 import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 
 import { AppConfig } from '../../config/AppConfigLive.ts'
 import { findSlackConnection, type SlackPlatformConfig } from '../../config/AppConfig.ts'
@@ -45,6 +46,9 @@ export const makeMessageDedup = (capacity: number) => {
     },
   }
 }
+
+const SlackAuthTest = Schema.Struct({ team_id: Schema.optionalKey(Schema.String) })
+const decodeSlackAuthTest = Schema.decodeUnknownOption(SlackAuthTest)
 
 type SlackSocketConfig = Extract<SlackPlatformConfig, { readonly mode: 'socket' }>
 
@@ -106,6 +110,35 @@ export const makeSlackConnectionRuntime = Effect.fn('makeSlackConnectionRuntime'
       }),
     catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
   })
+  // Single-workspace binding for explicit query/post targets. The bot token
+  // belongs to exactly one workspace; `auth.test` returns its team id from
+  // Slack rather than trusting model input or the invoking thread's team.
+  // Unresolved bindings deny all explicit targets fail-closed (empty can
+  // never match a validated non-empty target workspace) while normal
+  // conversation-bound publishing keeps working.
+  const workspaceId = yield* Effect.tryPromise({
+    try: () => slack.webClient.auth.test(),
+    catch: (cause) => new ChatSdkLifecycleError({ operation: 'create-adapter', cause }),
+  }).pipe(
+    Effect.flatMap((result) => {
+      const teamId = Option.getOrUndefined(decodeSlackAuthTest(result))?.team_id
+      return teamId !== undefined && teamId !== ''
+        ? Effect.succeed(teamId)
+        : Effect.fail(
+            new ChatSdkLifecycleError({ operation: 'create-adapter', cause: 'missing-team' }),
+          )
+    }),
+    Effect.catch((cause) =>
+      Effect.logWarning('slack.workspace.unresolved').pipe(
+        Effect.annotateLogs({
+          component: 'slack',
+          connectionId: String(slackConfig.connectionId),
+          cause: String(cause),
+        }),
+        Effect.as(''),
+      ),
+    ),
+  )
   const chat = yield* Effect.try({
     try: () =>
       new Chat({
@@ -129,10 +162,12 @@ export const makeSlackConnectionRuntime = Effect.fn('makeSlackConnectionRuntime'
     decide: (decideInput) => threadRouter.decide(decideInput),
     resolveChannelPolicy,
   })
-  // Explicit targets gate against the live workspace/channel policy snapshot;
-  // thread targets inherit their channel policy. The inbound user allowlist
-  // stays out of reads and posts: the invoking thread is already admitted.
+  // Explicit targets gate against the connection's bound workspace first,
+  // then the live workspace/channel policy snapshot; thread targets inherit
+  // their channel policy. The inbound user allowlist stays out of reads and
+  // posts: the invoking thread is already admitted.
   const agentPlatform = yield* makeSlackPlatform(slackConfig.connectionId, slack, {
+    workspaceId,
     resolveChannelPolicy,
   })
   yield* platforms.register(agentPlatform)
@@ -319,6 +354,7 @@ export const makeSlackConnectionRuntime = Effect.fn('makeSlackConnectionRuntime'
     Effect.annotateLogs({
       component: 'slack',
       connectionId: String(slackConfig.connectionId),
+      workspaceId,
       userAccessMode: slackConfig.access.users.mode,
       channelAccessMode: slackConfig.access.channels.mode,
       workspaceAccessMode: slackConfig.access.workspaces.mode,
