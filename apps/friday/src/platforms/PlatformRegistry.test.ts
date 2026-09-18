@@ -8,8 +8,12 @@ import {
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import type { PlatformMessageGetQuery, PlatformRegistration } from './PlatformAdapter.ts'
-import { PlatformMessageNotFoundError } from './PlatformAdapter.ts'
+import type {
+  PlatformMessageGetQuery,
+  PlatformMessagePostQuery,
+  PlatformRegistration,
+} from './PlatformAdapter.ts'
+import { PlatformMessageNotFoundError, PlatformTargetNotFoundError } from './PlatformAdapter.ts'
 import {
   PlatformCapabilityUnavailableError,
   PlatformRegistry,
@@ -107,6 +111,70 @@ it.effect('reports message retrieval as unavailable for platforms without the ca
   ),
 )
 
+it.effect('reports message posting as unavailable for platforms without the capability', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry.pipe(Effect.provide(PlatformRegistryLive))
+      yield* platforms.register(makePlatform('discord', []))
+
+      const error = yield* platforms.postMessage(postQuery('hello')).pipe(Effect.flip)
+
+      assert(isCapabilityUnavailable(error))
+      assert.strictEqual(error.capability, 'message-post')
+      assert.strictEqual(error.kind, 'discord')
+    }),
+  ),
+)
+
+it.effect('routes message posts through the bound connection', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry.pipe(Effect.provide(PlatformRegistryLive))
+      yield* platforms.register({
+        ...makePlatform('discord', []),
+        messagePost: {
+          post: () => Effect.succeed({ messageId: decodeMessageId('posted-1') }),
+        },
+      })
+
+      const result = yield* platforms.postMessage(postQuery('hello'))
+
+      assert.strictEqual(result.messageId, 'posted-1')
+    }),
+  ),
+)
+
+it.effect('preserves target admission failures across the search and post boundary', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const platforms = yield* PlatformRegistry.pipe(Effect.provide(PlatformRegistryLive))
+      yield* platforms.register({
+        ...makePlatform('discord', []),
+        messageSearch: {
+          search: () => Effect.fail(new PlatformTargetNotFoundError({ kind: 'discord' })),
+        },
+        messagePost: {
+          post: () => Effect.fail(new PlatformTargetNotFoundError({ kind: 'discord' })),
+        },
+      })
+      const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
+
+      const searchError = yield* platforms
+        .searchMessages({
+          binding: discordBinding,
+          target: { platform: 'discord', guildId: 'guild-1', channelId: 'channel-1' },
+          limit: 20,
+        })
+        .pipe(Effect.flip)
+      assert(isTargetNotFound(searchError))
+      assert.strictEqual(searchError.message, 'Target not found or not accessible.')
+
+      const postError = yield* platforms.postMessage(postQuery('hello')).pipe(Effect.flip)
+      assert(isTargetNotFound(postError))
+    }),
+  ),
+)
+
 it.effect('preserves the generic not-found across the message retrieval boundary', () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -145,6 +213,11 @@ const makePlatform = (
 
 const getQuery = (messageId: string): PlatformMessageGetQuery => ({
   binding: discordBinding,
-  scope: 'thread',
   messageId: decodeMessageId(messageId),
+})
+
+const postQuery = (text: string): PlatformMessagePostQuery => ({
+  binding: discordBinding,
+  target: { platform: 'discord', guildId: 'guild-1', channelId: 'channel-1' },
+  text,
 })

@@ -3,23 +3,36 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import { MessageAuthor, PlatformMessageId } from '@friday/contracts/conversation'
-import type {
-  PlatformMessageQuery,
-  PlatformMessageRecord,
-  PlatformMessageSearchResult,
+import {
+  isSlackThreadTarget,
+  PlatformMessageNotFoundError,
+  PlatformTargetNotFoundError,
+  type PlatformMessageGetQuery,
+  type PlatformMessageGetResult,
+  type PlatformMessagePostQuery,
+  type PlatformMessagePostResult,
+  type PlatformMessageQuery,
+  type PlatformMessageRecord,
+  type PlatformMessageSearchResult,
+  type SlackQueryTarget,
 } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 import type { Message } from 'chat'
 import type { SlackAdapter } from '@chat-adapter/slack'
-import {
-  decodeSlackConversationId,
-  isSlackThread,
-  toSlackAdapterChannelId,
-  toSlackAdapterThreadId,
-} from './SlackConversationScope.ts'
+import { toSlackAdapterChannelId, toSlackAdapterThreadId } from './SlackConversationScope.ts'
+import type { SlackResolvedChannelPolicy } from './SlackChannelAccess.ts'
+
+/**
+ * Safe native single-message limit for Slack posts. The chat.postMessage API
+ * accepts far more, but 4,000 stays readable, keeps Block Kit fallback text
+ * intact, and sits just above the 3,500 readability chunk size used for
+ * normal publications. Posts are exactly one message, never chunked.
+ */
+export const SlackMaxPostLength = 4_000
 
 const MaximumScanCount = 500
 const decodeMessageId = Schema.decodeUnknownSync(PlatformMessageId)
+const decodeMessageIdOption = Schema.decodeUnknownOption(PlatformMessageId)
 const decodeAuthor = Schema.decodeUnknownSync(MessageAuthor)
 
 const SlackSearchRaw = Schema.Struct({
@@ -31,17 +44,31 @@ const SlackSearchRaw = Schema.Struct({
 })
 const decodeSlackSearchRaw = Schema.decodeUnknownOption(SlackSearchRaw)
 
-export interface SlackSearchAdapter extends Pick<
+/** Transport needed for explicit-target Slack reads and posts. */
+export interface SlackMessageQueryAdapter extends Pick<
   SlackAdapter,
-  'fetchMessages' | 'fetchChannelMessages'
+  'fetchMessages' | 'fetchChannelMessages' | 'fetchMessage' | 'postChannelMessage' | 'postMessage'
 > {}
+
+export interface SlackMessageQueryPolicy {
+  readonly resolveChannelPolicy: (
+    teamId: string,
+    channelId: string,
+  ) => SlackResolvedChannelPolicy | undefined
+}
 
 type SearchMessage = Message
 
+const targetNotFound = () => new PlatformTargetNotFoundError({ kind: 'slack' })
+const messageNotFound = (messageId: string) =>
+  new PlatformMessageNotFoundError({ kind: 'slack', messageId })
+
 const recordFrom = (message: SearchMessage): PlatformMessageRecord | undefined => {
   const raw = Option.getOrUndefined(decodeSlackSearchRaw(message.raw))
-  const userId = raw?.user ?? message.author.userId
-  if (userId === '') return undefined
+  // Direct get preserves bot authors: fall back to the bot id when the
+  // transport reports no user. Search still skips bots before reaching here.
+  const userId = raw?.user ?? raw?.bot_id ?? message.author.userId
+  if (userId === undefined || userId === '') return undefined
   const text = raw?.text ?? message.text
   const threadTs = raw?.thread_ts
   return {
@@ -76,8 +103,58 @@ const messageMatches = (
   return (raw?.text ?? message.text).toLocaleLowerCase().includes(needle)
 }
 
+const compareTimestampPart = (a: string, b: string): number =>
+  a.length !== b.length ? (a.length < b.length ? -1 : 1) : a < b ? -1 : a > b ? 1 : 0
+
+/**
+ * Orders Slack message timestamps (`seconds.microseconds`) without float
+ * precision loss. Returns negative when `a` is older than `b`.
+ */
+export const compareSlackMessageTs = (a: string, b: string): number => {
+  const [aSeconds = '', aMicros = ''] = a.split('.')
+  const [bSeconds = '', bMicros = ''] = b.split('.')
+  return compareTimestampPart(aSeconds, bSeconds) || compareTimestampPart(aMicros, bMicros)
+}
+
+interface SlackResolvedTarget {
+  readonly teamId: string
+  readonly channelId: string
+  readonly threadTs: string | undefined
+  readonly adapterThreadId: string
+  readonly adapterChannelId: string
+}
+
+/**
+ * Resolves an explicit Slack target against the live admission policy.
+ * Fail-closed: workspaces or channels outside the configured scope collapse
+ * to a generic not-found that never exposes channel existence. The inbound
+ * user allowlist is deliberately not applied: the invoking user/thread is
+ * already admitted, and scope admission is the only read gate. Direct-message
+ * channels (`D...`) are admitted exactly when the configured channel scope
+ * admits them.
+ */
+const resolveSlackTarget = (
+  target: SlackQueryTarget,
+  policy: SlackMessageQueryPolicy,
+): Effect.Effect<SlackResolvedTarget, PlatformTargetNotFoundError> =>
+  Effect.gen(function* () {
+    if (policy.resolveChannelPolicy(target.workspaceId, target.channelId) === undefined) {
+      return yield* targetNotFound()
+    }
+    const location = { teamId: target.workspaceId, channelId: target.channelId }
+    return {
+      teamId: target.workspaceId,
+      channelId: target.channelId,
+      threadTs: target.threadTs,
+      adapterThreadId: toSlackAdapterThreadId(
+        target.threadTs === undefined ? location : { ...location, threadTs: target.threadTs },
+      ),
+      adapterChannelId: toSlackAdapterChannelId(location),
+    }
+  })
+
 const readSearchPage = (
-  adapter: SlackSearchAdapter,
+  adapter: SlackMessageQueryAdapter,
   inThread: boolean,
   threadId: string,
   channelId: string,
@@ -95,37 +172,46 @@ const readSearchPage = (
 }
 
 /**
- * Searches Slack history with Friday's preserved semantics: thread scope reads
- * the native thread, channel scope reads the channel; bot messages are
- * skipped and text/author filters apply in memory. Adapter thread ids are
- * derived explicitly from the canonical binding so persistence never adopts
- * the team-less transport identity.
+ * Searches Slack history with Friday's preserved semantics: a thread target
+ * reads the native thread, a channel target reads the channel; bot messages
+ * are skipped and text/author filters apply in memory. `before` is an
+ * ordering boundary on message timestamps, not an API cursor: pagination
+ * uses the transport's own page cursors while messages at or after `before`
+ * are filtered in memory. Adapter thread ids derive explicitly from the
+ * target so persistence never adopts the team-less transport identity.
  */
 export const searchSlackMessages = Effect.fn('searchSlackMessages')(function* (
-  adapter: SlackSearchAdapter,
+  adapter: SlackMessageQueryAdapter,
   query: PlatformMessageQuery,
+  policy: SlackMessageQueryPolicy,
 ) {
-  const location = decodeSlackConversationId(String(query.binding.conversationId))
-  if (location === undefined) {
-    return yield* new ChatSdkPublicationError({ operation: 'publish', cause: 'unknown-thread' })
-  }
-  const inThread = query.scope === 'thread' && isSlackThread(location)
-  const threadId = toSlackAdapterThreadId(location)
-  const channelId = toSlackAdapterChannelId(location)
+  if (query.target.platform !== 'slack') return yield* targetNotFound()
+  const resolved = yield* resolveSlackTarget(query.target, policy)
+  const inThread = resolved.threadTs !== undefined
   const matches: Array<PlatformMessageRecord> = []
   const needle = query.query?.trim().toLocaleLowerCase()
-  let cursor = query.before === undefined ? undefined : String(query.before)
+  const beforeTs = query.before === undefined ? undefined : String(query.before)
+  let cursor: string | undefined
   let scannedCount = 0
   let hasMore = true
 
   while (matches.length < query.limit && scannedCount < MaximumScanCount && hasMore) {
     const remaining = Math.min(100, MaximumScanCount - scannedCount)
     const page = yield* Effect.tryPromise({
-      try: () => readSearchPage(adapter, inThread, threadId, channelId, remaining, cursor),
+      try: () =>
+        readSearchPage(
+          adapter,
+          inThread,
+          resolved.adapterThreadId,
+          resolved.adapterChannelId,
+          remaining,
+          cursor,
+        ),
       catch: (cause) => new ChatSdkPublicationError({ operation: 'publish', cause }),
     })
     scannedCount += page.messages.length
     for (const message of page.messages.toReversed()) {
+      if (beforeTs !== undefined && compareSlackMessageTs(message.id, beforeTs) >= 0) continue
       if (isBotMessage(message)) continue
       if (!messageMatches(message, needle, query.authorId)) continue
       const record = recordFrom(message)
@@ -142,4 +228,84 @@ export const searchSlackMessages = Effect.fn('searchSlackMessages')(function* (
     scannedCount,
     truncated: hasMore || scannedCount >= MaximumScanCount,
   } satisfies PlatformMessageSearchResult
+})
+
+/**
+ * Fetches one Slack message through the transport's single-message endpoint.
+ * Thread targets read within their native thread; channel targets read the
+ * message as its own thread root (every channel message anchors a thread in
+ * the Slack API). Slack permalink parsing is out of scope: a supplied URL is
+ * rejected at the tool boundary, and reaching this layer with one collapses
+ * to a generic not-found. Inaccessible and missing messages collapse to a
+ * generic not-found, and bot authors are preserved (unlike history search,
+ * which skips bots).
+ */
+export const getSlackMessage = Effect.fn('getSlackMessage')(function* (
+  adapter: SlackMessageQueryAdapter,
+  query: PlatformMessageGetQuery,
+  policy: SlackMessageQueryPolicy,
+) {
+  const rawUrl = query.messageUrl?.trim()
+  const requestedId = query.messageId === undefined ? '' : String(query.messageId)
+  if (query.target === undefined || query.target.platform !== 'slack' || requestedId === '') {
+    return yield* messageNotFound(rawUrl ?? requestedId)
+  }
+  const resolved = yield* resolveSlackTarget(query.target, policy).pipe(
+    Effect.mapError(() => messageNotFound(requestedId)),
+  )
+  // Channel messages anchor their own thread root in conversations.replies,
+  // so a channel target addresses the message through its own timestamp while
+  // a thread target addresses it through the thread root.
+  const threadId = isSlackThreadTarget(query.target)
+    ? resolved.adapterThreadId
+    : toSlackAdapterThreadId({
+        teamId: resolved.teamId,
+        channelId: resolved.channelId,
+        threadTs: requestedId,
+      })
+  const message = yield* Effect.tryPromise({
+    try: () => adapter.fetchMessage(threadId, requestedId),
+    catch: () => messageNotFound(requestedId),
+  })
+  if (message === null || message.id !== requestedId) return yield* messageNotFound(requestedId)
+  const record = recordFrom(message)
+  if (record === undefined) return yield* messageNotFound(requestedId)
+  return { message: record } satisfies PlatformMessageGetResult
+})
+
+const PostedMessageId = Schema.Struct({ id: Schema.optionalKey(Schema.String) })
+const decodePostedMessageId = Schema.decodeUnknownOption(PostedMessageId)
+
+/**
+ * Posts exactly one text message to an explicit Slack target through the
+ * current connection only. The target is policy-checked before posting; a
+ * thread target posts as a thread reply, a channel target posts top-level.
+ * Over-limit text is rejected rather than chunked: chunking would turn one
+ * requested post into several platform messages. Returns the native message
+ * timestamp id when the transport exposes one, otherwise a posted result
+ * with a null id (never fabricated).
+ */
+export const postSlackMessage = Effect.fn('postSlackMessage')(function* (
+  adapter: SlackMessageQueryAdapter,
+  query: PlatformMessagePostQuery,
+  policy: SlackMessageQueryPolicy,
+) {
+  if (query.target.platform !== 'slack') return yield* targetNotFound()
+  if (query.text.trim() === '') {
+    return yield* new ChatSdkPublicationError({ operation: 'post', cause: 'empty-text' })
+  }
+  if (query.text.length > SlackMaxPostLength) {
+    return yield* new ChatSdkPublicationError({ operation: 'post', cause: 'over-limit' })
+  }
+  const resolved = yield* resolveSlackTarget(query.target, policy)
+  const posted = yield* Effect.tryPromise({
+    try: () =>
+      isSlackThreadTarget(query.target)
+        ? adapter.postMessage(resolved.adapterThreadId, query.text)
+        : adapter.postChannelMessage(resolved.adapterChannelId, query.text),
+    catch: (cause) => new ChatSdkPublicationError({ operation: 'post', cause }),
+  })
+  const id = Option.getOrUndefined(decodePostedMessageId(posted))?.id
+  const messageId = Option.getOrUndefined(decodeMessageIdOption(id ?? ''))
+  return { messageId: messageId ?? null } satisfies PlatformMessagePostResult
 })

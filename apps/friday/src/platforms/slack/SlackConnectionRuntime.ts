@@ -129,7 +129,12 @@ export const makeSlackConnectionRuntime = Effect.fn('makeSlackConnectionRuntime'
     decide: (decideInput) => threadRouter.decide(decideInput),
     resolveChannelPolicy,
   })
-  const agentPlatform = yield* makeSlackPlatform(slackConfig.connectionId, slack)
+  // Explicit targets gate against the live workspace/channel policy snapshot;
+  // thread targets inherit their channel policy. The inbound user allowlist
+  // stays out of reads and posts: the invoking thread is already admitted.
+  const agentPlatform = yield* makeSlackPlatform(slackConfig.connectionId, slack, {
+    resolveChannelPolicy,
+  })
   yield* platforms.register(agentPlatform)
   // Agent lifecycle observability: these never create Friday threads or
   // publish. Friday never sets session working status and never cancels
