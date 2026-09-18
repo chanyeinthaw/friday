@@ -312,3 +312,78 @@ it.effect('requires exactly one of messageUrl or messageId', () =>
     ),
   ),
 )
+
+const htmlAttachmentMessage = (id: string, text: string, userId: string, isBot: boolean) =>
+  new Message({
+    id,
+    threadId: 'discord:guild-1:channel-1:thread-1',
+    text,
+    formatted: { type: 'root', children: [] },
+    raw: {
+      attachments: [
+        {
+          id: 'html-1',
+          filename: 'page.html',
+          content_type: 'text/html',
+          size: 1024,
+          url: 'https://cdn.discordapp.com/attachments/channel/attachment/page.html',
+        },
+      ],
+    },
+    author: { userId, userName: userId, fullName: userId, isBot, isMe: false },
+    metadata: { dateSent: new Date('2026-03-21T09:00:00.000Z'), edited: false },
+    attachments: [],
+  })
+
+it.effect('preserves HTML attachment metadata through get', () =>
+  Effect.gen(function* () {
+    const result = yield* getDiscordMessage(
+      getAdapter({
+        fetch: () => Promise.resolve(htmlAttachmentMessage('message-9', 'report', 'bot-1', true)),
+      }),
+      { binding, scope: 'thread', messageId: decodeMessageId('message-9') },
+      { resolveChannelPolicy: () => undefined },
+    )
+
+    assert.strictEqual(result.message.author.platformUserId, 'bot-1')
+    assert.strictEqual(result.message.attachments.length, 1)
+    assert.strictEqual(result.message.attachments[0]?.name, 'page.html')
+    assert.strictEqual(result.message.attachments[0]?.mediaType, 'text/html')
+    assert.strictEqual(result.message.attachments[0]?.sizeBytes, 1024)
+    assert.strictEqual(
+      result.message.attachments[0]?.storageReference,
+      'https://cdn.discordapp.com/attachments/channel/attachment/page.html',
+    )
+  }),
+)
+
+it.effect('propagates attachments through search records', () =>
+  Effect.gen(function* () {
+    const result = yield* searchDiscordMessages(
+      {
+        decodeThreadId: () => ({
+          guildId: 'guild-1',
+          channelId: 'channel-1',
+          threadId: 'thread-1',
+        }),
+        encodeThreadId: ({ guildId, channelId, threadId }) =>
+          `discord:${guildId}:${channelId}:${threadId}`,
+        fetchMessages: () =>
+          Promise.resolve({
+            messages: [htmlAttachmentMessage('message-7', 'see report', 'user-1', false)],
+          }),
+      },
+      { binding, scope: 'thread', query: 'report', limit: 20 },
+    )
+
+    assert.strictEqual(result.messages.length, 1)
+    assert.strictEqual(result.messages[0]?.attachments.length, 1)
+    assert.strictEqual(result.messages[0]?.attachments[0]?.name, 'page.html')
+    assert.strictEqual(result.messages[0]?.attachments[0]?.mediaType, 'text/html')
+    assert.strictEqual(result.messages[0]?.attachments[0]?.sizeBytes, 1024)
+    assert.strictEqual(
+      result.messages[0]?.attachments[0]?.storageReference,
+      'https://cdn.discordapp.com/attachments/channel/attachment/page.html',
+    )
+  }),
+)

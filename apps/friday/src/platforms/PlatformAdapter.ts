@@ -1,6 +1,7 @@
 import type {
   ConversationBinding,
   ContextMessage,
+  ImageAttachment,
   InputMessage,
   PlatformMessageId,
 } from '@friday/contracts/conversation'
@@ -29,6 +30,8 @@ export interface PlatformMessageRecord {
   readonly text: string
   readonly sentAt: string | null
   readonly replyToMessageId: PlatformMessageId | null
+  /** Projected Discord attachments (images, HTML, Markdown, plain text). Empty when none. */
+  readonly attachments: ReadonlyArray<ImageAttachment>
 }
 
 export interface PlatformMessageQuery {

@@ -55,6 +55,7 @@ const recordFrom = (message: SearchMessage): PlatformMessageRecord | undefined =
     text,
     sentAt: null,
     replyToMessageId: threadTs === undefined ? null : decodeMessageId(threadTs),
+    attachments: [],
   }
 }
 
