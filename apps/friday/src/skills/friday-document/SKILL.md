@@ -1,6 +1,6 @@
 ---
 name: friday-document
-description: Use when asked to create a document, or when sharing a long report, guide, investigation, or reference.
+description: Use when asked to create or upload a document, or when sharing a long report, guide, investigation, or reference.
 ---
 
 # friday-document
