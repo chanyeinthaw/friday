@@ -64,6 +64,11 @@ import {
   searchDiscordMessages,
 } from './DiscordMessageSearch.ts'
 import {
+  discoverDiscord,
+  listDiscordMembers,
+  type DiscordDiscoveryPolicy,
+} from './DiscordDiscovery.ts'
+import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
 } from './DiscordChannelBootstrap.ts'
@@ -164,6 +169,18 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
     void runResync(activity.resyncPresence())
   })
   yield* Effect.addFinalizer(() => Effect.sync(unsubscribeReconnect))
+  // Discovery enumerates only the live policy snapshot: enabled guilds and
+  // admitted policy-known channels (configured overrides plus the current
+  // channel). Names resolve best-effort; unadmitted scopes never appear.
+  const discoveryPolicy: DiscordDiscoveryPolicy = {
+    resolveChannelPolicy,
+    listGuilds: () =>
+      currentPolicies().guilds.map((guild) => ({
+        guildId: guild.guildId,
+        enabled: guild.enabled,
+        channelIds: guild.channels.map((channel) => channel.channelId),
+      })),
+  }
   const chatSdkPlatform = yield* makeChatSdkPlatform(discordConfig.connectionId, 'discord', chat, {
     setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
     setAgentActivity: activity.setAgentActivity,
@@ -172,6 +189,8 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
     searchMessages: (query) => searchDiscordMessages(discord, query, { resolveChannelPolicy }),
     getMessage: (query) => getDiscordMessage(discord, query, { resolveChannelPolicy }),
     postMessage: (query) => postDiscordMessage(discord, query, { resolveChannelPolicy }),
+    listMembers: (query) => listDiscordMembers(discord, query, discoveryPolicy),
+    discoverPlatforms: (query) => discoverDiscord(discord, query, discoveryPolicy),
   })
   yield* platforms.register(chatSdkPlatform)
   // Harness reload targets the thread bound to the invoking conversation

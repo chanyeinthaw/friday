@@ -6,10 +6,15 @@ import * as Schema from 'effect/Schema'
 import { makeUserFacingPlatformTools } from './UserPlatformTools.ts'
 import type { PlatformRegistryContract } from './PlatformRegistry.ts'
 
-const platforms: Pick<PlatformRegistryContract, 'searchMessages' | 'getMessage' | 'postMessage'> = {
+const platforms: Pick<
+  PlatformRegistryContract,
+  'searchMessages' | 'getMessage' | 'postMessage' | 'listMembers' | 'discoverPlatforms'
+> = {
   searchMessages: () => Effect.die('should not run'),
   getMessage: () => Effect.die('should not run'),
   postMessage: () => Effect.die('should not run'),
+  listMembers: () => Effect.die('should not run'),
+  discoverPlatforms: () => Effect.die('should not run'),
 }
 
 const userThread = Schema.decodeSync(ChannelThread)({
@@ -44,7 +49,7 @@ it('registers query and post tools for user threads', () => {
 
   assert.deepStrictEqual(
     tools.map((tool) => tool.name),
-    ['query_platform', 'post_platform'],
+    ['query_platform', 'post_platform', 'discover_platforms'],
   )
 })
 

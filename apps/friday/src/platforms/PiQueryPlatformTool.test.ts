@@ -4,10 +4,14 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import { makePiQueryPlatformTool } from './PiQueryPlatformTool.ts'
-import type { PlatformMessageGetQuery, PlatformMessageQuery } from './PlatformAdapter.ts'
+import type {
+  PlatformMembersQuery,
+  PlatformMessageGetQuery,
+  PlatformMessageQuery,
+} from './PlatformAdapter.ts'
 import type { PlatformRegistryContract } from './PlatformRegistry.ts'
 
-type Platforms = Pick<PlatformRegistryContract, 'searchMessages' | 'getMessage'>
+type Platforms = Pick<PlatformRegistryContract, 'searchMessages' | 'getMessage' | 'listMembers'>
 
 const decodeMessageId = Schema.decodeSync(PlatformMessageId)
 const decodeAuthor = Schema.decodeSync(MessageAuthor)
@@ -55,6 +59,7 @@ const searchStub = (requests: Array<PlatformMessageQuery>): Platforms => ({
       return { messages: [], scannedCount: 12, truncated: false }
     }),
   getMessage: () => Effect.die('should not run'),
+  listMembers: () => Effect.die('should not run'),
 })
 
 const getStub = (requests: Array<PlatformMessageGetQuery>): Platforms => ({
@@ -64,10 +69,12 @@ const getStub = (requests: Array<PlatformMessageGetQuery>): Platforms => ({
       requests.push(request)
       return { message: message9 }
     }),
+  listMembers: () => Effect.die('should not run'),
 })
 
 const neverRun = (): Platforms => ({
   searchMessages: () => Effect.die('should not run'),
+  listMembers: () => Effect.die('should not run'),
   getMessage: () => Effect.die('should not run'),
 })
 
@@ -415,4 +422,75 @@ it('rejects Discord targets missing both channel and thread', async () => {
     error = cause
   }
   assert.isDefined(error)
+})
+
+it('dispatches bounded members through an explicit target on the current connection', async () => {
+  const requests: Array<PlatformMembersQuery> = []
+  const tool = makePiQueryPlatformTool({
+    thread,
+    platforms: {
+      searchMessages: () => Effect.die('should not run'),
+      getMessage: () => Effect.die('should not run'),
+      listMembers: (request) =>
+        Effect.sync(() => {
+          requests.push(request)
+          return { members: [], truncated: false }
+        }),
+    },
+    runPromise: Effect.runPromise,
+  })
+
+  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  await tool.execute(
+    'call-1',
+    {
+      action: 'members',
+      target: {
+        platform: 'discord',
+        guildId: 'guild-9',
+        channelId: 'channel-9',
+        threadId: 'thread-9',
+      },
+      limit: 10,
+      cursor: 'after-U1',
+    },
+    undefined,
+    undefined,
+    extensionContext,
+  )
+
+  assert.strictEqual(requests.length, 1)
+  assert.deepStrictEqual(requests[0], {
+    binding: thread.conversationBinding,
+    target: {
+      platform: 'discord',
+      guildId: 'guild-9',
+      channelId: 'channel-9',
+      threadId: 'thread-9',
+    },
+    limit: 10,
+    cursor: 'after-U1',
+  })
+})
+
+it('rejects cross-connection members targets', async () => {
+  const tool = makePiQueryPlatformTool({
+    thread,
+    platforms: neverRun(),
+    runPromise: Effect.runPromise,
+  })
+
+  let error: unknown
+  try {
+    await tool.execute(
+      'call-1',
+      { action: 'members', target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' } },
+      undefined,
+      undefined,
+      extensionContext,
+    )
+  } catch (cause) {
+    error = cause
+  }
+  assert.match(String(error), /current discord connection/)
 })

@@ -193,6 +193,27 @@ export class FridayDiscordAdapter extends DiscordAdapter {
   }
 
   /**
+   * List members of a Discord thread via `GET /channels/{thread}/thread-members`.
+   * Callers own policy gating and collapse failures to not-found or a typed
+   * unsupported scope. Supports the same `limit`/`after` pagination as the
+   * native endpoint; returns raw member rows for Schema decoding upstream.
+   */
+  public async fetchThreadMembers(
+    threadId: string,
+    options: { readonly limit?: number; readonly after?: string } = {},
+  ): Promise<ReadonlyArray<unknown>> {
+    const location = this.decodeThreadId(threadId)
+    const rawId = location.threadId ?? location.channelId
+    const params = new URLSearchParams()
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    if (options.after !== undefined) params.set('after', options.after)
+    const suffix = params.size === 0 ? '' : `?${params.toString()}`
+    const response = await this.discordFetch(`/channels/${rawId}/thread-members${suffix}`, 'GET')
+    const raw: unknown = await response.json()
+    return Array.isArray(raw) ? raw : []
+  }
+
+  /**
    * Guild gate for application commands (`/friday`, `/harness`): an interaction
    * from an unregistered or disabled guild is dropped before any handler runs,
    * so it can neither invoke configuration operations nor receive a Friday

@@ -133,7 +133,7 @@ export interface MakePiThreadRuntimeOptions {
   readonly tasks?: PiTaskOperations
   readonly platforms?: Pick<
     PlatformRegistryContract,
-    'searchMessages' | 'getMessage' | 'postMessage'
+    'searchMessages' | 'getMessage' | 'postMessage' | 'listMembers' | 'discoverPlatforms'
   >
 }
 
