@@ -81,6 +81,32 @@ channel. Reply-in-channel therefore never splits an existing thread — it only
 determines where the first reply to a channel message goes, subject to adaptive
 thread routing below.
 
+## Channel member listing
+
+`query_platform` with action `members` lists guild members who can view an
+admitted channel. The source of truth is Discord REST (`GET /guilds/{guild}`,
+`GET /guilds/{guild}/roles`, `GET /channels/{channel}`, and
+`GET /guilds/{guild}/members`): Friday never reads the gateway member cache
+for this listing.
+
+Enable the privileged **Server Members (GuildMembers) intent** in the Discord
+Developer Portal and grant the bot permission to list guild members and view
+the channel. Without it, channel member listing fails with a typed
+`PlatformMembersUnsupportedError` naming the intent instead of returning a
+silent partial; missing channels map to not-found and transient REST failures
+map to a typed `list-members` operation error. No startup validation is added:
+per-guild permissions differ and a probe would need extra API calls with false
+negatives, so clear docs plus the typed runtime error are the contract.
+
+Friday does not control gateway intents through supported adapter
+configuration (the chat-adapter hardcodes its gateway intents), so no intent
+flag is toggled in code and no dependency is patched or forked. Visibility
+follows Discord's channel permission order — guild owner first (always
+visible, including explicit member denies), then @everyone, member roles,
+Administrator bypass, and role/member overwrites from the channel payload
+only. Category inheritance is out of scope. Results stay bounded with an
+opaque `after` cursor and policy gates before any REST call.
+
 ## Adaptive thread routing
 
 Top-level messages in `reply-in-channel` channels use adaptive thread routing.

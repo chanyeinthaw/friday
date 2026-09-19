@@ -214,6 +214,17 @@ export class FridayDiscordAdapter extends DiscordAdapter {
   }
 
   /**
+   * Fetch guild metadata via `GET /guilds/{guild}` for trustworthy fields
+   * like `owner_id`. Callers own policy gating and typed error mapping.
+   * Returns the raw guild payload for Schema decoding upstream.
+   */
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Discord guild payloads are Schema-decoded at the discovery boundary.
+  public async fetchGuild(guildId: string): Promise<unknown> {
+    const response = await this.discordFetch(`/guilds/${guildId}`, 'GET')
+    return await response.json()
+  }
+
+  /**
    * List roles of a Discord guild via `GET /guilds/{guild}/roles`.
    * Callers own policy gating and map access failures to a typed
    * unsupported scope (missing Server Members intent or API permissions).
