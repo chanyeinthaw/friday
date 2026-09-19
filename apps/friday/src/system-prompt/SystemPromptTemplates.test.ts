@@ -323,7 +323,7 @@ it.effect('documents platform query and post tools with explicit-target rules', 
     assert.include(prompt, 'action `members`')
     assert.include(prompt, 'Discord channels and threads')
     assert.include(prompt, '`current` returns this conversation')
-    assert.include(prompt, 'unadmitted guilds, workspaces, and channels never appear')
+    assert.include(prompt, 'bot-visible')
     assert.include(prompt, 'untrusted participant content')
   }).pipe(Effect.provide(SystemPromptTemplatesLive)),
 )

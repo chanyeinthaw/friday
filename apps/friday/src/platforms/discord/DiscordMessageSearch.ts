@@ -20,7 +20,6 @@ import {
 } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 import { projectChatSdkContextMessage } from '../chat-sdk/MessageProjection.ts'
-import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 import { discordChannelConversationId } from './DiscordConversationScope.ts'
 
 /** Native Discord message limit; posts are exactly one message, never chunked. */
@@ -41,13 +40,6 @@ export interface DiscordMessageQueryAdapter extends Pick<
   | 'postMessage'
 > {
   readonly fetchDirectMessage: (channelId: string, messageId: string) => Promise<Message>
-}
-
-export interface DiscordMessageQueryPolicy {
-  readonly resolveChannelPolicy: (
-    guildId: string,
-    channelId: string,
-  ) => DiscordResolvedChannelPolicy | undefined
 }
 
 const DiscordThreadChannel = Schema.Struct({
@@ -76,7 +68,7 @@ const recordFrom = (message: Message): PlatformMessageRecord => {
 interface DiscordResolvedTarget {
   /** Guild from the explicit target. */
   readonly guildId: string
-  /** Effective channel for policy gating: the parent channel for threads. */
+  /** Effective channel for access checks: the parent channel for threads. */
   readonly channelId: string
   /** Encoded conversation address for history reads and thread posts. */
   readonly source: string
@@ -84,20 +76,23 @@ interface DiscordResolvedTarget {
   readonly fetchChannelId: string
 }
 
+const DiscordChannelGuildRaw = Schema.Struct({
+  guild_id: Schema.optionalKey(Schema.String),
+})
+const decodeDiscordChannelGuild = Schema.decodeUnknownOption(DiscordChannelGuildRaw)
+
 /**
- * Resolves an explicit Discord target against the live admission policy.
- * Threads inherit their parent-channel policy: the parent resolves through
- * channel info, and a supplied parent hint must agree with it. Direct
- * messages (`@me`) are never valid query targets. Fail-closed: unknown,
- * disabled, unadmitted, inaccessible, and missing targets collapse to a
- * generic not-found that never exposes channel existence. The inbound user
- * allowlist is deliberately not applied: the invoking user/thread is already
- * admitted, and scope admission is the only read gate.
+ * Resolves an explicit Discord target against bot-visible platform state.
+ * Threads inherit their parent channel: the parent resolves through channel
+ * info, and a supplied parent hint must agree with it. Channel targets prove
+ * visibility with a channel read. Direct messages (`@me`) are never valid
+ * query targets. Fail-closed: inaccessible and missing targets collapse to a
+ * generic not-found that never exposes channel existence. Friday admission
+ * config never gates tool targets.
  */
 const resolveDiscordTarget = Effect.fn('resolveDiscordTarget')(function* (
   discord: DiscordMessageQueryAdapter,
   target: DiscordQueryTarget,
-  policy: DiscordMessageQueryPolicy,
 ) {
   if (target.guildId === '@me') return yield* targetNotFound()
   if (isDiscordThreadTarget(target)) {
@@ -114,7 +109,10 @@ const resolveDiscordTarget = Effect.fn('resolveDiscordTarget')(function* (
     if (target.channelId !== undefined && target.channelId !== thread.parent_id) {
       return yield* targetNotFound()
     }
-    if (policy.resolveChannelPolicy(target.guildId, thread.parent_id) === undefined) {
+    const threadGuild = Option.getOrUndefined(
+      decodeDiscordChannelGuild(info.metadata.raw),
+    )?.guild_id
+    if (threadGuild !== undefined && threadGuild !== target.guildId) {
       return yield* targetNotFound()
     }
     const source = yield* Effect.try({
@@ -135,7 +133,15 @@ const resolveDiscordTarget = Effect.fn('resolveDiscordTarget')(function* (
   }
   const channelId = target.channelId
   if (channelId === undefined) return yield* targetNotFound()
-  if (policy.resolveChannelPolicy(target.guildId, channelId) === undefined) {
+  const channelInfo = yield* Effect.tryPromise({
+    try: () =>
+      discord.fetchChannelInfo(discord.encodeThreadId({ guildId: target.guildId, channelId })),
+    catch: () => targetNotFound(),
+  })
+  const channelGuild = Option.getOrUndefined(
+    decodeDiscordChannelGuild(channelInfo.metadata.raw),
+  )?.guild_id
+  if (channelGuild !== undefined && channelGuild !== target.guildId) {
     return yield* targetNotFound()
   }
   const source = yield* Effect.try({
@@ -153,10 +159,9 @@ const resolveDiscordTarget = Effect.fn('resolveDiscordTarget')(function* (
 export const searchDiscordMessages = Effect.fn('searchDiscordMessages')(function* (
   discord: DiscordMessageQueryAdapter,
   query: PlatformMessageQuery,
-  policy: DiscordMessageQueryPolicy,
 ) {
   if (query.target.platform !== 'discord') return yield* targetNotFound()
-  const resolved = yield* resolveDiscordTarget(discord, query.target, policy)
+  const resolved = yield* resolveDiscordTarget(discord, query.target)
   const matches: Array<PlatformMessageRecord> = []
   const needle = query.query?.trim().toLocaleLowerCase()
   let cursor = query.before === undefined ? undefined : String(query.before)
@@ -230,25 +235,23 @@ const parseDiscordMessageUrl = (
  * Fetches one Discord message through the direct single-message endpoint. A
  * bare message id resolves against the required explicit target; a message
  * URL may derive its target from the URL, and a supplied target must agree
- * with it (same guild, same channel or thread). URL targets gate against the
- * live channel policy with thread URLs inheriting their parent channel
- * policy. Direct messages (`@me`) are rejected. Inaccessible and missing
- * targets collapse to a generic not-found, and bot authors are preserved
- * (unlike history search, which skips bots).
+ * with it (same guild, same channel or thread). Visibility is established by
+ * successful channel and message reads. Direct messages (`@me`) are rejected.
+ * Inaccessible and missing targets collapse to a generic not-found, and bot
+ * authors are preserved (unlike history search, which skips bots).
  */
 export const getDiscordMessage = Effect.fn('getDiscordMessage')(function* (
   discord: DiscordMessageQueryAdapter,
   query: PlatformMessageGetQuery,
-  policy: DiscordMessageQueryPolicy,
 ) {
   const rawUrl = query.messageUrl?.trim()
   if (rawUrl !== undefined && rawUrl !== '') {
     // A URL plus an id is ambiguous; fail closed instead of guessing.
     if (query.messageId !== undefined) return yield* messageNotFound(rawUrl)
-    return yield* getDiscordMessageByUrl(discord, query, policy, rawUrl)
+    return yield* getDiscordMessageByUrl(discord, query, rawUrl)
   }
   if (query.messageId !== undefined) {
-    return yield* getDiscordMessageById(discord, query, policy)
+    return yield* getDiscordMessageById(discord, query)
   }
   return yield* messageNotFound('')
 })
@@ -256,13 +259,12 @@ export const getDiscordMessage = Effect.fn('getDiscordMessage')(function* (
 const getDiscordMessageById = Effect.fn('getDiscordMessageById')(function* (
   discord: DiscordMessageQueryAdapter,
   query: PlatformMessageGetQuery,
-  policy: DiscordMessageQueryPolicy,
 ) {
   const requestedId = String(query.messageId)
   if (query.target === undefined || query.target.platform !== 'discord') {
     return yield* messageNotFound(requestedId)
   }
-  const resolved = yield* resolveDiscordTarget(discord, query.target, policy).pipe(
+  const resolved = yield* resolveDiscordTarget(discord, query.target).pipe(
     Effect.mapError(() => messageNotFound(requestedId)),
   )
   const message = yield* Effect.tryPromise({
@@ -275,7 +277,6 @@ const getDiscordMessageById = Effect.fn('getDiscordMessageById')(function* (
 const getDiscordMessageByUrl = Effect.fn('getDiscordMessageByUrl')(function* (
   discord: DiscordMessageQueryAdapter,
   query: PlatformMessageGetQuery,
-  policy: DiscordMessageQueryPolicy,
   rawUrl: string,
 ) {
   const parsed = yield* parseDiscordMessageUrl(rawUrl)
@@ -294,9 +295,9 @@ const getDiscordMessageByUrl = Effect.fn('getDiscordMessageByUrl')(function* (
       : target.channelId === parsed.channelId
     if (!agrees) return yield* messageNotFound(parsed.messageId)
   }
-  // Thread URLs inherit their parent channel policy: only thread-typed
-  // channels resolve through `parent_id`, everything else gates on the URL
-  // channel itself.
+  // Thread URLs resolve through `parent_id`; everything else reads the URL
+  // channel itself. Visibility is established by the channel read above plus
+  // the message read below; no admission config is consulted.
   const info = yield* Effect.tryPromise({
     try: () =>
       discord.fetchChannelInfo(
@@ -305,7 +306,6 @@ const getDiscordMessageByUrl = Effect.fn('getDiscordMessageByUrl')(function* (
     catch: () => messageNotFound(parsed.messageId),
   })
   const thread = Option.getOrUndefined(decodeDiscordThreadChannel(info.metadata.raw))
-  const effectiveChannelId = thread === undefined ? parsed.channelId : thread.parent_id
   if (target !== undefined && isDiscordThreadTarget(target)) {
     if (thread === undefined || target.threadId !== parsed.channelId) {
       return yield* messageNotFound(parsed.messageId)
@@ -314,7 +314,8 @@ const getDiscordMessageByUrl = Effect.fn('getDiscordMessageByUrl')(function* (
       return yield* messageNotFound(parsed.messageId)
     }
   }
-  if (policy.resolveChannelPolicy(parsed.guildId, effectiveChannelId) === undefined) {
+  const urlGuild = Option.getOrUndefined(decodeDiscordChannelGuild(info.metadata.raw))?.guild_id
+  if (urlGuild !== undefined && urlGuild !== parsed.guildId) {
     return yield* messageNotFound(parsed.messageId)
   }
   const message = yield* Effect.tryPromise({
@@ -329,8 +330,8 @@ const decodePostedMessageId = Schema.decodeUnknownOption(PostedMessageId)
 
 /**
  * Posts exactly one text message to an explicit Discord target through the
- * current connection only. The target is policy-checked before posting;
- * thread targets resolve through channel info so the parent-channel policy
+ * current connection only. Visibility is established by a channel read before
+ * posting; thread targets resolve through channel info so the parent channel
  * applies. Over-limit text is rejected rather than chunked: chunking would
  * turn one requested post into several platform messages. Returns the native
  * message id when the transport exposes one, otherwise a posted result with
@@ -339,7 +340,6 @@ const decodePostedMessageId = Schema.decodeUnknownOption(PostedMessageId)
 export const postDiscordMessage = Effect.fn('postDiscordMessage')(function* (
   discord: DiscordMessageQueryAdapter,
   query: PlatformMessagePostQuery,
-  policy: DiscordMessageQueryPolicy,
 ) {
   if (query.target.platform !== 'discord') return yield* targetNotFound()
   if (query.text.trim() === '') {
@@ -348,7 +348,7 @@ export const postDiscordMessage = Effect.fn('postDiscordMessage')(function* (
   if (query.text.length > DiscordMaxPostLength) {
     return yield* new ChatSdkPublicationError({ operation: 'post', cause: 'over-limit' })
   }
-  const resolved = yield* resolveDiscordTarget(discord, query.target, policy)
+  const resolved = yield* resolveDiscordTarget(discord, query.target)
   const posted = yield* Effect.tryPromise({
     try: () =>
       isDiscordThreadTarget(query.target)

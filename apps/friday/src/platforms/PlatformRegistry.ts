@@ -163,7 +163,7 @@ export const PlatformRegistryLive = Layer.effect(
               isMessageNotFound(cause) ? cause : operationError(platform.kind, cause),
             ),
           )
-        // Target admission preserves its generic not-found across the
+        // Target access preserves its generic not-found across the
         // boundary; it never exposes whether a channel exists. Honest
         // unsupported-scope failures preserve their typed detail the same way.
         const wrapTarget = <A>(effect: Effect.Effect<A, E | PlatformTargetNotFoundError>) =>

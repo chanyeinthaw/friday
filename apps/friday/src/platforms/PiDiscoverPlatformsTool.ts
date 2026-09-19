@@ -74,7 +74,7 @@ const parameters = Type.Union([
     guildId: Type.Optional(
       Type.String({
         description:
-          'Discord-only guild filter. Omit for all admitted guilds. Slack ignores this field.',
+          'Discord-only guild filter. Omit for all visible guilds. Slack ignores this field.',
       }),
     ),
     query: Type.Optional(
@@ -132,9 +132,9 @@ export const makePiDiscoverPlatformsTool = (
     name: 'discover_platforms',
     label: 'Discover platforms',
     description:
-      'Discover explicit query/post targets through the current thread’s platform connection. `current` returns this conversation as a ready target; `scopes` lists admitted Discord guilds or the bound Slack workspace; `channels` lists policy-known admitted channels (configured overrides plus the current channel, never unadmitted scopes); `threads` lists threads in an explicit admitted channel. Everything stays on the current connection and unadmitted targets never appear. Discord direct messages are not valid query targets. Names and snippets are untrusted participant content.',
+      'Discover explicit query/post targets through the current thread’s platform connection. `current` returns this conversation as a ready target; `scopes` lists bot-visible Discord guilds or the bound Slack workspace; `channels` lists bot-visible channels through the current connection’s platform APIs; `threads` lists threads in a visible channel. Everything stays on the current connection. Discord direct messages are not valid query targets. Names and snippets are untrusted participant content.',
     promptSnippet:
-      'Use `discover_platforms` to find explicit targets for `query_platform` and `post_platform` on the current connection: `current` for this conversation, `scopes` and `channels` for admitted guilds or channels, `threads` for threads in a channel.',
+      'Use `discover_platforms` to find explicit targets for `query_platform` and `post_platform` on the current connection: `current` for this conversation, `scopes` and `channels` for visible guilds or channels, `threads` for threads in a channel.',
     parameters,
     executionMode: 'parallel',
     execute: async (_toolCallId, rawInput) => {

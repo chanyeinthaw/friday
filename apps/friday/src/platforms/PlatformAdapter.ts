@@ -119,10 +119,9 @@ export const PlatformQueryTarget = Schema.Union([DiscordQueryTarget, SlackQueryT
 export type PlatformQueryTarget = typeof PlatformQueryTarget.Type
 
 /**
- * Generic not-found for target admission. Unknown, disabled, unadmitted,
- * inaccessible, and missing search/post targets collapse here so reads and
- * posts never expose channel existence. Single-message retrieval keeps its
- * own `PlatformMessageNotFoundError`.
+ * Generic not-found for tool targets. Inaccessible and missing search/post
+ * targets collapse here so reads and posts never expose channel existence.
+ * Single-message retrieval keeps its own `PlatformMessageNotFoundError`.
  */
 export class PlatformTargetNotFoundError extends Schema.Error<PlatformTargetNotFoundError>(
   'PlatformTargetNotFoundError',
@@ -188,7 +187,7 @@ export interface PlatformMembersResult {
  * guild members who can view the channel and fail with this error only when
  * guild enumeration is unavailable (missing Server Members intent or API
  * permissions); Slack thread targets inherit their parent channel membership.
- * Unlike not-found, this never hides an admitted target: it names the limitation.
+ * Unlike not-found, this never hides a visible target: it names the limitation.
  */
 export class PlatformMembersUnsupportedError extends Schema.Error<PlatformMembersUnsupportedError>(
   'PlatformMembersUnsupportedError',
@@ -208,15 +207,16 @@ export type PlatformDiscoveryAction = 'current' | 'scopes' | 'channels' | 'threa
 export interface PlatformDiscoveryQuery {
   readonly binding: ConversationBinding
   readonly action: PlatformDiscoveryAction
-  /** Discord-only guild filter for the `channels` action. Omit for all admitted guilds. */
+  /** Discord-only guild filter for the `channels` action. Omit for all visible guilds. */
   readonly guildId?: string | undefined
   /** Explicit parent channel target for the `threads` action. Must be a channel, not a thread. */
   readonly channelTarget?: PlatformQueryTarget | undefined
   /** Optional case-insensitive substring filter over names and IDs. */
   readonly query?: string | undefined
   readonly limit: number
-  /** Opaque pagination cursor: offset string for scopes/channels, adapter cursor for threads. */
-  readonly cursor?: string | undefined
+  /** Opaque pagination cursor: offset string for scopes/channels, adapter cursor for threads. */ readonly cursor?:
+    | string
+    | undefined
 }
 
 export interface PlatformDiscoveryCurrentTarget {

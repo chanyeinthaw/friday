@@ -3,7 +3,9 @@
 import type { SlackAdapter } from '@chat-adapter/slack'
 import type { ListThreadsOptions } from 'chat'
 import * as Effect from 'effect/Effect'
+import * as Encoding from 'effect/Encoding'
 import * as Option from 'effect/Option'
+import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
 import {
@@ -27,19 +29,17 @@ import {
   decodeSlackConversationId,
   toSlackAdapterChannelId,
 } from './SlackConversationScope.ts'
-import {
-  isSlackDirectMessageChannel,
-  type SlackResolvedChannelPolicy,
-} from './SlackChannelAccess.ts'
+import { isSlackDirectMessageChannel } from './SlackChannelAccess.ts'
 
 /**
- * Minimal structural surface for Slack membership reads. The full
+ * Minimal structural surface for Slack membership and channel reads. The full
  * `@slack/web-api` WebClient satisfies this; responses decode as unknown so
  * no new dependency or exact SDK typing is required.
  */
 export interface SlackDiscoveryWebClient {
   readonly conversations: {
     readonly members: (args: SlackChannelMembersArgs) => Promise<unknown>
+    readonly list: (args: SlackChannelListArgs) => Promise<unknown>
   }
   readonly users: {
     readonly info: (args: { readonly user: string }) => Promise<unknown>
@@ -56,6 +56,16 @@ export interface SlackChannelMembersArgs {
   limit?: number
 }
 
+/**
+ * Channel list arguments for visible-scope discovery. Fields stay mutable so
+ * callers can attach the pagination cursor in a separate statement.
+ */
+export interface SlackChannelListArgs {
+  types?: string
+  limit?: number
+  cursor?: string
+}
+
 /** Transport needed for explicit-target Slack member listing and discovery. */
 export interface SlackDiscoveryAdapter extends Pick<
   SlackAdapter,
@@ -67,18 +77,11 @@ export interface SlackDiscoveryAdapter extends Pick<
 export interface SlackDiscoveryPolicy {
   /**
    * Single workspace (team) bound to this connection's bot token. Explicit
-   * targets outside it fail closed before policy lookup or any adapter call.
+   * targets outside it fail closed before any adapter call. Channel
+   * visibility is established by Slack API responses, never by Friday
+   * admission config.
    */
   readonly workspaceId: string
-  readonly resolveChannelPolicy: (
-    teamId: string,
-    channelId: string,
-  ) => SlackResolvedChannelPolicy | undefined
-  /**
-   * Configured per-channel override IDs; admission still decides per channel.
-   * Absent in tests: discovery then returns the current channel only.
-   */
-  readonly listKnownChannels?: (() => ReadonlyArray<string>) | undefined
 }
 
 const targetNotFound = () => new PlatformTargetNotFoundError({ kind: 'slack' })
@@ -135,10 +138,10 @@ interface SlackResolvedTarget {
 }
 
 /**
- * Resolves an explicit Slack target against the connection's bound workspace
- * and the live admission policy. Mirrors the query/post gate: workspace
- * mismatches and unadmitted channels collapse to a generic not-found before
- * any adapter call.
+ * Resolves an explicit Slack target against the connection's bound workspace.
+ * Workspace mismatches collapse to a generic not-found before any adapter
+ * call. Channel visibility is established by subsequent Slack API responses;
+ * Friday admission config never gates tool targets.
  */
 const resolveSlackTarget = (
   target: SlackQueryTarget,
@@ -146,9 +149,6 @@ const resolveSlackTarget = (
 ): Effect.Effect<SlackResolvedTarget, PlatformTargetNotFoundError> =>
   Effect.gen(function* () {
     if (target.workspaceId !== policy.workspaceId) {
-      return yield* targetNotFound()
-    }
-    if (policy.resolveChannelPolicy(target.workspaceId, target.channelId) === undefined) {
       return yield* targetNotFound()
     }
     return {
@@ -358,47 +358,197 @@ const discoverScopes = Effect.fn('SlackDiscovery.scopes')(function* (
   } satisfies PlatformDiscoveryResult
 })
 
+const SlackChannelListPage = Schema.Struct({
+  channels: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        name: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  ),
+  response_metadata: Schema.optionalKey(
+    Schema.Struct({ next_cursor: Schema.optionalKey(Schema.String) }),
+  ),
+})
+const decodeSlackChannelListPage = Schema.decodeUnknownOption(SlackChannelListPage)
+
+const ChannelListPageSize = 200
+
+/**
+ * Opaque composite cursor for channel discovery. `api` is the Slack
+ * `conversations.list` `next_cursor` for the page to fetch; `skip` is the
+ * local offset into that page's query-filtered channels when a previous
+ * call truncated inside one API page. Both travel base64url-encoded so
+ * numeric offsets never reach Slack as cursors.
+ */
+const SlackChannelsCursorPayload = Schema.Struct({
+  v: Schema.Literal(1),
+  k: Schema.Literal('slack-channels'),
+  api: Schema.optionalKey(Schema.String),
+  skip: Schema.optionalKey(Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
+})
+const SlackChannelsCursorJson = Schema.fromJsonString(SlackChannelsCursorPayload)
+const decodeSlackChannelsCursorJsonOption = Schema.decodeUnknownOption(SlackChannelsCursorJson)
+const encodeSlackChannelsCursorJsonSync = Schema.encodeSync(SlackChannelsCursorJson)
+
+interface SlackChannelsPosition {
+  readonly api: string | undefined
+  readonly skip: number
+}
+
+interface SlackChannelsCursorInput {
+  readonly v: 1
+  readonly k: 'slack-channels'
+  api?: string
+  skip?: number
+}
+
+const decodeSlackChannelsPosition = (
+  cursor: string | undefined,
+): Option.Option<SlackChannelsPosition> => {
+  if (cursor === undefined || cursor.trim() === '') {
+    return Option.some({ api: undefined, skip: 0 })
+  }
+  const jsonResult = Encoding.decodeBase64UrlString(cursor.trim())
+  if (!Result.isSuccess(jsonResult)) return Option.none()
+  const payload = Option.getOrUndefined(
+    decodeSlackChannelsCursorJsonOption(Result.getOrThrow(jsonResult)),
+  )
+  if (payload === undefined) return Option.none()
+  const api = payload.api === undefined || payload.api === '' ? undefined : payload.api
+  return Option.some({ api, skip: payload.skip ?? 0 })
+}
+
+const encodeSlackChannelsPosition = (position: SlackChannelsPosition): string => {
+  const payload: SlackChannelsCursorInput = {
+    v: 1,
+    k: 'slack-channels',
+  }
+  if (position.api !== undefined) payload.api = position.api
+  if (position.skip > 0) payload.skip = position.skip
+  return Encoding.encodeBase64Url(encodeSlackChannelsCursorJsonSync(payload))
+}
+
+const fetchOneSlackChannelPage = Effect.fn('SlackDiscovery.channelPage')(function* (
+  adapter: SlackDiscoveryAdapter,
+  apiCursor: string | undefined,
+) {
+  // Exactly one `conversations.list` page per tool call. Public and private
+  // channels only; DMs use their own flows and are not enumerated here.
+  // The cursor here is always Slack's opaque `next_cursor`, never a numeric
+  // offset: numeric continuation lives inside the opaque composite cursor.
+  const listArgs: SlackChannelListArgs = {
+    types: 'public_channel,private_channel',
+    limit: ChannelListPageSize,
+  }
+  if (apiCursor !== undefined) listArgs.cursor = apiCursor
+  const raw = yield* Effect.tryPromise({
+    try: () => adapter.webClient.conversations.list(listArgs),
+    catch: (cause) => {
+      const code = slackErrorCode(cause)
+      return isSlackInaccessibleCode(code)
+        ? targetNotFound()
+        : discoverError(`slack-conversations-list:${code ?? 'unknown'}`)
+    },
+  })
+  return Option.getOrUndefined(decodeSlackChannelListPage(raw))
+})
+
+interface SlackFilteredPage {
+  readonly filtered: Array<{ readonly channelId: string; readonly name: string | undefined }>
+  readonly seen: Set<string>
+}
+
+const collectSlackFiltered = (
+  channels: ReadonlyArray<{ readonly id: string; readonly name?: string | undefined }>,
+  needle: string | undefined,
+): SlackFilteredPage => {
+  const seen = new Set<string>()
+  const filtered: Array<{ readonly channelId: string; readonly name: string | undefined }> = []
+  for (const channel of channels) {
+    const channelId = channel.id.trim()
+    if (channelId === '' || seen.has(channelId)) continue
+    seen.add(channelId)
+    if (!matchesDiscoveryQuery([channelId, channel.name], needle)) continue
+    filtered.push({ channelId, name: channel.name })
+  }
+  return { filtered, seen }
+}
+
+const nextSlackChannelsCursor = (
+  position: SlackChannelsPosition,
+  slicedLength: number,
+  remainingInPage: number,
+  nextApi: string | undefined,
+): string | undefined => {
+  // Honest continuation: `truncated` is true whenever the current API page
+  // still holds unreturned matches or Slack reports another upstream page.
+  // Terminal pages carry no cursor; every truncated page carries one.
+  if (remainingInPage > 0) {
+    return encodeSlackChannelsPosition({ api: position.api, skip: position.skip + slicedLength })
+  }
+  if (nextApi !== undefined) return encodeSlackChannelsPosition({ api: nextApi, skip: 0 })
+  return undefined
+}
+
 const discoverChannels = Effect.fn('SlackDiscovery.channels')(function* (
   adapter: SlackDiscoveryAdapter,
   query: PlatformDiscoveryQuery,
   policy: SlackDiscoveryPolicy,
 ) {
   const location = decodeSlackConversationId(String(query.binding.conversationId))
-  const candidates = new Set<string>()
-  for (const channelId of policy.listKnownChannels?.() ?? []) candidates.add(channelId)
-  if (location !== undefined) candidates.add(location.channelId)
-  const enriched: Array<{ readonly channelId: string; readonly name: string | undefined }> = []
-  for (const channelId of candidates) {
-    if (policy.workspaceId === '') continue
-    if (policy.resolveChannelPolicy(policy.workspaceId, channelId) === undefined) continue
-    const name = yield* channelName(adapter, channelId)
-    if (!matchesDiscoveryQuery([channelId, name], query.query)) continue
-    enriched.push({ channelId, name })
+  if (policy.workspaceId === '') {
+    const empty = yield* paginateIds([], query.limit, query.cursor)
+    return {
+      action: 'channels' as const,
+      platform: query.binding.platform,
+      connectionId: query.binding.connectionId,
+      workspaceId: policy.workspaceId,
+      channels: [],
+      nextCursor: empty.nextCursor,
+      truncated: empty.truncated,
+    } satisfies PlatformDiscoveryResult
   }
-  const page = yield* paginateIds(
-    enriched.map((entry) => entry.channelId),
-    query.limit,
-    query.cursor,
-  )
-  const channels: Array<PlatformDiscoveryChannel> = []
-  for (const channelId of page.page) {
-    const entry = enriched.find((item) => item.channelId === channelId)
-    if (entry === undefined) continue
-    channels.push({
-      target: { platform: 'slack', workspaceId: policy.workspaceId, channelId },
-      name: entry.name,
-      isCurrent: location?.channelId === channelId,
-      isDirectMessage: isSlackDirectMessageChannel(channelId),
-    })
+  const positionOption = decodeSlackChannelsPosition(query.cursor)
+  if (Option.isNone(positionOption)) {
+    return yield* discoverError('invalid-cursor')
   }
+  const position = positionOption.value
+  const page = yield* fetchOneSlackChannelPage(adapter, position.api)
+  const collected = collectSlackFiltered(page?.channels ?? [], query.query)
+  const filtered = [...collected.filtered]
+  // Include the current channel on the first page only when the list omits
+  // it but it remains readable; visibility is proven by the name read.
+  // Rebuilt identically on every fetch of the first page so `skip` resumes
+  // deterministically without storing channel contents in the cursor.
+  if (position.api === undefined && position.skip === 0 && location !== undefined) {
+    if (!collected.seen.has(location.channelId)) {
+      const name = yield* channelName(adapter, location.channelId)
+      if (name !== undefined && matchesDiscoveryQuery([location.channelId, name], query.query)) {
+        filtered.push({ channelId: location.channelId, name })
+      }
+    }
+  }
+  const sliced = filtered.slice(position.skip, position.skip + query.limit)
+  const remainingInPage = filtered.length - (position.skip + sliced.length)
+  const following = page?.response_metadata?.next_cursor
+  const nextApi = following === undefined || following === '' ? undefined : following
+  const nextCursor = nextSlackChannelsCursor(position, sliced.length, remainingInPage, nextApi)
+  const channels: Array<PlatformDiscoveryChannel> = sliced.map((entry) => ({
+    target: { platform: 'slack', workspaceId: policy.workspaceId, channelId: entry.channelId },
+    name: entry.name,
+    isCurrent: location?.channelId === entry.channelId,
+    isDirectMessage: isSlackDirectMessageChannel(entry.channelId),
+  }))
   return {
     action: 'channels' as const,
     platform: query.binding.platform,
     connectionId: query.binding.connectionId,
     workspaceId: policy.workspaceId,
     channels,
-    nextCursor: page.nextCursor,
-    truncated: page.truncated,
+    nextCursor,
+    truncated: nextCursor !== undefined,
   } satisfies PlatformDiscoveryResult
 })
 
@@ -471,9 +621,11 @@ const discoverThreads = Effect.fn('SlackDiscovery.threads')(function* (
 /**
  * Read-only Slack discovery through the current connection only. The workspace
  * is always the connection-bound team from `auth.test`, never model input.
- * Channels enumerate policy-known IDs (configured overrides plus the current
- * channel) admitted by the live channel scope; threads use the native thread
- * list on an admitted parent channel.
+ * Channels read exactly one `conversations.list` page per call and continue
+ * through Slack's opaque `next_cursor` inside an opaque composite cursor
+ * (API cursor plus local skip); threads use the native thread list on a
+ * visible parent channel. Visibility is established by Slack API responses;
+ * Friday admission config never gates discovery.
  */
 export const discoverSlack = Effect.fn('SlackDiscovery.discover')(function* (
   adapter: SlackDiscoveryAdapter,

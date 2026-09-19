@@ -83,8 +83,8 @@ thread routing below.
 
 ## Channel member listing
 
-`query_platform` with action `members` lists guild members who can view an
-admitted channel. The source of truth is Discord REST (`GET /guilds/{guild}`,
+`query_platform` with action `members` lists guild members who can view a
+bot-visible channel. The source of truth is Discord REST (`GET /guilds/{guild}`,
 `GET /guilds/{guild}/roles`, `GET /channels/{channel}`, and
 `GET /guilds/{guild}/members`): Friday never reads the gateway member cache
 for this listing.
@@ -105,7 +105,8 @@ follows Discord's channel permission order — guild owner first (always
 visible, including explicit member denies), then @everyone, member roles,
 Administrator bypass, and role/member overwrites from the channel payload
 only. Category inheritance is out of scope. Results stay bounded with an
-opaque `after` cursor and policy gates before any REST call.
+opaque `after` cursor; visibility is established by Discord REST reads and
+Friday admission config never gates tool targets.
 
 ## Adaptive thread routing
 

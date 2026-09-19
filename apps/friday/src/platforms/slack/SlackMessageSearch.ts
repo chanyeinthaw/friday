@@ -20,7 +20,6 @@ import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 import type { Message } from 'chat'
 import type { SlackAdapter } from '@chat-adapter/slack'
 import { toSlackAdapterChannelId, toSlackAdapterThreadId } from './SlackConversationScope.ts'
-import type { SlackResolvedChannelPolicy } from './SlackChannelAccess.ts'
 
 /**
  * Safe native single-message limit for Slack posts. The chat.postMessage API
@@ -54,18 +53,28 @@ export interface SlackMessageQueryPolicy {
   /**
    * Single workspace (team) bound to this connection's bot token, resolved
    * once during connection initialization via `auth.test`. Explicit targets
-   * outside this workspace fail closed before policy lookup or any adapter
-   * call. Slack bot tokens are single-workspace; the workspace allow-list
-   * still gates inbound events but never widens explicit targets.
+   * outside this workspace fail closed before any adapter call. Slack bot
+   * tokens are single-workspace; visibility inside the workspace is
+   * established by Slack API responses, never by Friday admission config.
    */
   readonly workspaceId: string
-  readonly resolveChannelPolicy: (
-    teamId: string,
-    channelId: string,
-  ) => SlackResolvedChannelPolicy | undefined
 }
 
 type SearchMessage = Message
+
+const SlackErrorCode = Schema.Struct({
+  data: Schema.Struct({ error: Schema.String }),
+})
+const decodeSlackErrorCode = Schema.decodeUnknownOption(SlackErrorCode)
+const slackErrorCode = (cause: unknown): string | undefined =>
+  Option.getOrUndefined(decodeSlackErrorCode(cause))?.data.error
+
+/** Slack codes that mean the channel is not accessible: collapse to not-found. */
+const isSlackInaccessibleCode = (code: string | undefined): boolean =>
+  code === 'channel_not_found' ||
+  code === 'not_in_channel' ||
+  code === 'restricted_action' ||
+  code === 'action_not_allowed'
 
 const targetNotFound = () => new PlatformTargetNotFoundError({ kind: 'slack' })
 const messageNotFound = (messageId: string) =>
@@ -133,16 +142,12 @@ interface SlackResolvedTarget {
 }
 
 /**
- * Resolves an explicit Slack target against the connection's bound workspace
- * and the live admission policy. Fail-closed: a workspace outside the
- * connection's actual workspace collapses to a generic not-found before
- * policy lookup or any adapter call, so a policy that admits another team
- * never widens explicit targets beyond the current connection. Channels
- * outside the configured scope collapse the same way. The inbound user
- * allowlist is deliberately not applied: the invoking user/thread is
- * already admitted, and scope admission is the only read gate. Direct-message
- * channels (`D...`) are admitted exactly when the configured channel scope
- * admits them.
+ * Resolves an explicit Slack target against the connection's bound workspace.
+ * Fail-closed: a workspace outside the connection's actual workspace
+ * collapses to a generic not-found before any adapter call, so explicit
+ * targets never widen beyond the current connection. Channel visibility is
+ * established by subsequent Slack API responses; Friday admission config
+ * never gates tool targets.
  */
 const resolveSlackTarget = (
   target: SlackQueryTarget,
@@ -150,9 +155,6 @@ const resolveSlackTarget = (
 ): Effect.Effect<SlackResolvedTarget, PlatformTargetNotFoundError> =>
   Effect.gen(function* () {
     if (target.workspaceId !== policy.workspaceId) {
-      return yield* targetNotFound()
-    }
-    if (policy.resolveChannelPolicy(target.workspaceId, target.channelId) === undefined) {
       return yield* targetNotFound()
     }
     const location = { teamId: target.workspaceId, channelId: target.channelId }
@@ -221,7 +223,12 @@ export const searchSlackMessages = Effect.fn('searchSlackMessages')(function* (
           remaining,
           cursor,
         ),
-      catch: (cause) => new ChatSdkPublicationError({ operation: 'publish', cause }),
+      catch: (cause) => {
+        const code = slackErrorCode(cause)
+        return isSlackInaccessibleCode(code)
+          ? targetNotFound()
+          : new ChatSdkPublicationError({ operation: 'publish', cause })
+      },
     })
     scannedCount += page.messages.length
     for (const message of page.messages.toReversed()) {
@@ -292,12 +299,14 @@ const decodePostedMessageId = Schema.decodeUnknownOption(PostedMessageId)
 
 /**
  * Posts exactly one text message to an explicit Slack target through the
- * current connection only. The target is policy-checked before posting; a
+ * current connection only. Visibility is established by the post itself; a
  * thread target posts as a thread reply, a channel target posts top-level.
- * Over-limit text is rejected rather than chunked: chunking would turn one
- * requested post into several platform messages. Returns the native message
- * timestamp id when the transport exposes one, otherwise a posted result
- * with a null id (never fabricated).
+ * Inaccessible channels collapse to not-found with the same codes as reads;
+ * transport and other failures stay typed publication errors so failed posts
+ * never populate the idempotency receipt. Over-limit text is rejected rather
+ * than chunked: chunking would turn one requested post into several platform
+ * messages. Returns the native message timestamp id when the transport
+ * exposes one, otherwise a posted result with a null id (never fabricated).
  */
 export const postSlackMessage = Effect.fn('postSlackMessage')(function* (
   adapter: SlackMessageQueryAdapter,
@@ -317,7 +326,12 @@ export const postSlackMessage = Effect.fn('postSlackMessage')(function* (
       isSlackThreadTarget(query.target)
         ? adapter.postMessage(resolved.adapterThreadId, query.text)
         : adapter.postChannelMessage(resolved.adapterChannelId, query.text),
-    catch: (cause) => new ChatSdkPublicationError({ operation: 'post', cause }),
+    catch: (cause) => {
+      const code = slackErrorCode(cause)
+      return isSlackInaccessibleCode(code)
+        ? targetNotFound()
+        : new ChatSdkPublicationError({ operation: 'post', cause })
+    },
   })
   const id = Option.getOrUndefined(decodePostedMessageId(posted))?.id
   const messageId = Option.getOrUndefined(decodeMessageIdOption(id ?? ''))
