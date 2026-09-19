@@ -32,6 +32,15 @@ export interface DiscordThreadMembersOptions {
   after?: string
 }
 
+/**
+ * Pagination options for the native Discord guild-members endpoint.
+ * Fields stay mutable so callers can attach them in separate statements.
+ */
+export interface DiscordGuildMembersOptions {
+  limit?: number
+  after?: string
+}
+
 /** Transport needed for Discord member listing and discovery. */
 export interface DiscordDiscoveryAdapter extends Pick<
   DiscordAdapter,
@@ -40,6 +49,13 @@ export interface DiscordDiscoveryAdapter extends Pick<
   readonly fetchThreadMembers: (
     threadId: string,
     options?: DiscordThreadMembersOptions,
+  ) => Promise<ReadonlyArray<unknown>>
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Discord guild payloads are Schema-decoded at the discovery boundary.
+  readonly fetchGuild: (guildId: string) => Promise<unknown>
+  readonly fetchGuildRoles: (guildId: string) => Promise<ReadonlyArray<unknown>>
+  readonly fetchGuildMembers: (
+    guildId: string,
+    options?: DiscordGuildMembersOptions,
   ) => Promise<ReadonlyArray<unknown>>
 }
 
@@ -64,12 +80,61 @@ const discoverError = (cause: unknown) =>
   new ChatSdkPublicationError({ operation: 'discover', cause })
 const membersError = (cause: unknown) =>
   new ChatSdkPublicationError({ operation: 'list-members', cause })
-const channelMembersUnsupported = () =>
+const channelMembersUnavailable = () =>
   new PlatformMembersUnsupportedError({
     kind: 'discord',
     detail:
-      'Discord channel member listing is not supported: guild member enumeration is privileged and unbounded. Use a thread target to list thread members.',
+      'Discord channel member listing is unavailable: the bot needs the privileged Server Members (GuildMembers) intent and permission to list guild members and view the channel. Enable the intent and grant access, then retry.',
   })
+
+const DiscordRestFailure = Schema.Struct({
+  status: Schema.optionalKey(Schema.Finite),
+  message: Schema.optionalKey(Schema.String),
+  originalError: Schema.optionalKey(Schema.Struct({ status: Schema.optionalKey(Schema.Finite) })),
+})
+const decodeDiscordRestFailure = Schema.decodeUnknownOption(DiscordRestFailure)
+
+/**
+ * Extracts an HTTP status from Discord REST failures.
+ * Primary is the structured `NetworkError.originalError.status`
+ * (a `DiscordApiError.status`); repository-compatible `status` fields and
+ * `Discord API error: <status>` message text are fallback only.
+ */
+const discordHttpStatus = (cause: unknown): number | undefined => {
+  const decoded = Option.getOrUndefined(decodeDiscordRestFailure(cause))
+  if (decoded?.originalError?.status !== undefined) return decoded.originalError.status
+  if (decoded?.status !== undefined) return decoded.status
+  const message = decoded?.message
+  if (message === undefined) return undefined
+  const match = /Discord API error:\s*(\d{3})/.exec(message)
+  if (match?.[1] !== undefined) {
+    const status = Number(match[1])
+    return Number.isInteger(status) ? status : undefined
+  }
+  if (
+    message.includes('Missing Access') ||
+    message.includes('Missing Intent') ||
+    message.includes('privileged')
+  ) {
+    return 403
+  }
+  return undefined
+}
+
+/**
+ * Central REST classification for channel, guild, roles, and members reads.
+ * 401/403 (missing token, Server Members intent, or API permissions) maps to
+ * an unavailable-scope error; 404 maps to not-found; 5xx, network failures,
+ * and rate limits map to a typed `list-members` operation error.
+ */
+const mapChannelMembersRestError = (
+  cause: unknown,
+): PlatformMembersUnsupportedError | PlatformTargetNotFoundError | ChatSdkPublicationError => {
+  const status = discordHttpStatus(cause)
+  if (status === 401 || status === 403) return channelMembersUnavailable()
+  if (status === 404) return targetNotFound()
+  return membersError(cause)
+}
 
 const DiscordThreadChannel = Schema.Struct({
   id: Schema.String,
@@ -123,7 +188,9 @@ interface DiscordResolvedTarget {
  * Resolves an explicit Discord target against the live admission policy.
  * Mirrors the query/post gate: threads inherit their parent-channel policy
  * and a supplied parent hint must agree; `@me` direct messages are never
- * valid targets. Fail-closed to a generic not-found.
+ * valid targets. Policy gates before channel/role/member REST reads; thread
+ * parent resolution maps REST failures centrally while policy denials and
+ * malformed payloads stay fail-closed to a generic not-found.
  */
 const resolveDiscordTarget = Effect.fn('DiscordDiscovery.resolveTarget')(function* (
   discord: DiscordDiscoveryAdapter,
@@ -140,7 +207,7 @@ const resolveDiscordTarget = Effect.fn('DiscordDiscovery.resolveTarget')(functio
         discord.fetchChannelInfo(
           discord.encodeThreadId({ guildId: target.guildId, channelId: threadId }),
         ),
-      catch: () => targetNotFound(),
+      catch: (cause) => mapChannelMembersRestError(cause),
     })
     const thread = Option.getOrUndefined(decodeDiscordThreadChannel(info.metadata.raw))
     if (thread === undefined) return yield* targetNotFound()
@@ -186,21 +253,350 @@ const resolveDiscordTarget = Effect.fn('DiscordDiscovery.resolveTarget')(functio
 })
 
 const MaximumMemberPages = 10
+const MaximumChannelMemberPages = 5
+const GuildMembersPageSize = 1000
 
 /**
- * Lists members of an explicit Discord thread target through the native
- * thread-members endpoint. Channel targets return a typed
- * unsupported-scope error: guild member enumeration is privileged and
- * unbounded, so Friday never attempts it. Admission matches query/post.
+ * Discord permission bits mirrored from discord-api-types PermissionFlagsBits.
+ * Guild owner and Administrator bypass channel overwrites; ViewChannel gates
+ * channel visibility. No official chat-adapter helper computes effective
+ * channel permissions from REST snapshots, so the documented overwrite
+ * algorithm below applies them. Only the channel payload's own
+ * `permission_overwrites` apply here; category inheritance is out of scope.
  */
-export const listDiscordMembers = Effect.fn('DiscordDiscovery.listMembers')(function* (
+const DiscordAdministratorBit = 8n
+const DiscordViewChannelBit = 1024n
+
+/** Parses Discord stringified permission bitfields without throwing. */
+const parsePermissionBits = (value: string | number | undefined): bigint => {
+  if (value === undefined) return 0n
+  const text = String(value).trim()
+  if (text === '' || /^-?\d+$/.test(text) !== true) return 0n
+  return BigInt(text)
+}
+
+const DiscordPermissionBitsField = Schema.Union([Schema.String, Schema.Number])
+
+const DiscordGuildRoleRaw = Schema.Struct({
+  id: Schema.String,
+  permissions: DiscordPermissionBitsField,
+})
+const decodeDiscordGuildRole = Schema.decodeUnknownOption(DiscordGuildRoleRaw)
+
+const DiscordChannelOverwriteRaw = Schema.Struct({
+  id: Schema.String,
+  type: Schema.Literals([0, 1]),
+  allow: DiscordPermissionBitsField,
+  deny: DiscordPermissionBitsField,
+})
+type DiscordChannelOverwriteRow = typeof DiscordChannelOverwriteRaw.Type
+const decodeDiscordChannelOverwrite = Schema.decodeUnknownOption(DiscordChannelOverwriteRaw)
+
+const DiscordChannelOverwritesRaw = Schema.Struct({
+  type: Schema.Number,
+  permission_overwrites: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+})
+const decodeDiscordChannelOverwrites = Schema.decodeUnknownOption(DiscordChannelOverwritesRaw)
+
+const DiscordGuildRaw = Schema.Struct({
+  id: Schema.String,
+  owner_id: Schema.String,
+})
+const decodeDiscordGuild = Schema.decodeUnknownOption(DiscordGuildRaw)
+
+const DiscordGuildMemberRaw = Schema.Struct({
+  user: Schema.Struct({
+    id: Schema.String,
+    username: Schema.optionalKey(Schema.String),
+    global_name: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    bot: Schema.optionalKey(Schema.Boolean),
+  }),
+  nick: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  roles: Schema.Array(Schema.String),
+})
+type DiscordGuildMemberRow = typeof DiscordGuildMemberRaw.Type
+const decodeDiscordGuildMember = Schema.decodeUnknownOption(DiscordGuildMemberRaw)
+
+/** Effective ViewChannel input for one guild member in one channel. */
+export interface DiscordViewChannelInput {
+  readonly guildId: string
+  readonly memberId: string
+  readonly memberRoleIds: ReadonlyArray<string>
+  readonly rolesById: ReadonlyMap<string, bigint>
+  readonly overwrites: ReadonlyArray<DiscordChannelOverwriteRow>
+  /** Trustworthy guild `owner_id` from REST; always visible when it matches. */
+  readonly ownerId?: string | undefined
+}
+
+/**
+ * Discord's documented channel permission algorithm, applied typesafely.
+ * The guild owner is always visible before any role/overwrite evaluation,
+ * including an explicit member deny. Base is @everyone plus member roles;
+ * Administrator bypasses overwrites; then @everyone, combined role, and
+ * member overwrites apply in order before the ViewChannel check. Unknown
+ * roles and malformed bits deny rather than grant.
+ */
+export const canDiscordMemberViewChannel = (input: DiscordViewChannelInput): boolean => {
+  if (input.ownerId !== undefined && input.memberId === input.ownerId) return true
+  let permissions = input.rolesById.get(input.guildId) ?? 0n
+  for (const roleId of input.memberRoleIds) {
+    if (roleId === input.guildId) continue
+    permissions |= input.rolesById.get(roleId) ?? 0n
+  }
+  if ((permissions & DiscordAdministratorBit) !== 0n) return true
+  const overwriteById = new Map<string, DiscordChannelOverwriteRow>()
+  for (const overwrite of input.overwrites) {
+    if (overwriteById.has(`${overwrite.type}:${overwrite.id}`) !== true) {
+      overwriteById.set(`${overwrite.type}:${overwrite.id}`, overwrite)
+    }
+  }
+  const everyone = overwriteById.get(`0:${input.guildId}`)
+  if (everyone !== undefined) {
+    permissions =
+      (permissions & ~parsePermissionBits(everyone.deny)) | parsePermissionBits(everyone.allow)
+  }
+  let roleDeny = 0n
+  let roleAllow = 0n
+  for (const roleId of input.memberRoleIds) {
+    if (roleId === input.guildId) continue
+    const overwrite = overwriteById.get(`0:${roleId}`)
+    if (overwrite === undefined) continue
+    roleDeny |= parsePermissionBits(overwrite.deny)
+    roleAllow |= parsePermissionBits(overwrite.allow)
+  }
+  permissions = (permissions & ~roleDeny) | roleAllow
+  const member = overwriteById.get(`1:${input.memberId}`)
+  if (member !== undefined) {
+    permissions =
+      (permissions & ~parsePermissionBits(member.deny)) | parsePermissionBits(member.allow)
+  }
+  return (permissions & DiscordViewChannelBit) !== 0n
+}
+
+const guildMemberToPlatformMember = (row: DiscordGuildMemberRow): PlatformMember | undefined => {
+  const userId = row.user.id.trim()
+  if (userId === '') return undefined
+  const username = row.user.username ?? userId
+  const displayName = row.nick ?? row.user.global_name ?? username
+  return {
+    platformUserId: userId,
+    username,
+    displayName: displayName ?? userId,
+    mention: `<@${userId}>`,
+    isBot: row.user.bot ?? 'unknown',
+  }
+}
+
+/** Decodes an opaque channel-members cursor to a guild-members `after` id. */
+const decodeChannelMembersAfter = (cursor: string | undefined): string | undefined => {
+  if (cursor === undefined) return undefined
+  const trimmed = cursor.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+const fetchChannelOverwrites = Effect.fn('DiscordDiscovery.channelOverwrites')(function* (
+  discord: DiscordDiscoveryAdapter,
+  source: string,
+) {
+  const channelInfo = yield* Effect.tryPromise({
+    try: () => discord.fetchChannelInfo(source),
+    catch: (cause) => mapChannelMembersRestError(cause),
+  })
+  const channel = Option.getOrUndefined(decodeDiscordChannelOverwrites(channelInfo.metadata.raw))
+  if (channel === undefined) return yield* targetNotFound()
+  if (channel.type === 10 || channel.type === 11 || channel.type === 12) {
+    return yield* targetNotFound()
+  }
+  const overwrites: Array<DiscordChannelOverwriteRow> = []
+  for (const raw of channel.permission_overwrites ?? []) {
+    const decoded = Option.getOrUndefined(decodeDiscordChannelOverwrite(raw))
+    if (decoded !== undefined) overwrites.push(decoded)
+  }
+  return overwrites
+})
+
+const fetchGuildOwnerId = Effect.fn('DiscordDiscovery.guildOwner')(function* (
+  discord: DiscordDiscoveryAdapter,
+  guildId: string,
+) {
+  const raw = yield* Effect.tryPromise({
+    try: () => discord.fetchGuild(guildId),
+    catch: (cause) => mapChannelMembersRestError(cause),
+  })
+  return Option.getOrUndefined(decodeDiscordGuild(raw))?.owner_id
+})
+
+const fetchRolesById = Effect.fn('DiscordDiscovery.rolesById')(function* (
+  discord: DiscordDiscoveryAdapter,
+  guildId: string,
+) {
+  const rawRoles = yield* Effect.tryPromise({
+    try: () => discord.fetchGuildRoles(guildId),
+    catch: (cause) => mapChannelMembersRestError(cause),
+  })
+  const rolesById = new Map<string, bigint>()
+  for (const raw of rawRoles) {
+    const decoded = Option.getOrUndefined(decodeDiscordGuildRole(raw))
+    if (decoded === undefined) continue
+    rolesById.set(decoded.id, parsePermissionBits(decoded.permissions))
+  }
+  return rolesById
+})
+
+interface ChannelScanState {
+  readonly members: Array<PlatformMember>
+  readonly seen: Set<string>
+  after: string | undefined
+  lastScanned: string | undefined
+}
+
+/**
+ * Extracts a usable guild-members cursor without full member decoding.
+ * Any non-empty trimmed `user.id` advances pagination (real Discord ids are
+ * numeric snowflakes); missing or blank ids never advance and never grant
+ * access. Full decoding still gates visibility separately.
+ */
+const DiscordGuildMemberCursorRaw = Schema.Struct({
+  user: Schema.Struct({ id: Schema.String }),
+})
+const decodeDiscordGuildMemberCursor = Schema.decodeUnknownOption(DiscordGuildMemberCursorRaw)
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Guild member rows are untrusted REST payloads decoded at this boundary.
+const extractGuildMemberCursorId = (row: unknown): string | undefined => {
+  const trimmed = Option.getOrUndefined(decodeDiscordGuildMemberCursor(row))?.user.id.trim()
+  return trimmed === undefined || trimmed === '' ? undefined : trimmed
+}
+
+interface GuildPageScan {
+  /** Raw rows visited, including malformed rows skipped for access. */
+  readonly examined: number
+  /** True when at least one row carried a usable cursor id. */
+  readonly advanced: boolean
+}
+
+const scanGuildPage = (
+  rows: ReadonlyArray<unknown>,
+  state: ChannelScanState,
+  guildId: string,
+  ownerId: string | undefined,
+  rolesById: ReadonlyMap<string, bigint>,
+  overwrites: ReadonlyArray<DiscordChannelOverwriteRow>,
+  limit: number,
+): GuildPageScan => {
+  let examined = 0
+  let advanced = false
+  for (const row of rows) {
+    const cursorId = extractGuildMemberCursorId(row)
+    if (cursorId !== undefined) {
+      state.after = cursorId
+      state.lastScanned = cursorId
+      advanced = true
+    }
+    const decoded = Option.getOrUndefined(decodeDiscordGuildMember(row))
+    examined += 1
+    if (decoded === undefined) continue
+    const memberId = decoded.user.id.trim()
+    if (memberId === '' || state.seen.has(memberId)) continue
+    state.seen.add(memberId)
+    const canView = canDiscordMemberViewChannel({
+      guildId,
+      memberId,
+      memberRoleIds: decoded.roles,
+      rolesById,
+      overwrites,
+      ownerId,
+    })
+    if (canView !== true) continue
+    const member = guildMemberToPlatformMember(decoded)
+    if (member === undefined) continue
+    state.members.push(member)
+    if (state.members.length >= limit) break
+  }
+  return { examined, advanced }
+}
+
+/**
+ * Lists members of an explicit Discord channel target who can view the channel.
+ * Guild metadata, roles, channel overwrites, and guild members page through
+ * REST; effective ViewChannel applies the guild owner, @everyone, member
+ * roles, administrator, and role/member overwrites in documented order. Only
+ * the channel payload's own overwrites apply. Bounded to
+ * MaximumChannelMemberPages of GuildMembersPageSize scans per call with an
+ * opaque `after` cursor; REST failures map centrally (401/403 unavailable
+ * scope, 404 not-found, 5xx/network/rate-limit operation error). A non-empty
+ * page without a usable cursor fails as malformed instead of returning a
+ * cursorless truncated page or refetching the same page; `truncated: true`
+ * always carries `nextCursor`.
+ */
+const listDiscordChannelMembers = Effect.fn('DiscordDiscovery.listChannelMembers')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformMembersQuery,
   policy: DiscordDiscoveryPolicy,
+  target: DiscordQueryTarget,
 ) {
-  if (query.target.platform !== 'discord') return yield* targetNotFound()
-  if (!isDiscordThreadTarget(query.target)) return yield* channelMembersUnsupported()
-  const resolved = yield* resolveDiscordTarget(discord, query.target, policy)
+  const resolved = yield* resolveDiscordTarget(discord, target, policy)
+  const overwrites = yield* fetchChannelOverwrites(discord, resolved.source)
+  const ownerId = yield* fetchGuildOwnerId(discord, resolved.guildId)
+  const rolesById = yield* fetchRolesById(discord, resolved.guildId)
+  const state: ChannelScanState = {
+    members: [],
+    seen: new Set<string>(),
+    after: decodeChannelMembersAfter(query.cursor),
+    lastScanned: undefined,
+  }
+  let exhausted = false
+  let pages = 0
+  while (
+    state.members.length < query.limit &&
+    exhausted !== true &&
+    pages < MaximumChannelMemberPages
+  ) {
+    pages += 1
+    const pageOptions: DiscordGuildMembersOptions = { limit: GuildMembersPageSize }
+    if (state.after !== undefined) pageOptions.after = state.after
+    const rows = yield* Effect.tryPromise({
+      try: () => discord.fetchGuildMembers(resolved.guildId, pageOptions),
+      catch: (cause) => mapChannelMembersRestError(cause),
+    })
+    if (rows.length === 0) {
+      exhausted = true
+      break
+    }
+    const scan = scanGuildPage(
+      rows,
+      state,
+      resolved.guildId,
+      ownerId,
+      rolesById,
+      overwrites,
+      query.limit,
+    )
+    if (!scan.advanced) {
+      return yield* membersError('malformed guild members page: no usable cursor')
+    }
+    if (state.members.length >= query.limit) {
+      if (scan.examined < rows.length || rows.length >= GuildMembersPageSize) break
+      exhausted = true
+    } else if (rows.length < GuildMembersPageSize) exhausted = true
+  }
+  const truncated = exhausted !== true
+  if (truncated && state.lastScanned === undefined) {
+    return yield* membersError('malformed guild members page: missing cursor')
+  }
+  return {
+    members: state.members,
+    nextCursor: truncated ? state.lastScanned : undefined,
+    truncated,
+  } satisfies PlatformMembersResult
+})
+
+const listDiscordThreadMembers = Effect.fn('DiscordDiscovery.listThreadMembers')(function* (
+  discord: DiscordDiscoveryAdapter,
+  query: PlatformMembersQuery,
+  policy: DiscordDiscoveryPolicy,
+  target: DiscordQueryTarget,
+) {
+  const resolved = yield* resolveDiscordTarget(discord, target, policy)
   const seen = new Set<string>()
   const members: Array<PlatformMember> = []
   let after: string | undefined
@@ -213,7 +609,7 @@ export const listDiscordMembers = Effect.fn('DiscordDiscovery.listMembers')(func
     if (after !== undefined) memberOptions.after = after
     const rows = yield* Effect.tryPromise({
       try: () => discord.fetchThreadMembers(resolved.source, memberOptions),
-      catch: (cause) => membersError(cause),
+      catch: (cause) => mapChannelMembersRestError(cause),
     })
     if (rows.length === 0) break
     let progressed = false
@@ -234,6 +630,24 @@ export const listDiscordMembers = Effect.fn('DiscordDiscovery.listMembers')(func
     nextCursor: undefined,
     truncated: false,
   } satisfies PlatformMembersResult
+})
+
+/**
+ * Lists members for an explicit Discord target through the current connection.
+ * Thread targets keep the native thread participant listing; ordinary channel
+ * targets return guild members who can view the channel via effective
+ * ViewChannel permissions. Policy gates before any adapter call.
+ */
+export const listDiscordMembers = Effect.fn('DiscordDiscovery.listMembers')(function* (
+  discord: DiscordDiscoveryAdapter,
+  query: PlatformMembersQuery,
+  policy: DiscordDiscoveryPolicy,
+) {
+  if (query.target.platform !== 'discord') return yield* targetNotFound()
+  if (isDiscordThreadTarget(query.target)) {
+    return yield* listDiscordThreadMembers(discord, query, policy, query.target)
+  }
+  return yield* listDiscordChannelMembers(discord, query, policy, query.target)
 })
 
 interface DiscordCurrentLocation {
