@@ -12,13 +12,11 @@ import {
   type DiscordQueryTarget,
 } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
-import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 import {
   canDiscordMemberViewChannel,
   discoverDiscord,
   listDiscordMembers,
   type DiscordDiscoveryAdapter,
-  type DiscordDiscoveryPolicy,
   type DiscordGuildMembersOptions,
   type DiscordThreadMembersOptions,
 } from './DiscordDiscovery.ts'
@@ -34,24 +32,6 @@ const binding = Schema.decodeSync(ConversationBinding)({
 const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
 const isMembersUnsupported = Schema.is(PlatformMembersUnsupportedError)
 const isPublicationError = Schema.is(ChatSdkPublicationError)
-
-const admitted = (): DiscordResolvedChannelPolicy => ({
-  invocationMode: 'mention-only',
-  replyMode: 'reply-in-thread',
-  users: { mode: 'all', ids: [] },
-})
-
-const policy: DiscordDiscoveryPolicy = {
-  resolveChannelPolicy: (guildId, channelId) =>
-    guildId === 'guild-1' && (channelId === 'channel-1' || channelId === 'channel-2')
-      ? admitted()
-      : undefined,
-  listGuilds: () => [
-    { guildId: 'guild-1', enabled: true, channelIds: ['channel-2', 'channel-denied'] },
-    { guildId: 'guild-2', enabled: false, channelIds: [] },
-    { guildId: 'guild-3', enabled: true, channelIds: [] },
-  ],
-}
 
 const threadRaw = (id: string, parentId: string) => ({ id, parent_id: parentId, type: 11 })
 
@@ -119,6 +99,13 @@ interface StubOptions {
   readonly guildMembers?: ReadonlyArray<StubGuildMember>
   readonly guildMembersRaw?: ReadonlyArray<unknown>
   readonly guildMembersError?: unknown
+  readonly botGuilds?: ReadonlyArray<{ readonly id: string; readonly name?: string }>
+  readonly botGuildsError?: unknown
+  readonly guildChannels?: Record<
+    string,
+    ReadonlyArray<{ readonly id: string; readonly name?: string; readonly type?: number }>
+  >
+  readonly guildChannelsError?: unknown
 }
 
 const stubAdapter = (
@@ -239,6 +226,32 @@ const stubAdapter = (
       }
       return Promise.resolve([...(options.guildRoles ?? [])])
     },
+    fetchBotGuilds: () => {
+      if (options.botGuildsError !== undefined) {
+        return Promise.reject(options.botGuildsError)
+      }
+      return Promise.resolve(
+        options.botGuilds ?? [
+          { id: 'guild-1', name: 'Guild One' },
+          { id: 'guild-3', name: 'Guild Three' },
+        ],
+      )
+    },
+    fetchGuildChannels: (guildId: string) => {
+      if (options.guildChannelsError !== undefined) {
+        return Promise.reject(options.guildChannelsError)
+      }
+      if (options.guildChannels !== undefined) {
+        return Promise.resolve([...(options.guildChannels[guildId] ?? [])])
+      }
+      if (guildId === 'guild-1') {
+        return Promise.resolve([
+          { id: 'channel-1', name: 'general', type: 0 },
+          { id: 'channel-2', name: 'random', type: 0 },
+        ])
+      }
+      return Promise.resolve([])
+    },
     fetchGuildMembers: (
       guildId: string,
       fetchOptions: { readonly limit?: number; readonly after?: string } = {},
@@ -317,17 +330,13 @@ const threadTarget: DiscordQueryTarget = {
   threadId: 'thread-9',
 }
 
-it.effect('scopes lists only enabled guilds and marks the current guild', () =>
+it.effect('scopes lists bot-visible guilds and marks the current guild', () =>
   Effect.gen(function* () {
-    const result = yield* discoverDiscord(
-      stubAdapter(),
-      {
-        binding,
-        action: 'scopes',
-        limit: 20,
-      },
-      policy,
-    )
+    const result = yield* discoverDiscord(stubAdapter(), {
+      binding,
+      action: 'scopes',
+      limit: 20,
+    })
 
     assert.strictEqual(result.action, 'scopes')
     if (result.action !== 'scopes') return
@@ -342,16 +351,12 @@ it.effect('scopes lists only enabled guilds and marks the current guild', () =>
 it.effect('scopes filters by query and paginates with an offset cursor', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter()
-    const filtered = yield* discoverDiscord(
-      adapter,
-      {
-        binding,
-        action: 'scopes',
-        query: 'guild-3',
-        limit: 20,
-      },
-      policy,
-    )
+    const filtered = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'scopes',
+      query: 'guild-3',
+      limit: 20,
+    })
     assert.strictEqual(filtered.action, 'scopes')
     if (filtered.action !== 'scopes') return
     assert.deepStrictEqual(
@@ -359,21 +364,17 @@ it.effect('scopes filters by query and paginates with an offset cursor', () =>
       ['guild-3'],
     )
 
-    const first = yield* discoverDiscord(adapter, { binding, action: 'scopes', limit: 1 }, policy)
+    const first = yield* discoverDiscord(adapter, { binding, action: 'scopes', limit: 1 })
     assert.strictEqual(first.action, 'scopes')
     if (first.action !== 'scopes' || first.nextCursor === undefined) return
     assert.strictEqual(first.scopes.length, 1)
     assert.isTrue(first.truncated)
-    const second = yield* discoverDiscord(
-      adapter,
-      {
-        binding,
-        action: 'scopes',
-        limit: 1,
-        cursor: first.nextCursor,
-      },
-      policy,
-    )
+    const second = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'scopes',
+      limit: 1,
+      cursor: first.nextCursor,
+    })
     assert.strictEqual(second.action, 'scopes')
     if (second.action !== 'scopes') return
     assert.strictEqual(second.scopes.length, 1)
@@ -382,17 +383,13 @@ it.effect('scopes filters by query and paginates with an offset cursor', () =>
   }),
 )
 
-it.effect('channels lists admitted policy-known channels plus the current channel', () =>
+it.effect('channels lists bot-visible guild channels', () =>
   Effect.gen(function* () {
-    const result = yield* discoverDiscord(
-      stubAdapter(),
-      {
-        binding,
-        action: 'channels',
-        limit: 20,
-      },
-      policy,
-    )
+    const result = yield* discoverDiscord(stubAdapter(), {
+      binding,
+      action: 'channels',
+      limit: 20,
+    })
 
     assert.strictEqual(result.action, 'channels')
     if (result.action !== 'channels') return
@@ -402,7 +399,7 @@ it.effect('channels lists admitted policy-known channels plus the current channe
           ? `${channel.target.channelId}:${channel.name}:${channel.isCurrent}`
           : `unexpected:${channel.name}`,
       ),
-      ['channel-2:random:false', 'channel-1:general:true'],
+      ['channel-1:general:true', 'channel-2:random:false'],
     )
   }),
 )
@@ -410,30 +407,22 @@ it.effect('channels lists admitted policy-known channels plus the current channe
 it.effect('channels respects the guild filter and the name search', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter()
-    const guildFiltered = yield* discoverDiscord(
-      adapter,
-      {
-        binding,
-        action: 'channels',
-        guildId: 'guild-3',
-        limit: 20,
-      },
-      policy,
-    )
+    const guildFiltered = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'channels',
+      guildId: 'guild-3',
+      limit: 20,
+    })
     assert.strictEqual(guildFiltered.action, 'channels')
     if (guildFiltered.action !== 'channels') return
     assert.deepStrictEqual(guildFiltered.channels, [])
 
-    const nameSearch = yield* discoverDiscord(
-      adapter,
-      {
-        binding,
-        action: 'channels',
-        query: 'rand',
-        limit: 20,
-      },
-      policy,
-    )
+    const nameSearch = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'channels',
+      query: 'rand',
+      limit: 20,
+    })
     assert.strictEqual(nameSearch.action, 'channels')
     if (nameSearch.action !== 'channels') return
     assert.deepStrictEqual(
@@ -452,16 +441,12 @@ it.effect('threads lists threads of an admitted channel with ready targets', () 
         { id: 'discord:guild-1:channel-1:thread-9', text: 'Thread Nine root', replyCount: 3 },
       ],
     })
-    const result = yield* discoverDiscord(
-      adapter,
-      {
-        binding,
-        action: 'threads',
-        channelTarget,
-        limit: 20,
-      },
-      policy,
-    )
+    const result = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'threads',
+      channelTarget,
+      limit: 20,
+    })
 
     assert.strictEqual(result.action, 'threads')
     if (result.action !== 'threads') return
@@ -477,17 +462,16 @@ it.effect('threads lists threads of an admitted channel with ready targets', () 
   }),
 )
 
-it.effect('threads collapses unadmitted parents to not-found', () =>
+it.effect('threads collapses inaccessible parents to not-found', () =>
   Effect.gen(function* () {
     const error = yield* discoverDiscord(
-      stubAdapter(),
+      stubAdapter({ channelError: new Error('Discord API error: 404 Unknown Channel') }),
       {
         binding,
         action: 'threads',
         channelTarget: { platform: 'discord', guildId: 'guild-9', channelId: 'channel-9' },
         limit: 20,
       },
-      policy,
     ).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
@@ -499,11 +483,7 @@ it.effect('lists thread members with minimal safe fields', () =>
     const adapter = stubAdapter({
       threadMembers: [memberRow('U1', 'alice', 'Alice A'), memberRow('U2', 'botty', 'Botty', true)],
     })
-    const result = yield* listDiscordMembers(
-      adapter,
-      { binding, target: threadTarget, limit: 20 },
-      policy,
-    )
+    const result = yield* listDiscordMembers(adapter, { binding, target: threadTarget, limit: 20 })
 
     assert.strictEqual(result.members.length, 2)
     assert.deepStrictEqual(result.members[0], {
@@ -525,11 +505,7 @@ it.effect('lists public channel members who can view via @everyone', () =>
       guildRoles: [guildRole('guild-1', '1024')],
       guildMembers: [guildMember('U1', 'alice', []), guildMember('U2', 'bob', [])],
     })
-    const result = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const result = yield* listDiscordMembers(adapter, { binding, target: channelTarget, limit: 20 })
 
     assert.deepStrictEqual(
       result.members.map((member) => member.platformUserId),
@@ -547,11 +523,11 @@ it.effect('applies role overwrites for allow and deny', () =>
       guildRoles: [guildRole('guild-1', '1024'), guildRole('role-1', '0')],
       guildMembers: [guildMember('U1', 'alice', ['role-1']), guildMember('U2', 'bob', [])],
     })
-    const deniedResult = yield* listDiscordMembers(
-      denied,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const deniedResult = yield* listDiscordMembers(denied, {
+      binding,
+      target: channelTarget,
+      limit: 20,
+    })
     assert.deepStrictEqual(
       deniedResult.members.map((member) => member.platformUserId),
       ['U2'],
@@ -562,11 +538,11 @@ it.effect('applies role overwrites for allow and deny', () =>
       guildRoles: [guildRole('guild-1', '0'), guildRole('role-1', '0')],
       guildMembers: [guildMember('U1', 'alice', ['role-1']), guildMember('U2', 'bob', [])],
     })
-    const allowedResult = yield* listDiscordMembers(
-      allowed,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const allowedResult = yield* listDiscordMembers(allowed, {
+      binding,
+      target: channelTarget,
+      limit: 20,
+    })
     assert.deepStrictEqual(
       allowedResult.members.map((member) => member.platformUserId),
       ['U1'],
@@ -589,11 +565,7 @@ it.effect('gives member overwrites precedence over role overwrites', () =>
         guildMember('U3', 'cara', ['role-2']),
       ],
     })
-    const result = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const result = yield* listDiscordMembers(adapter, { binding, target: channelTarget, limit: 20 })
 
     assert.deepStrictEqual(
       result.members.map((member) => member.platformUserId),
@@ -609,11 +581,7 @@ it.effect('lets administrators view despite deny overwrites', () =>
       guildRoles: [guildRole('guild-1', '0'), guildRole('role-admin', '8')],
       guildMembers: [guildMember('U1', 'admin', ['role-admin']), guildMember('U2', 'bob', [])],
     })
-    const result = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const result = yield* listDiscordMembers(adapter, { binding, target: channelTarget, limit: 20 })
 
     assert.deepStrictEqual(
       result.members.map((member) => member.platformUserId),
@@ -645,11 +613,7 @@ it.effect('paginates channel members with an opaque after cursor', () =>
         guildMember('U3', 'cara', []),
       ],
     })
-    const first = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 2 },
-      policy,
-    )
+    const first = yield* listDiscordMembers(adapter, { binding, target: channelTarget, limit: 2 })
     assert.deepStrictEqual(
       first.members.map((member) => member.platformUserId),
       ['U1', 'U2'],
@@ -657,11 +621,12 @@ it.effect('paginates channel members with an opaque after cursor', () =>
     assert.isTrue(first.truncated)
     assert.strictEqual(first.nextCursor, 'U2')
 
-    const second = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 2, cursor: first.nextCursor },
-      policy,
-    )
+    const second = yield* listDiscordMembers(adapter, {
+      binding,
+      target: channelTarget,
+      limit: 2,
+      cursor: first.nextCursor,
+    })
     assert.deepStrictEqual(
       second.members.map((member) => member.platformUserId),
       ['U3'],
@@ -678,11 +643,7 @@ it.effect('returns bots with minimal safe fields only', () =>
       guildRoles: [guildRole('guild-1', '1024')],
       guildMembers: [guildMember('U1', 'alice', []), guildMember('B1', 'botty', [], true)],
     })
-    const result = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const result = yield* listDiscordMembers(adapter, { binding, target: channelTarget, limit: 20 })
 
     assert.strictEqual(result.members.length, 2)
     assert.deepStrictEqual(result.members[1], {
@@ -713,7 +674,6 @@ it.effect('fails cleanly when guild member enumeration is unavailable', () =>
         guildMembersError: new Error('Discord API error: 403 Missing Access'),
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
 
     assert(isMembersUnsupported(error))
@@ -721,59 +681,45 @@ it.effect('fails cleanly when guild member enumeration is unavailable', () =>
   }),
 )
 
-it.effect('makes no adapter call for policy-denied channel targets', () =>
+it.effect('collapses inaccessible channel targets to not-found', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter({
-      channelRaw: channelWithOverwrites([]),
-      guildRoles: [guildRole('guild-1', '1024')],
-      guildMembers: [guildMember('U1', 'alice', [])],
+      channelError: new Error('Discord API error: 404 Unknown Channel'),
     })
-    const error = yield* listDiscordMembers(
-      adapter,
-      {
-        binding,
-        target: { platform: 'discord', guildId: 'guild-9', channelId: 'channel-9' },
-        limit: 20,
-      },
-      policy,
-    ).pipe(Effect.flip)
+    const error = yield* listDiscordMembers(adapter, {
+      binding,
+      target: { platform: 'discord', guildId: 'guild-9', channelId: 'channel-9' },
+      limit: 20,
+    }).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
-    assert.deepStrictEqual(adapter.channelCalls, [])
-    assert.deepStrictEqual(adapter.guildCalls, [])
-    assert.deepStrictEqual(adapter.roleCalls, [])
-    assert.deepStrictEqual(adapter.guildMemberCalls, [])
+    assert.isTrue(adapter.channelCalls.length > 0)
   }),
 )
 
-it.effect('collapses unadmitted thread parents and DMs to not-found', () =>
+it.effect('collapses inaccessible thread parents and DMs to not-found', () =>
   Effect.gen(function* () {
-    const adapter = stubAdapter({ threadMembers: [memberRow('U1', 'alice', 'Alice A')] })
-    const unadmitted = yield* listDiscordMembers(
-      adapter,
-      {
-        binding,
-        target: {
-          platform: 'discord',
-          guildId: 'guild-9',
-          channelId: 'channel-9',
-          threadId: 'thread-9',
-        },
-        limit: 20,
+    const adapter = stubAdapter({
+      channelError: new Error('Discord API error: 404 Unknown Channel'),
+      threadMembers: [memberRow('U1', 'alice', 'Alice A')],
+    })
+    const unadmitted = yield* listDiscordMembers(adapter, {
+      binding,
+      target: {
+        platform: 'discord',
+        guildId: 'guild-9',
+        channelId: 'channel-9',
+        threadId: 'thread-9',
       },
-      policy,
-    ).pipe(Effect.flip)
+      limit: 20,
+    }).pipe(Effect.flip)
     assert(isTargetNotFound(unadmitted))
 
-    const direct = yield* listDiscordMembers(
-      adapter,
-      {
-        binding,
-        target: { platform: 'discord', guildId: '@me', channelId: 'dm-1', threadId: 'thread-9' },
-        limit: 20,
-      },
-      policy,
-    ).pipe(Effect.flip)
+    const direct = yield* listDiscordMembers(adapter, {
+      binding,
+      target: { platform: 'discord', guildId: '@me', channelId: 'dm-1', threadId: 'thread-9' },
+      limit: 20,
+    }).pipe(Effect.flip)
     assert(isTargetNotFound(direct))
   }),
 )
@@ -793,11 +739,7 @@ it.effect('keeps the guild owner visible despite an explicit member deny', () =>
       guildRoles: [guildRole('guild-1', '0')],
       guildMembers: [guildMember('U1', 'owner', []), guildMember('U2', 'bob', [])],
     })
-    const result = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const result = yield* listDiscordMembers(adapter, { binding, target: channelTarget, limit: 20 })
 
     assert.deepStrictEqual(
       result.members.map((member) => member.platformUserId),
@@ -825,7 +767,6 @@ it.effect('maps structured 401/403 to unavailable scope on guild, roles, and mem
         guildRoles: [guildRole('guild-1', '1024')],
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
     assert(isMembersUnsupported(guildDenied))
 
@@ -835,7 +776,6 @@ it.effect('maps structured 401/403 to unavailable scope on guild, roles, and mem
         guildRolesError: structuredRestError(403, 'Missing Access'),
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
     assert(isMembersUnsupported(rolesDenied))
 
@@ -846,7 +786,6 @@ it.effect('maps structured 401/403 to unavailable scope on guild, roles, and mem
         guildMembersError: structuredRestError(403, 'Missing Access'),
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
     assert(isMembersUnsupported(membersDenied))
   }),
@@ -860,7 +799,6 @@ it.effect('maps 404 to not-found and 5xx to a typed members error', () =>
         guildRoles: [guildRole('guild-1', '1024')],
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
     assert(isTargetNotFound(channelMissing))
 
@@ -871,7 +809,6 @@ it.effect('maps 404 to not-found and 5xx to a typed members error', () =>
         guildMembersError: structuredRestError(404, 'Unknown Guild'),
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
     assert(isTargetNotFound(membersMissing))
 
@@ -881,7 +818,6 @@ it.effect('maps 404 to not-found and 5xx to a typed members error', () =>
         guildRolesError: structuredRestError(500, 'Internal Error'),
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
     assert(isPublicationError(rolesFailed))
     assert.strictEqual(rolesFailed.operation, 'list-members')
@@ -893,7 +829,6 @@ it.effect('maps 404 to not-found and 5xx to a typed members error', () =>
         guildMembersError: structuredRestError(503, 'Unavailable'),
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
     assert(isPublicationError(membersFailed))
     assert.strictEqual(membersFailed.operation, 'list-members')
@@ -909,7 +844,6 @@ it.effect('fails a full malformed page instead of returning a cursorless truncat
         guildMembersRaw: [{ nope: true }, { user: null }, { user: { id: '   ' } }],
       }),
       { binding, target: channelTarget, limit: 20 },
-      policy,
     ).pipe(Effect.flip)
 
     assert(isPublicationError(error))
@@ -929,11 +863,7 @@ it.effect('skips malformed rows but advances past valid ids before valid rows', 
         guildMember('U2', 'bob', []),
       ],
     })
-    const result = yield* listDiscordMembers(
-      adapter,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const result = yield* listDiscordMembers(adapter, { binding, target: channelTarget, limit: 20 })
 
     assert.deepStrictEqual(
       result.members.map((member) => member.platformUserId),
@@ -951,11 +881,7 @@ it.effect('ends the final page without a cursor and keeps truncated cursors defi
       guildRoles: [guildRole('guild-1', '1024')],
       guildMembers: [guildMember('U1', 'alice', [])],
     })
-    const final = yield* listDiscordMembers(
-      single,
-      { binding, target: channelTarget, limit: 20 },
-      policy,
-    )
+    const final = yield* listDiscordMembers(single, { binding, target: channelTarget, limit: 20 })
     assert.isFalse(final.truncated)
     assert.isUndefined(final.nextCursor)
 
@@ -964,11 +890,7 @@ it.effect('ends the final page without a cursor and keeps truncated cursors defi
       guildRoles: [guildRole('guild-1', '1024')],
       guildMembers: [guildMember('U1', 'alice', []), guildMember('U2', 'bob', [])],
     })
-    const first = yield* listDiscordMembers(
-      paged,
-      { binding, target: channelTarget, limit: 1 },
-      policy,
-    )
+    const first = yield* listDiscordMembers(paged, { binding, target: channelTarget, limit: 1 })
     assert.isTrue(first.truncated)
     assert.strictEqual(first.nextCursor, 'U1')
   }),

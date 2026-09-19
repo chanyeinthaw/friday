@@ -9,7 +9,6 @@ import {
   PlatformTargetNotFoundError,
   type SlackQueryTarget,
 } from '../PlatformAdapter.ts'
-import type { SlackResolvedChannelPolicy } from './SlackChannelAccess.ts'
 import {
   discoverSlack,
   listSlackMembers,
@@ -39,17 +38,8 @@ const threadBinding = Schema.decodeSync(ConversationBinding)({
 const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
 const isMembersUnsupported = Schema.is(PlatformMembersUnsupportedError)
 
-const admitted = (): SlackResolvedChannelPolicy => ({
-  invocationMode: 'mention-only',
-  replyMode: 'reply-in-thread',
-  users: { mode: 'all', ids: [] },
-})
-
 const policy: SlackDiscoveryPolicy = {
   workspaceId: 'T123',
-  resolveChannelPolicy: (teamId, channelId) =>
-    teamId === 'T123' && (channelId === 'C456' || channelId === 'D789') ? admitted() : undefined,
-  listKnownChannels: () => ['C456', 'C999'],
 }
 
 const channelTarget: SlackQueryTarget = {
@@ -136,6 +126,11 @@ const stubAdapter = (
     },
     webClient: {
       conversations: {
+        list: () =>
+          Promise.resolve({
+            channels: [{ id: 'C456', name: options.channelNames?.['C456'] ?? 'general' }],
+            response_metadata: {},
+          }),
         members: (args: { readonly channel: string; readonly cursor?: string }) => {
           const call: SlackChannelMembersArgs = { channel: args.channel }
           if (args.cursor !== undefined) call.cursor = args.cursor
@@ -233,7 +228,7 @@ it.effect('scopes returns only the bound workspace', () =>
   }),
 )
 
-it.effect('channels lists admitted known channels plus the current channel', () =>
+it.effect('channels lists bot-visible workspace channels', () =>
   Effect.gen(function* () {
     const result = yield* discoverSlack(
       stubAdapter({ channelNames: { C456: 'general', D789: 'direct' } }),
@@ -243,7 +238,7 @@ it.effect('channels lists admitted known channels plus the current channel', () 
 
     assert.strictEqual(result.action, 'channels')
     if (result.action !== 'channels') return
-    // C999 is configured but unadmitted, so it never appears.
+    // Only bot-visible channels from conversations.list appear.
     assert.deepStrictEqual(
       result.channels.map((channel) =>
         channel.target.platform === 'slack' ? channel.target.channelId : 'unexpected',
@@ -316,7 +311,7 @@ it.effect('lists parent channel members for thread targets', () =>
   }),
 )
 
-it.effect('collapses workspace mismatches and unadmitted channels to not-found', () =>
+it.effect('collapses workspace mismatches and inaccessible channels to not-found', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter({ memberIds: ['U1'] })
     const mismatch = yield* listSlackMembers(
@@ -330,7 +325,7 @@ it.effect('collapses workspace mismatches and unadmitted channels to not-found',
     ).pipe(Effect.flip)
     assert(isTargetNotFound(mismatch))
 
-    const unadmitted = yield* listSlackMembers(
+    const visible = yield* listSlackMembers(
       adapter,
       {
         binding: channelBinding,
@@ -338,13 +333,23 @@ it.effect('collapses workspace mismatches and unadmitted channels to not-found',
         limit: 20,
       },
       policy,
+    )
+    assert.strictEqual(visible.members.length, 1)
+
+    const inaccessible = yield* listSlackMembers(
+      stubAdapter({ membersError: 'channel_not_found' }),
+      {
+        binding: channelBinding,
+        target: { platform: 'slack', workspaceId: 'T123', channelId: 'C000' },
+        limit: 20,
+      },
+      policy,
     ).pipe(Effect.flip)
-    assert(isTargetNotFound(unadmitted))
-    assert.deepStrictEqual(adapter.memberCalls, [])
+    assert(isTargetNotFound(inaccessible))
   }),
 )
 
-it.effect('threads lists thread targets of an admitted channel', () =>
+it.effect('threads lists thread targets of a visible channel', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter({
       threads: [{ ts: '1234567890.111111', text: 'Root question', replyCount: 2 }],
@@ -373,7 +378,7 @@ it.effect('threads lists thread targets of an admitted channel', () =>
   }),
 )
 
-it.effect('threads requires a channel target and gates unadmitted parents', () =>
+it.effect('threads requires a channel target and collapses inaccessible parents', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter()
     const threadParent = yield* discoverSlack(
@@ -383,7 +388,7 @@ it.effect('threads requires a channel target and gates unadmitted parents', () =
     ).pipe(Effect.flip)
     assert(isMembersUnsupported(threadParent))
 
-    const unadmitted = yield* discoverSlack(
+    const visible = yield* discoverSlack(
       adapter,
       {
         binding: channelBinding,
@@ -392,7 +397,7 @@ it.effect('threads requires a channel target and gates unadmitted parents', () =
         limit: 20,
       },
       policy,
-    ).pipe(Effect.flip)
-    assert(isTargetNotFound(unadmitted))
+    )
+    assert.strictEqual(visible.action, 'threads')
   }),
 )

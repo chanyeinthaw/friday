@@ -20,7 +20,6 @@ import {
 } from '../PlatformAdapter.ts'
 import { decodeDiscoveryOffset, matchesDiscoveryQuery } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
-import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 import { isDiscordThread } from './DiscordConversationScope.ts'
 
 /**
@@ -57,22 +56,10 @@ export interface DiscordDiscoveryAdapter extends Pick<
     guildId: string,
     options?: DiscordGuildMembersOptions,
   ) => Promise<ReadonlyArray<unknown>>
-}
-
-/** Guild snapshot for discovery scopes/channels; never carries tokens or user allowlists. */
-export interface DiscordDiscoveryGuildSnapshot {
-  readonly guildId: string
-  readonly enabled: boolean
-  /** Configured per-channel override IDs; admission still decides per channel. */
-  readonly channelIds: ReadonlyArray<string>
-}
-
-export interface DiscordDiscoveryPolicy {
-  readonly resolveChannelPolicy: (
-    guildId: string,
-    channelId: string,
-  ) => DiscordResolvedChannelPolicy | undefined
-  readonly listGuilds: () => ReadonlyArray<DiscordDiscoveryGuildSnapshot>
+  /** Bot-visible guilds via `GET /users/@me/guilds`; the visible-scope source for guild discovery. */
+  readonly fetchBotGuilds: () => Promise<ReadonlyArray<unknown>>
+  /** Bot-visible channels of one guild via `GET /guilds/{guild}/channels`. */
+  readonly fetchGuildChannels: (guildId: string) => Promise<ReadonlyArray<unknown>>
 }
 
 const targetNotFound = () => new PlatformTargetNotFoundError({ kind: 'discord' })
@@ -178,24 +165,30 @@ const memberFrom = (row: DiscordThreadMemberRow): PlatformMember | undefined => 
 
 interface DiscordResolvedTarget {
   readonly guildId: string
-  /** Effective channel for policy gating: the parent channel for threads. */
+  /** Effective channel for access checks: the parent channel for threads. */
   readonly channelId: string
   readonly source: string
   readonly threadId: string | undefined
 }
 
+const DiscordChannelGuildRaw = Schema.Struct({
+  guild_id: Schema.optionalKey(Schema.String),
+})
+const decodeDiscordChannelGuild = Schema.decodeUnknownOption(DiscordChannelGuildRaw)
+
 /**
- * Resolves an explicit Discord target against the live admission policy.
- * Mirrors the query/post gate: threads inherit their parent-channel policy
- * and a supplied parent hint must agree; `@me` direct messages are never
- * valid targets. Policy gates before channel/role/member REST reads; thread
- * parent resolution maps REST failures centrally while policy denials and
- * malformed payloads stay fail-closed to a generic not-found.
+ * Resolves an explicit Discord target against bot-visible platform state.
+ * Threads inherit their parent channel: the parent resolves through channel
+ * info, and a supplied parent hint must agree with it; `@me` direct messages
+ * are never valid targets. Visibility is established by successful channel
+ * reads; failures and malformed payloads collapse fail-closed to a generic
+ * not-found that never exposes channel existence. Friday admission config
+ * never gates tool targets: the invoking thread is already admitted and only
+ * the current connection bounds access.
  */
 const resolveDiscordTarget = Effect.fn('DiscordDiscovery.resolveTarget')(function* (
   discord: DiscordDiscoveryAdapter,
   target: DiscordQueryTarget,
-  policy: DiscordDiscoveryPolicy,
 ) {
   if (target.guildId === '@me') return yield* targetNotFound()
   if (isDiscordThreadTarget(target)) {
@@ -214,7 +207,8 @@ const resolveDiscordTarget = Effect.fn('DiscordDiscovery.resolveTarget')(functio
     if (parentHint !== undefined && parentHint !== thread.parent_id) {
       return yield* targetNotFound()
     }
-    if (policy.resolveChannelPolicy(target.guildId, thread.parent_id) === undefined) {
+    const guildId = Option.getOrUndefined(decodeDiscordChannelGuild(info.metadata.raw))?.guild_id
+    if (guildId !== undefined && guildId !== target.guildId) {
       return yield* targetNotFound()
     }
     const parentId = thread.parent_id
@@ -237,7 +231,15 @@ const resolveDiscordTarget = Effect.fn('DiscordDiscovery.resolveTarget')(functio
   if (target.channelId === undefined) return yield* targetNotFound()
   // Extracted before async boundaries: property narrowing does not cross closures.
   const channelId = target.channelId
-  if (policy.resolveChannelPolicy(target.guildId, channelId) === undefined) {
+  const channelInfo = yield* Effect.tryPromise({
+    try: () =>
+      discord.fetchChannelInfo(discord.encodeThreadId({ guildId: target.guildId, channelId })),
+    catch: (cause) => mapChannelMembersRestError(cause),
+  })
+  const channelGuildId = Option.getOrUndefined(
+    decodeDiscordChannelGuild(channelInfo.metadata.raw),
+  )?.guild_id
+  if (channelGuildId !== undefined && channelGuildId !== target.guildId) {
     return yield* targetNotFound()
   }
   const source = yield* Effect.try({
@@ -531,10 +533,9 @@ const scanGuildPage = (
 const listDiscordChannelMembers = Effect.fn('DiscordDiscovery.listChannelMembers')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformMembersQuery,
-  policy: DiscordDiscoveryPolicy,
   target: DiscordQueryTarget,
 ) {
-  const resolved = yield* resolveDiscordTarget(discord, target, policy)
+  const resolved = yield* resolveDiscordTarget(discord, target)
   const overwrites = yield* fetchChannelOverwrites(discord, resolved.source)
   const ownerId = yield* fetchGuildOwnerId(discord, resolved.guildId)
   const rolesById = yield* fetchRolesById(discord, resolved.guildId)
@@ -593,10 +594,9 @@ const listDiscordChannelMembers = Effect.fn('DiscordDiscovery.listChannelMembers
 const listDiscordThreadMembers = Effect.fn('DiscordDiscovery.listThreadMembers')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformMembersQuery,
-  policy: DiscordDiscoveryPolicy,
   target: DiscordQueryTarget,
 ) {
-  const resolved = yield* resolveDiscordTarget(discord, target, policy)
+  const resolved = yield* resolveDiscordTarget(discord, target)
   const seen = new Set<string>()
   const members: Array<PlatformMember> = []
   let after: string | undefined
@@ -636,18 +636,18 @@ const listDiscordThreadMembers = Effect.fn('DiscordDiscovery.listThreadMembers')
  * Lists members for an explicit Discord target through the current connection.
  * Thread targets keep the native thread participant listing; ordinary channel
  * targets return guild members who can view the channel via effective
- * ViewChannel permissions. Policy gates before any adapter call.
+ * ViewChannel permissions. Visibility is established by platform API reads;
+ * Friday admission config never gates member inspection.
  */
 export const listDiscordMembers = Effect.fn('DiscordDiscovery.listMembers')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformMembersQuery,
-  policy: DiscordDiscoveryPolicy,
 ) {
   if (query.target.platform !== 'discord') return yield* targetNotFound()
   if (isDiscordThreadTarget(query.target)) {
-    return yield* listDiscordThreadMembers(discord, query, policy, query.target)
+    return yield* listDiscordThreadMembers(discord, query, query.target)
   }
-  return yield* listDiscordChannelMembers(discord, query, policy, query.target)
+  return yield* listDiscordChannelMembers(discord, query, query.target)
 })
 
 interface DiscordCurrentLocation {
@@ -743,21 +743,54 @@ const discoverCurrent = Effect.fn('DiscordDiscovery.current')(function* (
   } satisfies PlatformDiscoveryResult
 })
 
+const DiscordBotGuildRaw = Schema.Struct({
+  id: Schema.String,
+  name: Schema.optionalKey(Schema.String),
+})
+const decodeDiscordBotGuild = Schema.decodeUnknownOption(DiscordBotGuildRaw)
+
+const DiscordGuildChannelRaw = Schema.Struct({
+  id: Schema.String,
+  name: Schema.optionalKey(Schema.String),
+  type: Schema.optionalKey(Schema.Number),
+  guild_id: Schema.optionalKey(Schema.String),
+})
+const decodeDiscordGuildChannel = Schema.decodeUnknownOption(DiscordGuildChannelRaw)
+
+/** Guild text channel types listed as query/post targets; threads use the threads action. */
+const isListableGuildChannelType = (type: number | undefined): boolean =>
+  type === undefined || type === 0 || type === 5 || type === 15
+
+const fetchVisibleGuildIds = Effect.fn('DiscordDiscovery.visibleGuilds')(function* (
+  discord: DiscordDiscoveryAdapter,
+) {
+  const rows = yield* Effect.tryPromise({
+    try: () => discord.fetchBotGuilds(),
+    catch: (cause) => discoverError(cause),
+  })
+  const ids: Array<string> = []
+  for (const row of rows) {
+    const guild = Option.getOrUndefined(decodeDiscordBotGuild(row))
+    if (guild === undefined || guild.id.trim() === '') continue
+    if (!ids.includes(guild.id)) ids.push(guild.id)
+  }
+  return ids
+})
+
 const discoverScopes = Effect.fn('DiscordDiscovery.scopes')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformDiscoveryQuery,
-  policy: DiscordDiscoveryPolicy,
 ) {
   const location = yield* decodeCurrentLocation(discord, String(query.binding.conversationId))
   const currentGuildId = location.guildId
+  const visibleGuildIds = yield* fetchVisibleGuildIds(discord)
   const scopes: Array<PlatformDiscoveryScope> = []
-  for (const guild of policy.listGuilds()) {
-    if (!guild.enabled) continue
-    if (!matchesDiscoveryQuery([guild.guildId], query.query)) continue
+  for (const guildId of visibleGuildIds) {
+    if (!matchesDiscoveryQuery([guildId], query.query)) continue
     scopes.push({
       kind: 'guild',
-      id: guild.guildId,
-      isCurrent: guild.guildId === currentGuildId,
+      id: guildId,
+      isCurrent: guildId === currentGuildId,
     })
   }
   const page = yield* paginateIds(
@@ -778,46 +811,36 @@ const discoverScopes = Effect.fn('DiscordDiscovery.scopes')(function* (
 const discoverChannels = Effect.fn('DiscordDiscovery.channels')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformDiscoveryQuery,
-  policy: DiscordDiscoveryPolicy,
 ) {
   const location = yield* decodeCurrentLocation(discord, String(query.binding.conversationId))
-  const guilds = policy
-    .listGuilds()
-    .filter(
-      (guild) => guild.enabled && (query.guildId === undefined || guild.guildId === query.guildId),
-    )
-  const candidates: Array<{ readonly guildId: string; readonly channelId: string }> = []
-  const seen = new Set<string>()
-  for (const guild of guilds) {
-    const ids =
-      guild.guildId === location.guildId && !guild.channelIds.includes(location.channelId)
-        ? [...guild.channelIds, location.channelId]
-        : guild.channelIds
-    for (const channelId of ids) {
-      const key = `${guild.guildId}:${channelId}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      // Per-channel admission: overrides never grant, scopes decide.
-      if (policy.resolveChannelPolicy(guild.guildId, channelId) === undefined) continue
-      candidates.push({ guildId: guild.guildId, channelId })
-    }
-  }
-  // Candidates are policy-known IDs only (configured overrides plus the current
-  // channel), so enriching every name stays bounded without platform enumeration.
+  const visibleGuildIds = yield* fetchVisibleGuildIds(discord)
+  const guilds = visibleGuildIds.filter(
+    (guildId) => query.guildId === undefined || guildId === query.guildId,
+  )
   const enriched: Array<{
     readonly guildId: string
     readonly channelId: string
     readonly name: string | undefined
   }> = []
-  for (const candidate of candidates) {
-    const name = yield* channelName(
-      discord,
-      discord.encodeThreadId({ guildId: candidate.guildId, channelId: candidate.channelId }),
-    )
-    if (!matchesDiscoveryQuery([candidate.channelId, candidate.guildId, name], query.query)) {
-      continue
+  const seen = new Set<string>()
+  for (const guildId of guilds) {
+    const rows = yield* Effect.tryPromise({
+      try: () => discord.fetchGuildChannels(guildId),
+      catch: (cause) => discoverError(cause),
+    })
+    for (const row of rows) {
+      const channel = Option.getOrUndefined(decodeDiscordGuildChannel(row))
+      if (channel === undefined || channel.id.trim() === '') continue
+      if (!isListableGuildChannelType(channel.type)) continue
+      if (channel.guild_id !== undefined && channel.guild_id !== guildId) continue
+      const key = `${guildId}:${channel.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (!matchesDiscoveryQuery([channel.id, guildId, channel.name], query.query)) {
+        continue
+      }
+      enriched.push({ guildId, channelId: channel.id, name: channel.name })
     }
-    enriched.push({ guildId: candidate.guildId, channelId: candidate.channelId, name })
   }
   const page = yield* paginateIds(
     enriched.map((entry) => `${entry.guildId}:${entry.channelId}`),
@@ -872,7 +895,6 @@ const threadEntryFrom = (
 const discoverThreads = Effect.fn('DiscordDiscovery.threads')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformDiscoveryQuery,
-  policy: DiscordDiscoveryPolicy,
 ) {
   const parent = query.channelTarget
   if (parent === undefined || parent.platform !== 'discord' || isDiscordThreadTarget(parent)) {
@@ -886,7 +908,17 @@ const discoverThreads = Effect.fn('DiscordDiscovery.threads')(function* (
   // Extracted before async boundaries: property narrowing does not cross closures.
   const parentGuildId = parent.guildId
   const parentChannelId = parent.channelId
-  if (policy.resolveChannelPolicy(parentGuildId, parentChannelId) === undefined) {
+  const parentInfo = yield* Effect.tryPromise({
+    try: () =>
+      discord.fetchChannelInfo(
+        discord.encodeThreadId({ guildId: parentGuildId, channelId: parentChannelId }),
+      ),
+    catch: () => targetNotFound(),
+  })
+  const parentGuild = Option.getOrUndefined(
+    decodeDiscordChannelGuild(parentInfo.metadata.raw),
+  )?.guild_id
+  if (parentGuild !== undefined && parentGuild !== parentGuildId) {
     return yield* targetNotFound()
   }
   const location = yield* decodeCurrentLocation(discord, String(query.binding.conversationId))
@@ -900,7 +932,12 @@ const discoverThreads = Effect.fn('DiscordDiscovery.threads')(function* (
         discord.encodeThreadId({ guildId: parentGuildId, channelId: parentChannelId }),
         threadOptions,
       ),
-    catch: (cause) => discoverError(cause),
+    catch: (cause) => {
+      const status = discordHttpStatus(cause)
+      return status === 401 || status === 403 || status === 404
+        ? targetNotFound()
+        : discoverError(cause)
+    },
   })
   const threads: Array<PlatformDiscoveryThread> = []
   for (const thread of listed.threads) {
@@ -921,25 +958,25 @@ const discoverThreads = Effect.fn('DiscordDiscovery.threads')(function* (
 })
 
 /**
- * Read-only Discord discovery through the current connection only. Scopes and
- * channels enumerate the live policy snapshot (enabled guilds, admitted
- * channels); names resolve best-effort and never fail the listing. Threads
- * use the native thread list on an admitted parent channel. Unadmitted
- * parents collapse to not-found without revealing existence.
+ * Read-only Discord discovery through the current connection only. Scopes list
+ * bot-visible guilds via `GET /users/@me/guilds`; channels list bot-visible
+ * guild text channels via `GET /guilds/{guild}/channels`; names come from
+ * those payloads and never fail the listing. Threads use the native thread
+ * list on a visible parent channel. Invisible parents collapse to not-found
+ * without revealing existence. Friday admission config never gates discovery.
  */
 export const discoverDiscord = Effect.fn('DiscordDiscovery.discover')(function* (
   discord: DiscordDiscoveryAdapter,
   query: PlatformDiscoveryQuery,
-  policy: DiscordDiscoveryPolicy,
 ) {
   switch (query.action) {
     case 'current':
       return yield* discoverCurrent(discord, query)
     case 'scopes':
-      return yield* discoverScopes(discord, query, policy)
+      return yield* discoverScopes(discord, query)
     case 'channels':
-      return yield* discoverChannels(discord, query, policy)
+      return yield* discoverChannels(discord, query)
     case 'threads':
-      return yield* discoverThreads(discord, query, policy)
+      return yield* discoverThreads(discord, query)
   }
 })

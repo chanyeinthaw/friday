@@ -258,6 +258,33 @@ export class FridayDiscordAdapter extends DiscordAdapter {
   }
 
   /**
+   * List guilds the bot token can see via `GET /users/@me/guilds`.
+   * Callers decode ids/names and collapse failures to not-found or a typed
+   * discovery error. This is the visible-scope source for guild discovery:
+   * configured enablement never widens or narrows it for tool actions.
+   * Returns raw guild rows for Schema decoding upstream.
+   */
+  public async fetchBotGuilds(): Promise<ReadonlyArray<unknown>> {
+    const response = await this.discordFetch(`/users/@me/guilds`, 'GET')
+    const raw: unknown = await response.json()
+    return Array.isArray(raw) ? raw : []
+  }
+
+  /**
+   * List channels of one guild via `GET /guilds/{guild}/channels`.
+   * Callers filter to text channel types, decode names, and map access
+   * failures to not-found. This is the visible-scope source for channel
+   * discovery: only bot-visible channels appear, regardless of Friday
+   * admission config.
+   * Returns raw channel rows for Schema decoding upstream.
+   */
+  public async fetchGuildChannels(guildId: string): Promise<ReadonlyArray<unknown>> {
+    const response = await this.discordFetch(`/guilds/${guildId}/channels`, 'GET')
+    const raw: unknown = await response.json()
+    return Array.isArray(raw) ? raw : []
+  }
+
+  /**
    * Guild gate for application commands (`/friday`, `/harness`): an interaction
    * from an unregistered or disabled guild is dropped before any handler runs,
    * so it can neither invoke configuration operations nor receive a Friday

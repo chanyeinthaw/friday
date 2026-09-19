@@ -11,14 +11,12 @@ import {
   postDiscordMessage,
   searchDiscordMessages,
   type DiscordMessageQueryAdapter,
-  type DiscordMessageQueryPolicy,
 } from './DiscordMessageSearch.ts'
 import {
   PlatformMessageNotFoundError,
   PlatformTargetNotFoundError,
   type DiscordQueryTarget,
 } from '../PlatformAdapter.ts'
-import type { DiscordResolvedChannelPolicy } from './DiscordChannelAccess.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 
 const binding = Schema.decodeSync(ConversationBinding)({
@@ -44,18 +42,6 @@ const decodeMessageId = Schema.decodeSync(PlatformMessageId)
 const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
 const isMessageNotFound = Schema.is(PlatformMessageNotFoundError)
 const isPublicationError = Schema.is(ChatSdkPublicationError)
-
-const admitted = (): DiscordResolvedChannelPolicy => ({
-  invocationMode: 'mention-only',
-  replyMode: 'reply-in-thread',
-  users: { mode: 'all', ids: [] },
-})
-
-/** Admits exactly the `guild:channel` pairs listed; everything else fails closed. */
-const policyFor = (admittedPairs: ReadonlyArray<string>): DiscordMessageQueryPolicy => ({
-  resolveChannelPolicy: (guildId, channelId) =>
-    admittedPairs.includes(`${guildId}:${channelId}`) ? admitted() : undefined,
-})
 
 const channelTarget = (guildId = 'guild-1', channelId = 'channel-1'): DiscordQueryTarget => ({
   platform: 'discord',
@@ -123,16 +109,12 @@ it.effect('searches a cross-guild channel target admitted on this connection', (
         return seen(source, fetchOptions)
       },
     }
-    const result = yield* searchDiscordMessages(
-      recording,
-      {
-        binding,
-        target: channelTarget('guild-2', 'channel-9'),
-        query: 'dokploy',
-        limit: 20,
-      },
-      policyFor(['guild-2:channel-9']),
-    )
+    const result = yield* searchDiscordMessages(recording, {
+      binding,
+      target: channelTarget('guild-2', 'channel-9'),
+      query: 'dokploy',
+      limit: 20,
+    })
 
     assert.deepStrictEqual(sources, ['discord:guild-2:channel-9:channel-9'])
     assert.strictEqual(result.messages.length, 1)
@@ -140,10 +122,9 @@ it.effect('searches a cross-guild channel target admitted on this connection', (
   }),
 )
 
-it.effect('searches a thread target through its parent channel policy', () =>
+it.effect('searches a thread target through its parent channel', () =>
   Effect.gen(function* () {
     const sources: Array<string> = []
-    const lookups: Array<[string, string]> = []
     const adapter = stubAdapter({
       channelRaw: { id: 'thread-1', parent_id: 'channel-1', type: 11 },
       messages: [message('message-1', 'hello', 'user-1')],
@@ -156,30 +137,27 @@ it.effect('searches a thread target through its parent channel policy', () =>
         return seen(source, fetchOptions)
       },
     }
-    const result = yield* searchDiscordMessages(
-      recording,
-      { binding, target: threadTarget('thread-1'), limit: 20 },
-      {
-        resolveChannelPolicy: (guildId, channelId) => {
-          lookups.push([guildId, channelId])
-          return admitted()
-        },
-      },
-    )
-
-    assert.deepStrictEqual(lookups, [['guild-1', 'channel-1']])
+    const result = yield* searchDiscordMessages(recording, {
+      binding,
+      target: threadTarget('thread-1'),
+      limit: 20,
+    })
     assert.deepStrictEqual(sources, ['discord:guild-1:channel-1:thread-1'])
     assert.strictEqual(result.messages.length, 1)
   }),
 )
 
-it.effect('fails closed for unadmitted search targets without exposing existence', () =>
+it.effect('collapses inaccessible search targets without exposing existence', () =>
   Effect.gen(function* () {
-    const error = yield* searchDiscordMessages(
-      stubAdapter({ messages: [message('message-1', 'hello')] }),
-      { binding, target: channelTarget('guild-1', 'secret-channel'), limit: 20 },
-      policyFor(['guild-1:channel-1']),
-    ).pipe(Effect.flip)
+    const adapter: DiscordMessageQueryAdapter = {
+      ...stubAdapter({ messages: [message('message-1', 'hello')] }),
+      fetchChannelInfo: () => Promise.reject(new Error('Discord API error: 404 Unknown Channel')),
+    }
+    const error = yield* searchDiscordMessages(adapter, {
+      binding,
+      target: channelTarget('guild-1', 'secret-channel'),
+      limit: 20,
+    }).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
     assert.strictEqual(error.message, targetNotFoundMessage)
@@ -191,7 +169,6 @@ it.effect('rejects thread targets whose parent hint disagrees', () =>
     const error = yield* searchDiscordMessages(
       stubAdapter({ channelRaw: { id: 'thread-1', parent_id: 'channel-1', type: 11 } }),
       { binding, target: threadTarget('thread-1', 'other-channel'), limit: 20 },
-      policyFor(['guild-1:channel-1', 'guild-1:other-channel']),
     ).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
@@ -203,7 +180,6 @@ it.effect('rejects thread targets that address a plain channel', () =>
     const error = yield* searchDiscordMessages(
       stubAdapter({ channelRaw: { id: 'channel-1', type: 0 } }),
       { binding, target: threadTarget('channel-1'), limit: 20 },
-      policyFor(['guild-1:channel-1']),
     ).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
@@ -212,15 +188,11 @@ it.effect('rejects thread targets that address a plain channel', () =>
 
 it.effect('rejects direct-message search targets', () =>
   Effect.gen(function* () {
-    const error = yield* searchDiscordMessages(
-      stubAdapter(),
-      {
-        binding,
-        target: { platform: 'discord', guildId: '@me', channelId: 'dm-1' },
-        limit: 20,
-      },
-      policyFor(['@me:dm-1']),
-    ).pipe(Effect.flip)
+    const error = yield* searchDiscordMessages(stubAdapter(), {
+      binding,
+      target: { platform: 'discord', guildId: '@me', channelId: 'dm-1' },
+      limit: 20,
+    }).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
   }),
@@ -237,11 +209,12 @@ it.effect('passes the before cursor through to history reads', () =>
         return adapter.fetchMessages(source, fetchOptions)
       },
     }
-    yield* searchDiscordMessages(
-      recording,
-      { binding, target: channelTarget(), limit: 20, before: decodeMessageId('message-5') },
-      policyFor(['guild-1:channel-1']),
-    )
+    yield* searchDiscordMessages(recording, {
+      binding,
+      target: channelTarget(),
+      limit: 20,
+      before: decodeMessageId('message-5'),
+    })
 
     assert.deepStrictEqual(cursors, ['message-5'])
   }),
@@ -258,7 +231,6 @@ it.effect('retrieves a bare message id against an explicit channel target', () =
         },
       }),
       { binding, target: channelTarget(), messageId: decodeMessageId('message-9') },
-      policyFor(['guild-1:channel-1']),
     )
 
     assert.deepStrictEqual(fetches, [['channel-1', 'message-9']])
@@ -270,7 +242,6 @@ it.effect('retrieves a bare message id against an explicit channel target', () =
 it.effect('retrieves a bare message id against a cross-guild thread target', () =>
   Effect.gen(function* () {
     const fetches: Array<[string, string]> = []
-    const lookups: Array<[string, string]> = []
     const result = yield* getDiscordMessage(
       stubAdapter({
         channelRaw: { id: 'thread-9', parent_id: 'channel-9', type: 12 },
@@ -284,15 +255,7 @@ it.effect('retrieves a bare message id against a cross-guild thread target', () 
         target: threadTarget('thread-9', undefined, 'guild-2'),
         messageId: decodeMessageId('message-9'),
       },
-      {
-        resolveChannelPolicy: (guildId, channelId) => {
-          lookups.push([guildId, channelId])
-          return guildId === 'guild-2' && channelId === 'channel-9' ? admitted() : undefined
-        },
-      },
     )
-
-    assert.deepStrictEqual(lookups, [['guild-2', 'channel-9']])
     assert.deepStrictEqual(fetches, [['thread-9', 'message-9']])
     assert.strictEqual(result.message.id, 'message-9')
   }),
@@ -303,7 +266,6 @@ it.effect('requires a target for bare message ids', () =>
     const error = yield* getDiscordMessage(
       stubAdapter({ fetch: () => Promise.resolve(message('message-9', 'hello')) }),
       { binding, messageId: decodeMessageId('message-9') },
-      policyFor(['guild-1:channel-1']),
     ).pipe(Effect.flip)
 
     assert(isMessageNotFound(error))
@@ -319,7 +281,6 @@ it.effect('fetches a message URL in an admitted channel and preserves bot author
         binding,
         messageUrl: 'https://discord.com/channels/guild-1/channel-1/message-9',
       },
-      policyFor(['guild-1:channel-1']),
     )
 
     assert.strictEqual(result.message.id, 'message-9')
@@ -336,7 +297,6 @@ it.effect('accepts a URL when the explicit target agrees with it', () =>
         target: channelTarget(),
         messageUrl: 'https://discord.com/channels/guild-1/channel-1/message-9',
       },
-      policyFor(['guild-1:channel-1']),
     )
 
     assert.strictEqual(result.message.id, 'message-9')
@@ -346,22 +306,16 @@ it.effect('accepts a URL when the explicit target agrees with it', () =>
 it.effect('rejects a URL when the explicit target disagrees', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter({ fetch: () => Promise.resolve(message('message-9', 'hello')) })
-    const policy = policyFor(['guild-1:channel-1', 'guild-1:channel-2'])
-
     for (const target of [
       channelTarget('guild-1', 'channel-2'),
       channelTarget('guild-2', 'channel-1'),
       threadTarget('thread-9'),
     ]) {
-      const error = yield* getDiscordMessage(
-        adapter,
-        {
-          binding,
-          target,
-          messageUrl: 'https://discord.com/channels/guild-1/channel-1/message-9',
-        },
-        policy,
-      ).pipe(Effect.flip)
+      const error = yield* getDiscordMessage(adapter, {
+        binding,
+        target,
+        messageUrl: 'https://discord.com/channels/guild-1/channel-1/message-9',
+      }).pipe(Effect.flip)
       assert(isMessageNotFound(error))
     }
   }),
@@ -370,18 +324,16 @@ it.effect('rejects a URL when the explicit target disagrees', () =>
 const notFoundGet = (
   adapter: DiscordMessageQueryAdapter,
   query: Parameters<typeof getDiscordMessage>[1],
-  policy: DiscordMessageQueryPolicy,
 ) =>
   Effect.gen(function* () {
-    const error = yield* getDiscordMessage(adapter, query, policy).pipe(Effect.flip)
+    const error = yield* getDiscordMessage(adapter, query).pipe(Effect.flip)
     assert(isMessageNotFound(error))
     assert.strictEqual(error.message, 'Message not found.')
   })
 
-it.effect('inherits the parent channel policy for thread URLs', () =>
+it.effect('inherits the parent channel for thread URLs', () =>
   Effect.gen(function* () {
-    const lookups: Array<[string, string]> = []
-    yield* getDiscordMessage(
+    const result = yield* getDiscordMessage(
       stubAdapter({
         channelRaw: { id: 'thread-9', parent_id: 'channel-1', type: 11 },
         fetch: () => Promise.resolve(message('message-9', 'hello')),
@@ -390,52 +342,40 @@ it.effect('inherits the parent channel policy for thread URLs', () =>
         binding,
         messageUrl: 'https://discord.com/channels/guild-1/thread-9/message-9',
       },
-      {
-        resolveChannelPolicy: (guildId, channelId) => {
-          lookups.push([guildId, channelId])
-          return admitted()
-        },
-      },
     )
 
-    assert.deepStrictEqual(lookups, [['guild-1', 'channel-1']])
+    assert.strictEqual(result.message.id, 'message-9')
   }),
 )
 
-it.effect('rejects message URLs from another guild, DMs, or outside the policy', () =>
+it.effect('rejects message URLs from DMs or missing messages, keeps cross-guild visible', () =>
   Effect.gen(function* () {
     const fetchable = stubAdapter({ fetch: () => Promise.resolve(message('m', 'hello')) })
-    yield* notFoundGet(
-      fetchable,
-      { binding, messageUrl: 'https://discord.com/channels/guild-2/channel-1/m' },
-      policyFor(['guild-1:channel-1']),
-    )
-    yield* notFoundGet(
-      fetchable,
-      { binding, messageUrl: 'https://discord.com/channels/@me/channel-1/m' },
-      policyFor(['guild-1:channel-1']),
-    )
-    yield* notFoundGet(
-      fetchable,
-      { binding, messageUrl: 'https://discord.com/channels/guild-1/channel-1/m' },
-      policyFor(['guild-1:other']),
-    )
-    yield* notFoundGet(
-      stubAdapter({ fetch: () => Promise.reject(new Error('404')) }),
-      { binding, target: channelTarget(), messageId: decodeMessageId('message-9') },
-      policyFor(['guild-1:channel-1']),
-    )
+    const crossGuild = yield* getDiscordMessage(fetchable, {
+      binding,
+      messageUrl: 'https://discord.com/channels/guild-2/channel-1/m',
+    })
+    assert.strictEqual(crossGuild.message.id, 'm')
+    yield* notFoundGet(fetchable, {
+      binding,
+      messageUrl: 'https://discord.com/channels/@me/channel-1/m',
+    })
+    yield* notFoundGet(stubAdapter({ fetch: () => Promise.reject(new Error('404')) }), {
+      binding,
+      target: channelTarget(),
+      messageId: decodeMessageId('message-9'),
+    })
   }),
 )
 
 it.effect('posts one message to a channel target and returns the native id', () =>
   Effect.gen(function* () {
     const posted: Array<{ readonly address: string; readonly text: string }> = []
-    const result = yield* postDiscordMessage(
-      stubAdapter({ posted, postId: 'posted-7' }),
-      { binding, target: channelTarget(), text: 'hello channel' },
-      policyFor(['guild-1:channel-1']),
-    )
+    const result = yield* postDiscordMessage(stubAdapter({ posted, postId: 'posted-7' }), {
+      binding,
+      target: channelTarget(),
+      text: 'hello channel',
+    })
 
     assert.deepStrictEqual(posted, [
       { address: 'discord:guild-1:channel-1', text: 'hello channel' },
@@ -454,7 +394,6 @@ it.effect('posts one message to a thread target through the thread address', () 
         postId: 'posted-8',
       }),
       { binding, target: threadTarget('thread-1'), text: 'hello thread' },
-      policyFor(['guild-1:channel-1']),
     )
 
     assert.deepStrictEqual(posted, [
@@ -464,14 +403,18 @@ it.effect('posts one message to a thread target through the thread address', () 
   }),
 )
 
-it.effect('denies posts to unadmitted targets without posting', () =>
+it.effect('collapses posts to inaccessible targets without posting', () =>
   Effect.gen(function* () {
     const posted: Array<{ readonly address: string; readonly text: string }> = []
-    const error = yield* postDiscordMessage(
-      stubAdapter({ posted }),
-      { binding, target: channelTarget('guild-1', 'secret'), text: 'hello' },
-      policyFor(['guild-1:channel-1']),
-    ).pipe(Effect.flip)
+    const adapter: DiscordMessageQueryAdapter = {
+      ...stubAdapter({ posted }),
+      fetchChannelInfo: () => Promise.reject(new Error('Discord API error: 403 Missing Access')),
+    }
+    const error = yield* postDiscordMessage(adapter, {
+      binding,
+      target: channelTarget('guild-1', 'secret'),
+      text: 'hello',
+    }).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
     assert.strictEqual(error.message, targetNotFoundMessage)
@@ -483,20 +426,18 @@ it.effect('rejects empty and over-limit post text without posting', () =>
   Effect.gen(function* () {
     const posted: Array<{ readonly address: string; readonly text: string }> = []
     const adapter = stubAdapter({ posted })
-    const policy = policyFor(['guild-1:channel-1'])
-
-    const empty = yield* postDiscordMessage(
-      adapter,
-      { binding, target: channelTarget(), text: '   ' },
-      policy,
-    ).pipe(Effect.flip)
+    const empty = yield* postDiscordMessage(adapter, {
+      binding,
+      target: channelTarget(),
+      text: '   ',
+    }).pipe(Effect.flip)
     assert(isPublicationError(empty))
 
-    const over = yield* postDiscordMessage(
-      adapter,
-      { binding, target: channelTarget(), text: 'x'.repeat(DiscordMaxPostLength + 1) },
-      policy,
-    ).pipe(Effect.flip)
+    const over = yield* postDiscordMessage(adapter, {
+      binding,
+      target: channelTarget(),
+      text: 'x'.repeat(DiscordMaxPostLength + 1),
+    }).pipe(Effect.flip)
     assert(isPublicationError(over))
     assert.deepStrictEqual(posted, [])
   }),
@@ -508,11 +449,11 @@ it.effect('returns a null id when the transport exposes none', () =>
       ...stubAdapter(),
       postChannelMessage: () => Promise.resolve({ id: '', threadId: 'x', raw: {} }),
     }
-    const result = yield* postDiscordMessage(
-      adapter,
-      { binding, target: channelTarget(), text: 'hello' },
-      policyFor(['guild-1:channel-1']),
-    )
+    const result = yield* postDiscordMessage(adapter, {
+      binding,
+      target: channelTarget(),
+      text: 'hello',
+    })
 
     assert.strictEqual(result.messageId, null)
   }),
@@ -547,7 +488,6 @@ it.effect('preserves attachment metadata through search and get', () =>
         messages: [htmlAttachmentMessage('message-7', 'see report', 'user-1', false)],
       }),
       { binding, target: channelTarget(), query: 'report', limit: 20 },
-      policyFor(['guild-1:channel-1']),
     )
     assert.strictEqual(searched.messages[0]?.attachments[0]?.name, 'page.html')
 
@@ -556,7 +496,6 @@ it.effect('preserves attachment metadata through search and get', () =>
         fetch: () => Promise.resolve(htmlAttachmentMessage('message-9', 'report', 'bot-1', true)),
       }),
       { binding, target: channelTarget(), messageId: decodeMessageId('message-9') },
-      policyFor(['guild-1:channel-1']),
     )
     assert.strictEqual(fetched.message.attachments[0]?.mediaType, 'text/html')
     assert.strictEqual(
@@ -569,17 +508,12 @@ it.effect('preserves attachment metadata through search and get', () =>
 it.effect('requires exactly one of messageUrl or messageId', () =>
   Effect.gen(function* () {
     const adapter = stubAdapter({ fetch: () => Promise.resolve(message('m', 'hello')) })
-    const policy = policyFor(['guild-1:channel-1'])
-    yield* notFoundGet(adapter, { binding, target: channelTarget() }, policy)
-    yield* notFoundGet(
-      adapter,
-      {
-        binding,
-        target: channelTarget(),
-        messageUrl: 'https://discord.com/channels/guild-1/channel-1/m',
-        messageId: decodeMessageId('m'),
-      },
-      policy,
-    )
+    yield* notFoundGet(adapter, { binding, target: channelTarget() })
+    yield* notFoundGet(adapter, {
+      binding,
+      target: channelTarget(),
+      messageUrl: 'https://discord.com/channels/guild-1/channel-1/m',
+      messageId: decodeMessageId('m'),
+    })
   }),
 )

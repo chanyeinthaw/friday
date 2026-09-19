@@ -27,19 +27,17 @@ import {
   decodeSlackConversationId,
   toSlackAdapterChannelId,
 } from './SlackConversationScope.ts'
-import {
-  isSlackDirectMessageChannel,
-  type SlackResolvedChannelPolicy,
-} from './SlackChannelAccess.ts'
+import { isSlackDirectMessageChannel } from './SlackChannelAccess.ts'
 
 /**
- * Minimal structural surface for Slack membership reads. The full
+ * Minimal structural surface for Slack membership and channel reads. The full
  * `@slack/web-api` WebClient satisfies this; responses decode as unknown so
  * no new dependency or exact SDK typing is required.
  */
 export interface SlackDiscoveryWebClient {
   readonly conversations: {
     readonly members: (args: SlackChannelMembersArgs) => Promise<unknown>
+    readonly list: (args: SlackChannelListArgs) => Promise<unknown>
   }
   readonly users: {
     readonly info: (args: { readonly user: string }) => Promise<unknown>
@@ -56,6 +54,16 @@ export interface SlackChannelMembersArgs {
   limit?: number
 }
 
+/**
+ * Channel list arguments for visible-scope discovery. Fields stay mutable so
+ * callers can attach the pagination cursor in a separate statement.
+ */
+export interface SlackChannelListArgs {
+  types?: string
+  limit?: number
+  cursor?: string
+}
+
 /** Transport needed for explicit-target Slack member listing and discovery. */
 export interface SlackDiscoveryAdapter extends Pick<
   SlackAdapter,
@@ -67,18 +75,11 @@ export interface SlackDiscoveryAdapter extends Pick<
 export interface SlackDiscoveryPolicy {
   /**
    * Single workspace (team) bound to this connection's bot token. Explicit
-   * targets outside it fail closed before policy lookup or any adapter call.
+   * targets outside it fail closed before any adapter call. Channel
+   * visibility is established by Slack API responses, never by Friday
+   * admission config.
    */
   readonly workspaceId: string
-  readonly resolveChannelPolicy: (
-    teamId: string,
-    channelId: string,
-  ) => SlackResolvedChannelPolicy | undefined
-  /**
-   * Configured per-channel override IDs; admission still decides per channel.
-   * Absent in tests: discovery then returns the current channel only.
-   */
-  readonly listKnownChannels?: (() => ReadonlyArray<string>) | undefined
 }
 
 const targetNotFound = () => new PlatformTargetNotFoundError({ kind: 'slack' })
@@ -135,10 +136,10 @@ interface SlackResolvedTarget {
 }
 
 /**
- * Resolves an explicit Slack target against the connection's bound workspace
- * and the live admission policy. Mirrors the query/post gate: workspace
- * mismatches and unadmitted channels collapse to a generic not-found before
- * any adapter call.
+ * Resolves an explicit Slack target against the connection's bound workspace.
+ * Workspace mismatches collapse to a generic not-found before any adapter
+ * call. Channel visibility is established by subsequent Slack API responses;
+ * Friday admission config never gates tool targets.
  */
 const resolveSlackTarget = (
   target: SlackQueryTarget,
@@ -146,9 +147,6 @@ const resolveSlackTarget = (
 ): Effect.Effect<SlackResolvedTarget, PlatformTargetNotFoundError> =>
   Effect.gen(function* () {
     if (target.workspaceId !== policy.workspaceId) {
-      return yield* targetNotFound()
-    }
-    if (policy.resolveChannelPolicy(target.workspaceId, target.channelId) === undefined) {
       return yield* targetNotFound()
     }
     return {
@@ -358,22 +356,95 @@ const discoverScopes = Effect.fn('SlackDiscovery.scopes')(function* (
   } satisfies PlatformDiscoveryResult
 })
 
+const SlackChannelListPage = Schema.Struct({
+  channels: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        name: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  ),
+  response_metadata: Schema.optionalKey(
+    Schema.Struct({ next_cursor: Schema.optionalKey(Schema.String) }),
+  ),
+})
+const decodeSlackChannelListPage = Schema.decodeUnknownOption(SlackChannelListPage)
+
+const MaximumChannelListPages = 5
+const ChannelListPageSize = 200
+
+const fetchVisibleSlackChannels = Effect.fn('SlackDiscovery.visibleChannels')(function* (
+  adapter: SlackDiscoveryAdapter,
+  cursor: string | undefined,
+) {
+  const collected = new Map<string, string | undefined>()
+  let next: string | undefined = cursor
+  let pages = 0
+  // Bounded enumeration of bot-visible channels via conversations.list.
+  // Public and private channels only; DMs use their own flows and are not
+  // enumerated here.
+  while (pages < MaximumChannelListPages) {
+    pages += 1
+    const listArgs: SlackChannelListArgs = {
+      types: 'public_channel,private_channel',
+      limit: ChannelListPageSize,
+    }
+    if (next !== undefined) listArgs.cursor = next
+    const raw = yield* Effect.tryPromise({
+      try: () => adapter.webClient.conversations.list(listArgs),
+      catch: (cause) => {
+        const code = slackErrorCode(cause)
+        return isSlackInaccessibleCode(code)
+          ? targetNotFound()
+          : discoverError(`slack-conversations-list:${code ?? 'unknown'}`)
+      },
+    })
+    const page = Option.getOrUndefined(decodeSlackChannelListPage(raw))
+    for (const channel of page?.channels ?? []) {
+      if (channel.id.trim() === '' || collected.has(channel.id)) continue
+      collected.set(channel.id, channel.name)
+    }
+    const following = page?.response_metadata?.next_cursor
+    next = following === undefined || following === '' ? undefined : following
+    if (next === undefined) break
+  }
+  return collected
+})
+
 const discoverChannels = Effect.fn('SlackDiscovery.channels')(function* (
   adapter: SlackDiscoveryAdapter,
   query: PlatformDiscoveryQuery,
   policy: SlackDiscoveryPolicy,
 ) {
   const location = decodeSlackConversationId(String(query.binding.conversationId))
-  const candidates = new Set<string>()
-  for (const channelId of policy.listKnownChannels?.() ?? []) candidates.add(channelId)
-  if (location !== undefined) candidates.add(location.channelId)
+  if (policy.workspaceId === '') {
+    const empty = yield* paginateIds([], query.limit, query.cursor)
+    return {
+      action: 'channels' as const,
+      platform: query.binding.platform,
+      connectionId: query.binding.connectionId,
+      workspaceId: policy.workspaceId,
+      channels: [],
+      nextCursor: empty.nextCursor,
+      truncated: empty.truncated,
+    } satisfies PlatformDiscoveryResult
+  }
+  const initialCursor =
+    query.cursor === undefined || query.cursor.trim() === '' ? undefined : query.cursor
+  const collected = yield* fetchVisibleSlackChannels(adapter, initialCursor)
   const enriched: Array<{ readonly channelId: string; readonly name: string | undefined }> = []
-  for (const channelId of candidates) {
-    if (policy.workspaceId === '') continue
-    if (policy.resolveChannelPolicy(policy.workspaceId, channelId) === undefined) continue
-    const name = yield* channelName(adapter, channelId)
+  for (const [channelId, name] of collected) {
     if (!matchesDiscoveryQuery([channelId, name], query.query)) continue
     enriched.push({ channelId, name })
+  }
+  // Include the current channel when the list omits it but it remains
+  // readable; visibility is proven by the name read below.
+  if (location !== undefined && !collected.has(location.channelId)) {
+    const name = yield* channelName(adapter, location.channelId)
+    if (name !== undefined && matchesDiscoveryQuery([location.channelId, name], query.query)) {
+      enriched.push({ channelId: location.channelId, name })
+    }
   }
   const page = yield* paginateIds(
     enriched.map((entry) => entry.channelId),
@@ -471,9 +542,10 @@ const discoverThreads = Effect.fn('SlackDiscovery.threads')(function* (
 /**
  * Read-only Slack discovery through the current connection only. The workspace
  * is always the connection-bound team from `auth.test`, never model input.
- * Channels enumerate policy-known IDs (configured overrides plus the current
- * channel) admitted by the live channel scope; threads use the native thread
- * list on an admitted parent channel.
+ * Channels enumerate bot-visible public and private channels via
+ * `conversations.list`; threads use the native thread list on a visible
+ * parent channel. Visibility is established by Slack API responses; Friday
+ * admission config never gates discovery.
  */
 export const discoverSlack = Effect.fn('SlackDiscovery.discover')(function* (
   adapter: SlackDiscoveryAdapter,

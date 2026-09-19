@@ -18,7 +18,6 @@ import {
   PlatformTargetNotFoundError,
   type SlackQueryTarget,
 } from '../PlatformAdapter.ts'
-import type { SlackResolvedChannelPolicy } from './SlackChannelAccess.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 
 const binding = Schema.decodeSync(ConversationBinding)({
@@ -67,19 +66,8 @@ const botMessage = (id: string, text: string) =>
     attachments: [],
   })
 
-const admittedPolicy = (): SlackResolvedChannelPolicy => ({
-  invocationMode: 'mention-only',
-  replyMode: 'reply-in-thread',
-  users: { mode: 'all', ids: [] },
-})
-
-const policyFor = (
-  admittedPairs: ReadonlyArray<string>,
-  workspaceId = 'T123',
-): SlackMessageQueryPolicy => ({
+const policyFor = (workspaceId = 'T123'): SlackMessageQueryPolicy => ({
   workspaceId,
-  resolveChannelPolicy: (teamId, channelId) =>
-    admittedPairs.includes(`${teamId}:${channelId}`) ? admittedPolicy() : undefined,
 })
 
 const channelTarget = (teamId = 'T123', channelId = 'C456'): SlackQueryTarget => ({
@@ -184,7 +172,7 @@ it.effect('rejects cross-workspace targets before policy lookup or any adapter c
     const error = yield* searchSlackMessages(
       adapter,
       { binding, target: channelTarget('T999', 'C789'), query: 'deploy', limit: 10 },
-      policyFor(['T999:C789']),
+      policyFor(),
     ).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
@@ -201,7 +189,7 @@ it.effect('searches a matching-workspace channel target on this connection', () 
     const result = yield* searchSlackMessages(
       adapter,
       { binding, target: channelTarget('T123', 'C456'), query: 'deploy', limit: 10 },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.deepStrictEqual(
@@ -222,7 +210,7 @@ it.effect('searches a thread target through the native thread', () =>
     const result = yield* searchSlackMessages(
       adapter,
       { binding, target: threadTarget('111.1'), limit: 10 },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.deepStrictEqual(
@@ -241,7 +229,7 @@ it.effect('keeps bot filtering while preserving limits', () =>
     const result = yield* searchSlackMessages(
       adapter,
       { binding, target: channelTarget(), limit: 10 },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.strictEqual(result.messages.length, 1)
@@ -271,7 +259,7 @@ it.effect('treats before as an ordering boundary rather than an API cursor', () 
         limit: 10,
         before: decodeMessageId('200.2'),
       },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.strictEqual(adapter.seen[0]?.cursor, undefined)
@@ -293,7 +281,7 @@ it.effect('applies the before boundary across paginated results', () =>
     const result = yield* searchSlackMessages(
       adapter,
       { binding, target: channelTarget(), limit: 10, before: decodeMessageId('200.2') },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.deepStrictEqual(
@@ -303,16 +291,16 @@ it.effect('applies the before boundary across paginated results', () =>
   }),
 )
 
-it.effect('fails closed for unadmitted search targets', () =>
+it.effect('searches visible channels regardless of admission config', () =>
   Effect.gen(function* () {
-    const error = yield* searchSlackMessages(
+    const result = yield* searchSlackMessages(
       stubAdapter({ channelPages: [[slackMessage('100.1', 'secret')]] }),
       { binding, target: channelTarget('T123', 'C999'), limit: 10 },
-      policyFor(['T123:C456']),
-    ).pipe(Effect.flip)
+      policyFor(),
+    )
 
-    assert(isTargetNotFound(error))
-    assert.strictEqual(error.message, 'Target not found or not accessible.')
+    assert.strictEqual(result.messages.length, 1)
+    assert.strictEqual(result.messages[0]?.text, 'secret')
   }),
 )
 
@@ -328,7 +316,7 @@ it.effect('fetches a channel message as its own thread root', () =>
     const result = yield* getSlackMessage(
       adapter,
       { binding, target: channelTarget(), messageId: decodeMessageId('200.2') },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.deepStrictEqual(calls, [['slack:C456:200.2', '200.2']])
@@ -351,7 +339,7 @@ it.effect('fetches a thread message within its native thread', () =>
     const result = yield* getSlackMessage(
       adapter,
       { binding, target: threadTarget('111.1'), messageId: decodeMessageId('222.2') },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.deepStrictEqual(calls, [['slack:C456:111.1', '222.2']])
@@ -367,41 +355,43 @@ it.effect('preserves bot authors through direct get', () =>
     const result = yield* getSlackMessage(
       adapter,
       { binding, target: channelTarget(), messageId: decodeMessageId('200.2') },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.strictEqual(result.message.text, 'beep')
   }),
 )
 
-it.effect('collapses missing, mismatched, and unadmitted gets to a generic not-found', () =>
-  Effect.gen(function* () {
-    const missing = stubAdapter({ direct: () => Promise.resolve(null) })
-    const policy = policyFor(['T123:C456'])
-    for (const query of [
-      {
-        binding,
-        target: channelTarget(),
-        messageId: decodeMessageId('999.9'),
-      },
-      { binding, messageId: decodeMessageId('200.2') },
-      {
-        binding,
-        target: channelTarget(),
-        messageUrl: 'https://example.slack.com/archives/C456/p123',
-      },
-    ]) {
-      const error = yield* getSlackMessage(missing, query, policy).pipe(Effect.flip)
-      assert(isMessageNotFound(error))
-      assert.strictEqual(error.message, 'Message not found.')
-    }
-    const denied = yield* getSlackMessage(
-      stubAdapter({ direct: () => Promise.resolve(slackMessage('200.2', 'secret')) }),
-      { binding, target: channelTarget('T123', 'C999'), messageId: decodeMessageId('200.2') },
-      policy,
-    ).pipe(Effect.flip)
-    assert(isMessageNotFound(denied))
-  }),
+it.effect(
+  'collapses missing and mismatched gets to a generic not-found, keeps visible channels',
+  () =>
+    Effect.gen(function* () {
+      const missing = stubAdapter({ direct: () => Promise.resolve(null) })
+      const policy = policyFor()
+      for (const query of [
+        {
+          binding,
+          target: channelTarget(),
+          messageId: decodeMessageId('999.9'),
+        },
+        { binding, messageId: decodeMessageId('200.2') },
+        {
+          binding,
+          target: channelTarget(),
+          messageUrl: 'https://example.slack.com/archives/C456/p123',
+        },
+      ]) {
+        const error = yield* getSlackMessage(missing, query, policy).pipe(Effect.flip)
+        assert(isMessageNotFound(error))
+        assert.strictEqual(error.message, 'Message not found.')
+      }
+      const visible = yield* getSlackMessage(
+        stubAdapter({ direct: () => Promise.resolve(slackMessage('200.2', 'secret')) }),
+        { binding, target: channelTarget('T123', 'C999'), messageId: decodeMessageId('200.2') },
+        policy,
+      )
+      assert.strictEqual(visible.message.text, 'secret')
+    }),
 )
 
 it.effect('collapses cross-workspace gets to a generic not-found without adapter calls', () =>
@@ -416,7 +406,7 @@ it.effect('collapses cross-workspace gets to a generic not-found without adapter
     const error = yield* getSlackMessage(
       adapter,
       { binding, target: channelTarget('T999', 'C789'), messageId: decodeMessageId('200.2') },
-      policyFor(['T999:C789']),
+      policyFor(),
     ).pipe(Effect.flip)
 
     assert(isMessageNotFound(error))
@@ -431,7 +421,7 @@ it.effect('posts top-level to a channel target and returns the native timestamp 
     const result = yield* postSlackMessage(
       stubAdapter({ posted, postId: '400.4' }),
       { binding, target: channelTarget(), text: 'hello channel' },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.deepStrictEqual(posted, [{ address: 'slack:C456', text: 'hello channel' }])
@@ -445,31 +435,30 @@ it.effect('posts a thread reply for a thread target', () =>
     yield* postSlackMessage(
       stubAdapter({ posted }),
       { binding, target: threadTarget('111.1'), text: 'hello thread' },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.deepStrictEqual(posted, [{ address: 'slack:C456:111.1', text: 'hello thread' }])
   }),
 )
 
-it.effect('posts to an admitted DM channel and denies unadmitted ones', () =>
+it.effect('posts to visible DM channels through the API', () =>
   Effect.gen(function* () {
     const posted: Array<{ readonly address: string; readonly text: string }> = []
     const adapter = stubAdapter({ posted })
     yield* postSlackMessage(
       adapter,
       { binding, target: channelTarget('T123', 'D123'), text: 'hello dm' },
-      policyFor(['T123:D123']),
+      policyFor(),
     )
     assert.deepStrictEqual(posted, [{ address: 'slack:D123', text: 'hello dm' }])
 
-    const denied = yield* postSlackMessage(
+    yield* postSlackMessage(
       adapter,
       { binding, target: channelTarget('T123', 'D999'), text: 'hello dm' },
-      policyFor(['T123:D123']),
-    ).pipe(Effect.flip)
-    assert(isTargetNotFound(denied))
-    assert.strictEqual(posted.length, 1)
+      policyFor(),
+    )
+    assert.strictEqual(posted.length, 2)
   }),
 )
 
@@ -480,7 +469,7 @@ it.effect('rejects cross-workspace posts before policy lookup or any adapter cal
     const error = yield* postSlackMessage(
       adapter,
       { binding, target: channelTarget('T999', 'C789'), text: 'hello other' },
-      policyFor(['T999:C789']),
+      policyFor(),
     ).pipe(Effect.flip)
 
     assert(isTargetNotFound(error))
@@ -494,7 +483,7 @@ it.effect('rejects empty and over-limit Slack posts without posting', () =>
   Effect.gen(function* () {
     const posted: Array<{ readonly address: string; readonly text: string }> = []
     const adapter = stubAdapter({ posted })
-    const policy = policyFor(['T123:C456'])
+    const policy = policyFor()
 
     const empty = yield* postSlackMessage(
       adapter,
@@ -522,7 +511,7 @@ it.effect('returns a null id when the transport exposes none', () =>
     const result = yield* postSlackMessage(
       adapter,
       { binding, target: channelTarget(), text: 'hello' },
-      policyFor(['T123:C456']),
+      policyFor(),
     )
 
     assert.strictEqual(result.messageId, null)

@@ -162,15 +162,14 @@ export const makeSlackConnectionRuntime = Effect.fn('makeSlackConnectionRuntime'
     decide: (decideInput) => threadRouter.decide(decideInput),
     resolveChannelPolicy,
   })
-  // Explicit targets gate against the connection's bound workspace first,
-  // then the live workspace/channel policy snapshot; thread targets inherit
-  // their channel policy. The inbound user allowlist stays out of reads and
-  // posts: the invoking thread is already admitted. Discovery enumerates only
-  // policy-known channels (configured overrides plus the current channel).
+  // Tool targets use the bound workspace plus bot-visible Slack state only:
+  // channels via conversations.list, threads via the native thread list.
+  // Friday admission config never gates query/post/discovery; inbound
+  // invocation admission below is unchanged and remains the only policy gate
+  // for creating Friday threads. The inbound user allowlist stays out of
+  // reads and posts: the invoking thread is already admitted.
   const agentPlatform = yield* makeSlackPlatform(slackConfig.connectionId, slack, {
     workspaceId,
-    resolveChannelPolicy,
-    listKnownChannels: () => currentPolicies().channels.map((channel) => channel.channelId),
   })
   yield* platforms.register(agentPlatform)
   // Agent lifecycle observability: these never create Friday threads or

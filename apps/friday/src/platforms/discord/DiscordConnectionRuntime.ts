@@ -63,11 +63,7 @@ import {
   postDiscordMessage,
   searchDiscordMessages,
 } from './DiscordMessageSearch.ts'
-import {
-  discoverDiscord,
-  listDiscordMembers,
-  type DiscordDiscoveryPolicy,
-} from './DiscordDiscovery.ts'
+import { discoverDiscord, listDiscordMembers } from './DiscordDiscovery.ts'
 import {
   makeDiscordThreadBootstrap,
   type DiscordThreadBootstrapOptions,
@@ -169,28 +165,20 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
     void runResync(activity.resyncPresence())
   })
   yield* Effect.addFinalizer(() => Effect.sync(unsubscribeReconnect))
-  // Discovery enumerates only the live policy snapshot: enabled guilds and
-  // admitted policy-known channels (configured overrides plus the current
-  // channel). Names resolve best-effort; unadmitted scopes never appear.
-  const discoveryPolicy: DiscordDiscoveryPolicy = {
-    resolveChannelPolicy,
-    listGuilds: () =>
-      currentPolicies().guilds.map((guild) => ({
-        guildId: guild.guildId,
-        enabled: guild.enabled,
-        channelIds: guild.channels.map((channel) => channel.channelId),
-      })),
-  }
+  // Tool targets use bot-visible platform state only: guilds and channels via
+  // Discord REST, threads via the native thread list. Friday admission config
+  // never gates query/post/discovery; inbound invocation admission below is
+  // unchanged and remains the only policy gate for creating Friday threads.
   const chatSdkPlatform = yield* makeChatSdkPlatform(discordConfig.connectionId, 'discord', chat, {
     setConversationTitle: (title) => setDiscordConversationTitle(discord, title),
     setAgentActivity: activity.setAgentActivity,
-    // Explicit targets gate against the live channel policy snapshot;
-    // thread targets inherit their parent-channel policy.
-    searchMessages: (query) => searchDiscordMessages(discord, query, { resolveChannelPolicy }),
-    getMessage: (query) => getDiscordMessage(discord, query, { resolveChannelPolicy }),
-    postMessage: (query) => postDiscordMessage(discord, query, { resolveChannelPolicy }),
-    listMembers: (query) => listDiscordMembers(discord, query, discoveryPolicy),
-    discoverPlatforms: (query) => discoverDiscord(discord, query, discoveryPolicy),
+    // Explicit targets prove visibility through Discord API reads;
+    // thread targets inherit their parent channel.
+    searchMessages: (query) => searchDiscordMessages(discord, query),
+    getMessage: (query) => getDiscordMessage(discord, query),
+    postMessage: (query) => postDiscordMessage(discord, query),
+    listMembers: (query) => listDiscordMembers(discord, query),
+    discoverPlatforms: (query) => discoverDiscord(discord, query),
   })
   yield* platforms.register(chatSdkPlatform)
   // Harness reload targets the thread bound to the invoking conversation
