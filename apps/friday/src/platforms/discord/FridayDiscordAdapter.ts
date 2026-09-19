@@ -259,13 +259,21 @@ export class FridayDiscordAdapter extends DiscordAdapter {
 
   /**
    * List guilds the bot token can see via `GET /users/@me/guilds`.
-   * Callers decode ids/names and collapse failures to not-found or a typed
+   * Supports the native `limit` (1-200), `after`, and `before` pagination;
+   * callers decode ids/names and collapse failures to not-found or a typed
    * discovery error. This is the visible-scope source for guild discovery:
    * configured enablement never widens or narrows it for tool actions.
    * Returns raw guild rows for Schema decoding upstream.
    */
-  public async fetchBotGuilds(): Promise<ReadonlyArray<unknown>> {
-    const response = await this.discordFetch(`/users/@me/guilds`, 'GET')
+  public async fetchBotGuilds(
+    options: { readonly limit?: number; readonly after?: string; readonly before?: string } = {},
+  ): Promise<ReadonlyArray<unknown>> {
+    const params = new URLSearchParams()
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    if (options.after !== undefined) params.set('after', options.after)
+    if (options.before !== undefined) params.set('before', options.before)
+    const suffix = params.size === 0 ? '' : `?${params.toString()}`
+    const response = await this.discordFetch(`/users/@me/guilds${suffix}`, 'GET')
     const raw: unknown = await response.json()
     return Array.isArray(raw) ? raw : []
   }

@@ -1,7 +1,9 @@
 import type { DiscordAdapter } from '@chat-adapter/discord'
 import type { ListThreadsOptions, ThreadSummary } from 'chat'
 import * as Effect from 'effect/Effect'
+import * as Encoding from 'effect/Encoding'
 import * as Option from 'effect/Option'
+import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
 import {
@@ -18,7 +20,7 @@ import {
   type PlatformMembersQuery,
   type PlatformMembersResult,
 } from '../PlatformAdapter.ts'
-import { decodeDiscoveryOffset, matchesDiscoveryQuery } from '../PlatformAdapter.ts'
+import { matchesDiscoveryQuery } from '../PlatformAdapter.ts'
 import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 import { isDiscordThread } from './DiscordConversationScope.ts'
 
@@ -40,6 +42,17 @@ export interface DiscordGuildMembersOptions {
   after?: string
 }
 
+/**
+ * Pagination options for `GET /users/@me/guilds` per the Discord API:
+ * `limit` (1-200), `after` (guild id), and `before` (guild id).
+ * Fields stay mutable so callers can attach them in separate statements.
+ */
+export interface DiscordBotGuildsOptions {
+  limit?: number
+  after?: string
+  before?: string
+}
+
 /** Transport needed for Discord member listing and discovery. */
 export interface DiscordDiscoveryAdapter extends Pick<
   DiscordAdapter,
@@ -56,8 +69,12 @@ export interface DiscordDiscoveryAdapter extends Pick<
     guildId: string,
     options?: DiscordGuildMembersOptions,
   ) => Promise<ReadonlyArray<unknown>>
-  /** Bot-visible guilds via `GET /users/@me/guilds`; the visible-scope source for guild discovery. */
-  readonly fetchBotGuilds: () => Promise<ReadonlyArray<unknown>>
+  /**
+   * Bot-visible guilds via `GET /users/@me/guilds` with native `limit` /
+   * `after` / `before` pagination; the visible-scope source for guild
+   * discovery.
+   */
+  readonly fetchBotGuilds: (options?: DiscordBotGuildsOptions) => Promise<ReadonlyArray<unknown>>
   /** Bot-visible channels of one guild via `GET /guilds/{guild}/channels`. */
   readonly fetchGuildChannels: (guildId: string) => Promise<ReadonlyArray<unknown>>
 }
@@ -681,31 +698,101 @@ const channelName = (
     catch: () => undefined,
   }).pipe(Effect.orElseSucceed(() => undefined))
 
-interface OffsetPage {
-  readonly page: ReadonlyArray<string>
-  readonly nextCursor: string | undefined
-  readonly truncated: boolean
+/** Native page size for `GET /users/@me/guilds` (Discord maximum). */
+const DiscordGuildsPageSize = 200
+
+/**
+ * Opaque scopes cursor: `after` is the Discord `after` guild id for the page
+ * to fetch; `skip` is the local offset into that page's query-filtered
+ * guilds when a previous call truncated inside one API page.
+ */
+const DiscordScopesCursorPayload = Schema.Struct({
+  v: Schema.Literal(1),
+  k: Schema.Literal('discord-scopes'),
+  after: Schema.optionalKey(Schema.String),
+  skip: Schema.optionalKey(Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
+})
+const DiscordScopesCursorJson = Schema.fromJsonString(DiscordScopesCursorPayload)
+const decodeDiscordScopesCursorJsonOption = Schema.decodeUnknownOption(DiscordScopesCursorJson)
+const encodeDiscordScopesCursorJsonSync = Schema.encodeSync(DiscordScopesCursorJson)
+
+interface DiscordScopesPosition {
+  readonly after: string | undefined
+  readonly skip: number
 }
 
-const paginateIds = (
-  ids: ReadonlyArray<string>,
-  limit: number,
+interface DiscordScopesCursorInput {
+  readonly v: 1
+  readonly k: 'discord-scopes'
+  after?: string
+  skip?: number
+}
+
+interface DiscordChannelsCursorInput {
+  readonly v: 1
+  readonly k: 'discord-channels'
+  off?: number
+}
+
+const decodeDiscordScopesPosition = (
   cursor: string | undefined,
-): Effect.Effect<OffsetPage, ChatSdkPublicationError> => {
-  const offsetOption = decodeDiscoveryOffset(cursor)
-  if (Option.isNone(offsetOption)) {
-    return Effect.fail(discoverError('invalid-cursor'))
+): Option.Option<DiscordScopesPosition> => {
+  if (cursor === undefined || cursor.trim() === '') {
+    return Option.some({ after: undefined, skip: 0 })
   }
-  const start = offsetOption.value
-  const next = start + limit
-  if (next < ids.length) {
-    return Effect.succeed({
-      page: ids.slice(start, next),
-      nextCursor: String(next),
-      truncated: true,
-    })
+  const jsonResult = Encoding.decodeBase64UrlString(cursor.trim())
+  if (!Result.isSuccess(jsonResult)) return Option.none()
+  const payload = Option.getOrUndefined(
+    decodeDiscordScopesCursorJsonOption(Result.getOrThrow(jsonResult)),
+  )
+  if (payload === undefined) return Option.none()
+  const after = payload.after === undefined || payload.after === '' ? undefined : payload.after
+  return Option.some({ after, skip: payload.skip ?? 0 })
+}
+
+const encodeDiscordScopesPosition = (position: DiscordScopesPosition): string => {
+  const payload: DiscordScopesCursorInput = {
+    v: 1,
+    k: 'discord-scopes',
   }
-  return Effect.succeed({ page: ids.slice(start, next), nextCursor: undefined, truncated: false })
+  if (position.after !== undefined) payload.after = position.after
+  if (position.skip > 0) payload.skip = position.skip
+  return Encoding.encodeBase64Url(encodeDiscordScopesCursorJsonSync(payload))
+}
+
+/**
+ * Opaque channels cursor: offset into the fully-enumerated guild-channel
+ * list. The guild enumeration itself always scans every bot-visible guild
+ * page, so channels are never limited to the first guild page; the offset
+ * only paginates the final filtered list.
+ */
+const DiscordChannelsCursorPayload = Schema.Struct({
+  v: Schema.Literal(1),
+  k: Schema.Literal('discord-channels'),
+  off: Schema.optionalKey(Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
+})
+const DiscordChannelsCursorJson = Schema.fromJsonString(DiscordChannelsCursorPayload)
+const decodeDiscordChannelsCursorJsonOption = Schema.decodeUnknownOption(DiscordChannelsCursorJson)
+const encodeDiscordChannelsCursorJsonSync = Schema.encodeSync(DiscordChannelsCursorJson)
+
+const decodeDiscordChannelsOffset = (cursor: string | undefined): Option.Option<number> => {
+  if (cursor === undefined || cursor.trim() === '') return Option.some(0)
+  const jsonResult = Encoding.decodeBase64UrlString(cursor.trim())
+  if (!Result.isSuccess(jsonResult)) return Option.none()
+  const payload = Option.getOrUndefined(
+    decodeDiscordChannelsCursorJsonOption(Result.getOrThrow(jsonResult)),
+  )
+  if (payload === undefined) return Option.none()
+  return Option.some(payload.off ?? 0)
+}
+
+const encodeDiscordChannelsOffset = (offset: number): string => {
+  const payload: DiscordChannelsCursorInput = {
+    v: 1,
+    k: 'discord-channels',
+  }
+  if (offset > 0) payload.off = offset
+  return Encoding.encodeBase64Url(encodeDiscordChannelsCursorJsonSync(payload))
 }
 
 const discoverCurrent = Effect.fn('DiscordDiscovery.current')(function* (
@@ -761,18 +848,42 @@ const decodeDiscordGuildChannel = Schema.decodeUnknownOption(DiscordGuildChannel
 const isListableGuildChannelType = (type: number | undefined): boolean =>
   type === undefined || type === 0 || type === 5 || type === 15
 
-const fetchVisibleGuildIds = Effect.fn('DiscordDiscovery.visibleGuilds')(function* (
+const fetchOneGuildPage = Effect.fn('DiscordDiscovery.guildPage')(function* (
   discord: DiscordDiscoveryAdapter,
+  after: string | undefined,
 ) {
-  const rows = yield* Effect.tryPromise({
-    try: () => discord.fetchBotGuilds(),
+  // Exactly one `GET /users/@me/guilds` page per scopes call, using the
+  // native `limit`/`after` pagination. The `after` here is always a guild
+  // id decoded from the opaque scopes cursor, never a numeric offset.
+  const fetchOptions: DiscordBotGuildsOptions = { limit: DiscordGuildsPageSize }
+  if (after !== undefined) fetchOptions.after = after
+  return yield* Effect.tryPromise({
+    try: () => discord.fetchBotGuilds(fetchOptions),
     catch: (cause) => discoverError(cause),
   })
+})
+
+/** Scans every bot-visible guild page so channel discovery never stops at the first page. */
+const fetchAllVisibleGuildIds = Effect.fn('DiscordDiscovery.allVisibleGuilds')(function* (
+  discord: DiscordDiscoveryAdapter,
+) {
   const ids: Array<string> = []
-  for (const row of rows) {
-    const guild = Option.getOrUndefined(decodeDiscordBotGuild(row))
-    if (guild === undefined || guild.id.trim() === '') continue
-    if (!ids.includes(guild.id)) ids.push(guild.id)
+  const seen = new Set<string>()
+  let after: string | undefined
+  for (;;) {
+    const rows = yield* fetchOneGuildPage(discord, after)
+    if (rows.length === 0) break
+    for (const row of rows) {
+      const guild = Option.getOrUndefined(decodeDiscordBotGuild(row))
+      if (guild === undefined || guild.id.trim() === '' || seen.has(guild.id)) continue
+      seen.add(guild.id)
+      ids.push(guild.id)
+    }
+    if (rows.length < DiscordGuildsPageSize) break
+    const last = Option.getOrUndefined(decodeDiscordBotGuild(rows[rows.length - 1]))
+    const lastId = last?.id.trim()
+    if (lastId === undefined || lastId === '' || lastId === after) break
+    after = lastId
   }
   return ids
 })
@@ -783,28 +894,43 @@ const discoverScopes = Effect.fn('DiscordDiscovery.scopes')(function* (
 ) {
   const location = yield* decodeCurrentLocation(discord, String(query.binding.conversationId))
   const currentGuildId = location.guildId
-  const visibleGuildIds = yield* fetchVisibleGuildIds(discord)
-  const scopes: Array<PlatformDiscoveryScope> = []
-  for (const guildId of visibleGuildIds) {
-    if (!matchesDiscoveryQuery([guildId], query.query)) continue
-    scopes.push({
-      kind: 'guild',
-      id: guildId,
-      isCurrent: guildId === currentGuildId,
-    })
+  const positionOption = decodeDiscordScopesPosition(query.cursor)
+  if (Option.isNone(positionOption)) {
+    return yield* discoverError('invalid-cursor')
   }
-  const page = yield* paginateIds(
-    scopes.map((scope) => scope.id),
-    query.limit,
-    query.cursor,
-  )
+  const position = positionOption.value
+  const rows = yield* fetchOneGuildPage(discord, position.after)
+  const filtered: Array<{ readonly id: string; readonly name: string | undefined }> = []
+  for (const row of rows) {
+    const guild = Option.getOrUndefined(decodeDiscordBotGuild(row))
+    if (guild === undefined || guild.id.trim() === '') continue
+    if (!matchesDiscoveryQuery([guild.id, guild.name], query.query)) continue
+    filtered.push({ id: guild.id, name: guild.name })
+  }
+  const sliced = filtered.slice(position.skip, position.skip + query.limit)
+  const remainingInPage = filtered.length - (position.skip + sliced.length)
+  // Discord has no `next_cursor`: a full page may hide more guilds, so a
+  // full page always continues honestly. Terminal pages carry no cursor.
+  const hasMoreUpstream = rows.length >= DiscordGuildsPageSize
+  const lastRowId = Option.getOrUndefined(decodeDiscordBotGuild(rows[rows.length - 1]))?.id.trim()
+  const nextCursor =
+    remainingInPage > 0
+      ? encodeDiscordScopesPosition({ after: position.after, skip: position.skip + sliced.length })
+      : hasMoreUpstream && lastRowId !== undefined && lastRowId !== ''
+        ? encodeDiscordScopesPosition({ after: lastRowId, skip: 0 })
+        : undefined
+  const scopes: Array<PlatformDiscoveryScope> = sliced.map((entry) => ({
+    kind: 'guild',
+    id: entry.id,
+    isCurrent: entry.id === currentGuildId,
+  }))
   return {
     action: 'scopes' as const,
     platform: query.binding.platform,
     connectionId: query.binding.connectionId,
-    scopes: scopes.filter((scope) => page.page.includes(scope.id)),
-    nextCursor: page.nextCursor,
-    truncated: page.truncated,
+    scopes,
+    nextCursor,
+    truncated: nextCursor !== undefined,
   } satisfies PlatformDiscoveryResult
 })
 
@@ -813,7 +939,14 @@ const discoverChannels = Effect.fn('DiscordDiscovery.channels')(function* (
   query: PlatformDiscoveryQuery,
 ) {
   const location = yield* decodeCurrentLocation(discord, String(query.binding.conversationId))
-  const visibleGuildIds = yield* fetchVisibleGuildIds(discord)
+  const offsetOption = decodeDiscordChannelsOffset(query.cursor)
+  if (Option.isNone(offsetOption)) {
+    return yield* discoverError('invalid-cursor')
+  }
+  const offset = offsetOption.value
+  // Guild enumeration always walks every `/users/@me/guilds` page so
+  // channels span all bot-visible guilds, never just the first page.
+  const visibleGuildIds = yield* fetchAllVisibleGuildIds(discord)
   const guilds = visibleGuildIds.filter(
     (guildId) => query.guildId === undefined || guildId === query.guildId,
   )
@@ -842,15 +975,13 @@ const discoverChannels = Effect.fn('DiscordDiscovery.channels')(function* (
       enriched.push({ guildId, channelId: channel.id, name: channel.name })
     }
   }
-  const page = yield* paginateIds(
-    enriched.map((entry) => `${entry.guildId}:${entry.channelId}`),
-    query.limit,
-    query.cursor,
-  )
+  const sliced = enriched.slice(offset, offset + query.limit)
+  const nextCursor =
+    offset + sliced.length < enriched.length
+      ? encodeDiscordChannelsOffset(offset + sliced.length)
+      : undefined
   const channels: Array<PlatformDiscoveryChannel> = []
-  for (const key of page.page) {
-    const entry = enriched.find((item) => `${item.guildId}:${item.channelId}` === key)
-    if (entry === undefined) continue
+  for (const entry of sliced) {
     channels.push({
       target: {
         platform: 'discord',
@@ -867,8 +998,8 @@ const discoverChannels = Effect.fn('DiscordDiscovery.channels')(function* (
     platform: query.binding.platform,
     connectionId: query.binding.connectionId,
     channels,
-    nextCursor: page.nextCursor,
-    truncated: page.truncated,
+    nextCursor,
+    truncated: nextCursor !== undefined,
   } satisfies PlatformDiscoveryResult
 })
 
@@ -958,12 +1089,15 @@ const discoverThreads = Effect.fn('DiscordDiscovery.threads')(function* (
 })
 
 /**
- * Read-only Discord discovery through the current connection only. Scopes list
- * bot-visible guilds via `GET /users/@me/guilds`; channels list bot-visible
- * guild text channels via `GET /guilds/{guild}/channels`; names come from
- * those payloads and never fail the listing. Threads use the native thread
- * list on a visible parent channel. Invisible parents collapse to not-found
- * without revealing existence. Friday admission config never gates discovery.
+ * Read-only Discord discovery through the current connection only. Scopes read
+ * exactly one `GET /users/@me/guilds` page per call with native
+ * `limit`/`after` pagination inside an opaque continuation cursor; channels
+ * scan every guild page before listing bot-visible guild text channels via
+ * `GET /guilds/{guild}/channels` and paginate the filtered list with an
+ * opaque offset cursor. Names come from those payloads and never fail the
+ * listing. Threads use the native thread list on a visible parent channel.
+ * Invisible parents collapse to not-found without revealing existence.
+ * Friday admission config never gates discovery.
  */
 export const discoverDiscord = Effect.fn('DiscordDiscovery.discover')(function* (
   discord: DiscordDiscoveryAdapter,

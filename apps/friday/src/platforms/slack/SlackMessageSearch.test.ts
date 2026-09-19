@@ -517,3 +517,72 @@ it.effect('returns a null id when the transport exposes none', () =>
     assert.strictEqual(result.messageId, null)
   }),
 )
+
+const slackPostError = (code: string) => ({ data: { error: code } })
+
+it.effect('maps inaccessible post channels to not-found with the read codes', () =>
+  Effect.gen(function* () {
+    for (const code of [
+      'channel_not_found',
+      'not_in_channel',
+      'restricted_action',
+      'action_not_allowed',
+    ]) {
+      const posted: Array<{ readonly address: string; readonly text: string }> = []
+      const adapter: SlackMessageQueryAdapter = {
+        ...stubAdapter({ posted }),
+        postChannelMessage: () => Promise.reject(slackPostError(code)),
+      }
+      const error = yield* postSlackMessage(
+        adapter,
+        { binding, target: channelTarget(), text: 'hello' },
+        policyFor(),
+      ).pipe(Effect.flip)
+      assert(isTargetNotFound(error), `expected not-found for ${code}`)
+      assert.strictEqual(error.message, 'Target not found or not accessible.')
+      assert.deepStrictEqual(posted, [])
+    }
+  }),
+)
+
+it.effect('maps inaccessible thread replies to not-found', () =>
+  Effect.gen(function* () {
+    const adapter: SlackMessageQueryAdapter = {
+      ...stubAdapter(),
+      postMessage: () => Promise.reject(slackPostError('not_in_channel')),
+    }
+    const error = yield* postSlackMessage(
+      adapter,
+      { binding, target: threadTarget('111.1'), text: 'hello thread' },
+      policyFor(),
+    ).pipe(Effect.flip)
+    assert(isTargetNotFound(error))
+  }),
+)
+
+it.effect('keeps transport and other post failures as publication errors', () =>
+  Effect.gen(function* () {
+    for (const code of ['rate_limited', 'invalid_auth', 'unknown_method']) {
+      const adapter: SlackMessageQueryAdapter = {
+        ...stubAdapter(),
+        postChannelMessage: () => Promise.reject(slackPostError(code)),
+      }
+      const error = yield* postSlackMessage(
+        adapter,
+        { binding, target: channelTarget(), text: 'hello' },
+        policyFor(),
+      ).pipe(Effect.flip)
+      assert(isPublicationError(error), `expected publication error for ${code}`)
+    }
+    const networkAdapter: SlackMessageQueryAdapter = {
+      ...stubAdapter(),
+      postChannelMessage: () => Promise.reject(new Error('socket hang up')),
+    }
+    const networkError = yield* postSlackMessage(
+      networkAdapter,
+      { binding, target: channelTarget(), text: 'hello' },
+      policyFor(),
+    ).pipe(Effect.flip)
+    assert(isPublicationError(networkError))
+  }),
+)

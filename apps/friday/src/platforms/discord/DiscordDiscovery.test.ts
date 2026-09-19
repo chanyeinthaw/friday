@@ -16,6 +16,7 @@ import {
   canDiscordMemberViewChannel,
   discoverDiscord,
   listDiscordMembers,
+  type DiscordBotGuildsOptions,
   type DiscordDiscoveryAdapter,
   type DiscordGuildMembersOptions,
   type DiscordThreadMembersOptions,
@@ -122,6 +123,11 @@ const stubAdapter = (
     readonly limit?: number | undefined
     readonly after?: string | undefined
   }>
+  readonly botGuildCalls: Array<{
+    readonly limit?: number | undefined
+    readonly after?: string | undefined
+    readonly before?: string | undefined
+  }>
 } => {
   const memberCalls: Array<{
     readonly limit?: number | undefined
@@ -134,6 +140,11 @@ const stubAdapter = (
     readonly limit?: number | undefined
     readonly after?: string | undefined
   }> = []
+  const botGuildCalls: Array<{
+    readonly limit?: number | undefined
+    readonly after?: string | undefined
+    readonly before?: string | undefined
+  }> = []
   const GuildUserIdRaw = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) })
   const decodeGuildUserId = Schema.decodeUnknownOption(GuildUserIdRaw)
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Test stub paginates untrusted REST-shaped rows like the adapter boundary.
@@ -145,6 +156,7 @@ const stubAdapter = (
     guildCalls,
     roleCalls,
     guildMemberCalls,
+    botGuildCalls,
     decodeThreadId: (id: string): DiscordThreadId => {
       const [, guildId, channelId, threadId] = id.split(':')
       if (guildId === undefined || channelId === undefined) {
@@ -226,16 +238,37 @@ const stubAdapter = (
       }
       return Promise.resolve([...(options.guildRoles ?? [])])
     },
-    fetchBotGuilds: () => {
+    fetchBotGuilds: (
+      fetchOptions: {
+        readonly limit?: number
+        readonly after?: string
+        readonly before?: string
+      } = {},
+    ) => {
+      const call: DiscordBotGuildsOptions = {}
+      if (fetchOptions.limit !== undefined) call.limit = fetchOptions.limit
+      if (fetchOptions.after !== undefined) call.after = fetchOptions.after
+      if (fetchOptions.before !== undefined) call.before = fetchOptions.before
+      botGuildCalls.push({ ...call })
       if (options.botGuildsError !== undefined) {
         return Promise.reject(options.botGuildsError)
       }
-      return Promise.resolve(
-        options.botGuilds ?? [
-          { id: 'guild-1', name: 'Guild One' },
-          { id: 'guild-3', name: 'Guild Three' },
-        ],
-      )
+      const all = options.botGuilds ?? [
+        { id: 'guild-1', name: 'Guild One' },
+        { id: 'guild-3', name: 'Guild Three' },
+      ]
+      // Native `after`/`before` pagination over guild ids, honouring `limit`.
+      let rows = [...all]
+      if (fetchOptions.after !== undefined) {
+        const index = rows.findIndex((guild) => guild.id === fetchOptions.after)
+        rows = index < 0 ? [] : rows.slice(index + 1)
+      }
+      if (fetchOptions.before !== undefined) {
+        const index = rows.findIndex((guild) => guild.id === fetchOptions.before)
+        rows = index < 0 ? [] : rows.slice(0, index)
+      }
+      if (fetchOptions.limit !== undefined) rows = rows.slice(0, fetchOptions.limit)
+      return Promise.resolve(rows)
     },
     fetchGuildChannels: (guildId: string) => {
       if (options.guildChannelsError !== undefined) {
@@ -893,5 +926,189 @@ it.effect('ends the final page without a cursor and keeps truncated cursors defi
     const first = yield* listDiscordMembers(paged, { binding, target: channelTarget, limit: 1 })
     assert.isTrue(first.truncated)
     assert.strictEqual(first.nextCursor, 'U1')
+  }),
+)
+
+const manyGuilds = (count: number): ReadonlyArray<{ readonly id: string; readonly name: string }> =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `guild-${String(index).padStart(3, '0')}`,
+    name: `Guild ${String(index).padStart(3, '0')}`,
+  }))
+
+it.effect('paginates guild scopes across API pages with an opaque cursor', () =>
+  Effect.gen(function* () {
+    const all = manyGuilds(201)
+    const adapter = stubAdapter({ botGuilds: [...all] })
+    // Tool limit 50 over a 200-row native page: local skip first, then `after`.
+    const first = yield* discoverDiscord(adapter, { binding, action: 'scopes', limit: 50 })
+    assert.strictEqual(first.action, 'scopes')
+    if (first.action !== 'scopes') return
+    assert.strictEqual(first.scopes.length, 50)
+    assert.isTrue(first.truncated)
+    assert.isDefined(first.nextCursor)
+    assert.notStrictEqual(first.nextCursor, '50')
+    // Native pagination uses `limit`/`after`, never numeric offsets.
+    assert.deepStrictEqual(adapter.botGuildCalls[0], { limit: 200 })
+
+    const second = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'scopes',
+      limit: 50,
+      cursor: first.nextCursor,
+    })
+    assert.strictEqual(second.action, 'scopes')
+    if (second.action !== 'scopes') return
+    assert.strictEqual(second.scopes.length, 50)
+    assert.isTrue(second.truncated)
+    assert.isDefined(second.nextCursor)
+    assert.notStrictEqual(first.scopes[0]?.id, second.scopes[0]?.id)
+    // Second call refetches the same native page with a local skip.
+    assert.deepStrictEqual(adapter.botGuildCalls[1], { limit: 200 })
+
+    // Walk to the terminal page: every truncated page carries a cursor,
+    // the terminal page carries none.
+    let cursor = second.nextCursor
+    let total = 50 + 50
+    let pages = 2
+    for (;;) {
+      const result = yield* discoverDiscord(adapter, {
+        binding,
+        action: 'scopes',
+        limit: 50,
+        cursor,
+      })
+      assert.strictEqual(result.action, 'scopes')
+      if (result.action !== 'scopes') return
+      assert.strictEqual(result.truncated, result.nextCursor !== undefined)
+      if (!result.truncated) {
+        total += result.scopes.length
+        pages += 1
+        break
+      }
+      assert.isDefined(result.nextCursor)
+      cursor = result.nextCursor
+      total += result.scopes.length
+      pages += 1
+      if (pages > 10) throw new Error('scopes pagination did not terminate')
+    }
+    assert.strictEqual(total, 201)
+    assert.strictEqual(pages, 5)
+    // The final native fetch uses `after` to reach the second API page.
+    assert.isTrue(adapter.botGuildCalls.some((call) => call.after !== undefined))
+  }),
+)
+
+it.effect('keeps guild scope boundaries honest at the native page edge', () =>
+  Effect.gen(function* () {
+    const all = manyGuilds(200)
+    const adapter = stubAdapter({ botGuilds: [...all] })
+    const first = yield* discoverDiscord(adapter, { binding, action: 'scopes', limit: 200 })
+    assert.strictEqual(first.action, 'scopes')
+    if (first.action !== 'scopes') return
+    assert.strictEqual(first.scopes.length, 200)
+    // A full native page may hide more guilds: honest continuation even at
+    // the exact boundary, never a false terminal.
+    assert.isTrue(first.truncated)
+    assert.isDefined(first.nextCursor)
+
+    const second = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'scopes',
+      limit: 200,
+      cursor: first.nextCursor,
+    })
+    assert.strictEqual(second.action, 'scopes')
+    if (second.action !== 'scopes') return
+    assert.deepStrictEqual(second.scopes, [])
+    assert.isFalse(second.truncated)
+    assert.isUndefined(second.nextCursor)
+  }),
+)
+
+it.effect('rejects numeric offset cursors for guild scopes', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter()
+    const error = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'scopes',
+      limit: 1,
+      cursor: '1',
+    }).pipe(Effect.flip)
+    assert(isPublicationError(error))
+    assert.deepStrictEqual(adapter.botGuildCalls, [])
+  }),
+)
+
+it.effect('lists channels across every guild page, not just the first', () =>
+  Effect.gen(function* () {
+    const all = manyGuilds(201)
+    const guildChannels: Record<
+      string,
+      ReadonlyArray<{ readonly id: string; readonly name?: string; readonly type?: number }>
+    > = {}
+    for (const guild of all) {
+      guildChannels[guild.id] = [
+        { id: `channel-${guild.id}`, name: `general-${guild.id}`, type: 0 },
+      ]
+    }
+    const adapter = stubAdapter({ botGuilds: [...all], guildChannels })
+    const seen = new Set<string>()
+    let cursor: string | undefined
+    for (let pages = 0; pages < 10; pages += 1) {
+      let channelsQuery: Parameters<typeof discoverDiscord>[1] = {
+        binding,
+        action: 'channels',
+        limit: 50,
+      }
+      if (cursor !== undefined) channelsQuery = { ...channelsQuery, cursor }
+      const result = yield* discoverDiscord(adapter, channelsQuery)
+      assert.strictEqual(result.action, 'channels')
+      if (result.action !== 'channels') return
+      assert.strictEqual(result.truncated, result.nextCursor !== undefined)
+      for (const channel of result.channels) {
+        if (channel.target.platform !== 'discord') continue
+        seen.add(`${channel.target.guildId}:${channel.target.channelId}`)
+      }
+      if (!result.truncated) break
+      cursor = result.nextCursor
+    }
+    assert.strictEqual(seen.size, 201)
+    // The last guild lives on the second native guild page; its channel
+    // proves the scan crossed the page boundary.
+    assert.isTrue(seen.has('guild-200:channel-guild-200'))
+    assert.isTrue(adapter.botGuildCalls.length > 1)
+  }),
+)
+
+it.effect('paginates filtered channels with an opaque offset cursor', () =>
+  Effect.gen(function* () {
+    const adapter = stubAdapter()
+    const first = yield* discoverDiscord(adapter, { binding, action: 'channels', limit: 1 })
+    assert.strictEqual(first.action, 'channels')
+    if (first.action !== 'channels') return
+    assert.strictEqual(first.channels.length, 1)
+    assert.isTrue(first.truncated)
+    assert.isDefined(first.nextCursor)
+    assert.notStrictEqual(first.nextCursor, '1')
+
+    const second = yield* discoverDiscord(adapter, {
+      binding,
+      action: 'channels',
+      limit: 1,
+      cursor: first.nextCursor,
+    })
+    assert.strictEqual(second.action, 'channels')
+    if (second.action !== 'channels') return
+    assert.strictEqual(second.channels.length, 1)
+    assert.isFalse(second.truncated)
+    assert.isUndefined(second.nextCursor)
+    assert.notStrictEqual(
+      first.channels[0]?.target.platform === 'discord'
+        ? first.channels[0]?.target.channelId
+        : undefined,
+      second.channels[0]?.target.platform === 'discord'
+        ? second.channels[0]?.target.channelId
+        : undefined,
+    )
   }),
 )

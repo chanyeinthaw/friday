@@ -9,6 +9,7 @@ import {
   PlatformTargetNotFoundError,
   type SlackQueryTarget,
 } from '../PlatformAdapter.ts'
+import { ChatSdkPublicationError } from '../chat-sdk/Errors.ts'
 import {
   discoverSlack,
   listSlackMembers,
@@ -37,6 +38,7 @@ const threadBinding = Schema.decodeSync(ConversationBinding)({
 
 const isTargetNotFound = Schema.is(PlatformTargetNotFoundError)
 const isMembersUnsupported = Schema.is(PlatformMembersUnsupportedError)
+const isPublicationError = Schema.is(ChatSdkPublicationError)
 
 const policy: SlackDiscoveryPolicy = {
   workspaceId: 'T123',
@@ -399,5 +401,218 @@ it.effect('threads requires a channel target and collapses inaccessible parents'
       policy,
     )
     assert.strictEqual(visible.action, 'threads')
+  }),
+)
+
+interface PagedSlackChannel {
+  readonly id: string
+  readonly name: string
+}
+
+interface PagedSlackListPage {
+  readonly channels: ReadonlyArray<PagedSlackChannel>
+  readonly nextCursor: string | undefined
+}
+
+const stubPagedChannels = (pages: ReadonlyArray<PagedSlackListPage>) => {
+  const listCalls: Array<string | undefined> = []
+  const base = stubAdapter()
+  const adapter: SlackDiscoveryAdapter & { readonly listCalls: Array<string | undefined> } = {
+    ...base,
+    listCalls,
+    webClient: {
+      ...base.webClient,
+      conversations: {
+        ...base.webClient.conversations,
+        list: (args: { readonly cursor?: string }) => {
+          listCalls.push(args.cursor)
+          // `slack-page-N` fetches pages[N-1]: page 1 is the first call
+          // (cursor undefined), `slack-page-2` fetches the second page.
+          const index =
+            args.cursor === undefined ? 0 : Number(args.cursor.replace('slack-page-', '')) - 1
+          const page =
+            Number.isInteger(index) && index >= 0 && index < pages.length
+              ? pages[index]
+              : { channels: [], nextCursor: undefined }
+          return Promise.resolve({
+            channels: (page?.channels ?? []).map((channel) => ({
+              id: channel.id,
+              name: channel.name,
+            })),
+            response_metadata: { next_cursor: page?.nextCursor ?? '' },
+          })
+        },
+      },
+    },
+  }
+  return adapter
+}
+
+it.effect('continues through an opaque next_cursor with one API page per call', () =>
+  Effect.gen(function* () {
+    const adapter = stubPagedChannels([
+      {
+        channels: [
+          { id: 'C456', name: 'general' },
+          { id: 'C111', name: 'random' },
+        ],
+        nextCursor: 'slack-page-2',
+      },
+      { channels: [{ id: 'C222', name: 'dev' }], nextCursor: undefined },
+    ])
+    const first = yield* discoverSlack(
+      adapter,
+      { binding: channelBinding, action: 'channels', limit: 10 },
+      policy,
+    )
+    assert.strictEqual(first.action, 'channels')
+    if (first.action !== 'channels') return
+    assert.deepStrictEqual(
+      first.channels.map((channel) =>
+        channel.target.platform === 'slack' ? channel.target.channelId : 'unexpected',
+      ),
+      ['C456', 'C111'],
+    )
+    // Honest continuation: upstream pages remain, so truncated with a cursor.
+    assert.isTrue(first.truncated)
+    assert.isDefined(first.nextCursor)
+    // The opaque cursor never exposes Slack's raw cursor or a numeric offset.
+    assert.notStrictEqual(first.nextCursor, 'slack-page-2')
+    assert.notStrictEqual(first.nextCursor, '2')
+    assert.deepStrictEqual(adapter.listCalls, [undefined])
+
+    const second = yield* discoverSlack(
+      adapter,
+      { binding: channelBinding, action: 'channels', limit: 10, cursor: first.nextCursor },
+      policy,
+    )
+    assert.strictEqual(second.action, 'channels')
+    if (second.action !== 'channels') return
+    assert.deepStrictEqual(
+      second.channels.map((channel) =>
+        channel.target.platform === 'slack' ? channel.target.channelId : 'unexpected',
+      ),
+      ['C222'],
+    )
+    // Terminal page carries no cursor.
+    assert.isFalse(second.truncated)
+    assert.isUndefined(second.nextCursor)
+    assert.deepStrictEqual(adapter.listCalls, [undefined, 'slack-page-2'])
+    // No numeric offset ever reaches Slack as a cursor.
+    for (const cursor of adapter.listCalls) {
+      if (cursor !== undefined) assert.notMatch(cursor, /^\d+$/)
+    }
+  }),
+)
+
+it.effect('filters across pages without losing matching channels', () =>
+  Effect.gen(function* () {
+    const adapter = stubPagedChannels([
+      {
+        channels: [
+          { id: 'C111', name: 'alpha' },
+          { id: 'C112', name: 'beta' },
+        ],
+        nextCursor: 'slack-page-2',
+      },
+      {
+        channels: [
+          { id: 'C113', name: 'target-channel' },
+          { id: 'C114', name: 'gamma' },
+        ],
+        nextCursor: undefined,
+      },
+    ])
+    const first = yield* discoverSlack(
+      adapter,
+      { binding: channelBinding, action: 'channels', query: 'target', limit: 10 },
+      policy,
+    )
+    assert.strictEqual(first.action, 'channels')
+    if (first.action !== 'channels') return
+    // First API page has no matches, but upstream remains: empty yet truncated.
+    assert.deepStrictEqual(first.channels, [])
+    assert.isTrue(first.truncated)
+    assert.isDefined(first.nextCursor)
+
+    const second = yield* discoverSlack(
+      adapter,
+      {
+        binding: channelBinding,
+        action: 'channels',
+        query: 'target',
+        limit: 10,
+        cursor: first.nextCursor,
+      },
+      policy,
+    )
+    assert.strictEqual(second.action, 'channels')
+    if (second.action !== 'channels') return
+    assert.deepStrictEqual(
+      second.channels.map((channel) =>
+        channel.target.platform === 'slack' ? channel.target.channelId : 'unexpected',
+      ),
+      ['C113'],
+    )
+    assert.isFalse(second.truncated)
+    assert.isUndefined(second.nextCursor)
+  }),
+)
+
+it.effect('truncates inside one API page with a local opaque continuation', () =>
+  Effect.gen(function* () {
+    const adapter = stubPagedChannels([
+      {
+        channels: [
+          { id: 'C456', name: 'general' },
+          { id: 'C111', name: 'aaa' },
+          { id: 'C112', name: 'bbb' },
+        ],
+        nextCursor: undefined,
+      },
+    ])
+    const first = yield* discoverSlack(
+      adapter,
+      { binding: channelBinding, action: 'channels', limit: 2 },
+      policy,
+    )
+    assert.strictEqual(first.action, 'channels')
+    if (first.action !== 'channels') return
+    assert.strictEqual(first.channels.length, 2)
+    assert.isTrue(first.truncated)
+    assert.isDefined(first.nextCursor)
+
+    const second = yield* discoverSlack(
+      adapter,
+      { binding: channelBinding, action: 'channels', limit: 2, cursor: first.nextCursor },
+      policy,
+    )
+    assert.strictEqual(second.action, 'channels')
+    if (second.action !== 'channels') return
+    assert.strictEqual(second.channels.length, 1)
+    assert.strictEqual(
+      second.channels[0]?.target.platform === 'slack'
+        ? second.channels[0]?.target.channelId
+        : undefined,
+      'C112',
+    )
+    assert.isFalse(second.truncated)
+    assert.isUndefined(second.nextCursor)
+  }),
+)
+
+it.effect('rejects numeric offset cursors as invalid', () =>
+  Effect.gen(function* () {
+    const adapter = stubPagedChannels([
+      { channels: [{ id: 'C456', name: 'general' }], nextCursor: undefined },
+    ])
+    const error = yield* discoverSlack(
+      adapter,
+      { binding: channelBinding, action: 'channels', limit: 10, cursor: '2' },
+      policy,
+    ).pipe(Effect.flip)
+    assert(isPublicationError(error))
+    assert.strictEqual(error.operation, 'discover')
+    assert.deepStrictEqual(adapter.listCalls, [])
   }),
 )

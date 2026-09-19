@@ -301,10 +301,12 @@ const decodePostedMessageId = Schema.decodeUnknownOption(PostedMessageId)
  * Posts exactly one text message to an explicit Slack target through the
  * current connection only. Visibility is established by the post itself; a
  * thread target posts as a thread reply, a channel target posts top-level.
- * Over-limit text is rejected rather than chunked: chunking would turn one
- * requested post into several platform messages. Returns the native message
- * timestamp id when the transport exposes one, otherwise a posted result
- * with a null id (never fabricated).
+ * Inaccessible channels collapse to not-found with the same codes as reads;
+ * transport and other failures stay typed publication errors so failed posts
+ * never populate the idempotency receipt. Over-limit text is rejected rather
+ * than chunked: chunking would turn one requested post into several platform
+ * messages. Returns the native message timestamp id when the transport
+ * exposes one, otherwise a posted result with a null id (never fabricated).
  */
 export const postSlackMessage = Effect.fn('postSlackMessage')(function* (
   adapter: SlackMessageQueryAdapter,
@@ -324,7 +326,12 @@ export const postSlackMessage = Effect.fn('postSlackMessage')(function* (
       isSlackThreadTarget(query.target)
         ? adapter.postMessage(resolved.adapterThreadId, query.text)
         : adapter.postChannelMessage(resolved.adapterChannelId, query.text),
-    catch: (cause) => new ChatSdkPublicationError({ operation: 'post', cause }),
+    catch: (cause) => {
+      const code = slackErrorCode(cause)
+      return isSlackInaccessibleCode(code)
+        ? targetNotFound()
+        : new ChatSdkPublicationError({ operation: 'post', cause })
+    },
   })
   const id = Option.getOrUndefined(decodePostedMessageId(posted))?.id
   const messageId = Option.getOrUndefined(decodeMessageIdOption(id ?? ''))

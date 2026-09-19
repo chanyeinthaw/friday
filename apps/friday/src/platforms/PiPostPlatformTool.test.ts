@@ -352,6 +352,36 @@ it('deduplicates concurrent posts sharing one key', async () => {
   assert.deepStrictEqual(second.details, first.details)
 })
 
+it('retries the same key and payload after a failed post without reusing a receipt', async () => {
+  let attempts = 0
+  const platforms: Platforms = {
+    postMessage: () =>
+      Effect.promise(async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('transport down')
+        return { messageId: decodeMessageId('posted-1') }
+      }),
+  }
+  const tool = makePiPostPlatformTool({
+    thread,
+    platforms,
+    idempotency: new PlatformPostIdempotency(),
+    runPromise: Effect.runPromise,
+  })
+  const input = { target: discordTarget, text: 'hello retry', idempotencyKey: 'retry-after-fail' }
+
+  let error: unknown
+  try {
+    await tool.execute('call-1', input, undefined, undefined, extensionContext)
+  } catch (cause) {
+    error = cause
+  }
+  assert.match(String(error), /transport down/)
+  const recovered = await tool.execute('call-2', input, undefined, undefined, extensionContext)
+  assert.deepStrictEqual(recovered.details, { messageId: decodeMessageId('posted-1') })
+  assert.strictEqual(attempts, 2)
+})
+
 it('scopes idempotency keys to the current connection', async () => {
   const requests: Array<PlatformMessagePostQuery> = []
   const idempotency = new PlatformPostIdempotency()
