@@ -17,8 +17,8 @@
   "dependencies": {
     "@chat-adapter/discord": "4.40.0",
     "@chat-adapter/slack": "4.40.0",
-    "@earendil-works/pi-ai": "0.84.2",
-    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@earendil-works/pi-ai": "0.86.0",
+    "@earendil-works/pi-coding-agent": "0.86.0",
     "@effect/platform-bun": "4.0.0-rc.109",
     "@effect/sql-sqlite-bun": "4.0.0-rc.109",
     "@friday/contracts": "workspace:*",
