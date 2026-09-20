@@ -4,6 +4,7 @@ packages:
 
 allowBuilds:
   '@google/genai': false
+  esbuild: false
   koffi: false
   msgpackr-extract: false
   protobufjs: false
@@ -16,13 +17,14 @@ catalog:
   vitest: 4.1.10
 
 minimumReleaseAgeExclude:
-  - '@earendil-works/pi-agent-core@0.84.2'
-  - '@earendil-works/pi-ai@0.84.2'
-  - '@earendil-works/pi-client@0.84.2'
-  - '@earendil-works/pi-coding-agent@0.84.2'
-  - '@earendil-works/pi-protocol@0.84.2'
-  - '@earendil-works/pi-telemetry@0.84.2'
-  - '@earendil-works/pi-tui@0.84.2'
+  - '@earendil-works/pi-agent-core@0.86.0'
+  - '@earendil-works/pi-ai@0.86.0'
+  - '@earendil-works/pi-client@0.86.0'
+  - '@earendil-works/pi-coding-agent@0.86.0'
+  - '@earendil-works/pi-protocol@0.86.0'
+  - '@earendil-works/pi-telemetry@0.86.0'
+  - '@earendil-works/pi-tui@0.86.0'
+  - '@earendil-works/chord@0.86.0'
 
 patchedDependencies:
   '@chat-adapter/discord@4.40.0': patches/@chat-adapter__discord@4.40.0.patch
