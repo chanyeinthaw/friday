@@ -132,6 +132,8 @@ Disabling preserves memory and restores normal channel behavior. Messages from d
 
 OptChat writes request a live configuration reload automatically. No process restart is required. Summaries use the configured utility model. The channel agent receives scoped `zoom` and `date` tools for its memory.
 
+OptChat agents do the user's work directly with their tools. They start background tasks only when the user asks for them.
+
 ## Other operations
 
 `worktree ensure` may clone or fetch a repository and create a worktree. Set the workspace explicitly when the current directory is not the owning channel workspace:

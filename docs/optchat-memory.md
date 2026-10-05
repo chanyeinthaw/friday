@@ -22,7 +22,7 @@ Each leaf summarizes one message. Each parent combines exactly two children. Sou
 
 The view targets 128,000 UTF-8 bytes of summary text. It appends new leaves and merges the oldest due adjacent siblings with built parents. It never splits a merged part or drops history to meet the budget. Missing summaries block the next run; interruption cancels that wait.
 
-Up to eight ready nodes run concurrently per memory. Leaves build in order, while eligible merges run alongside. Successful nodes persist independently of failed jobs. The scoped worker resumes missing nodes from SQLite after restart and retries on a ten-second cadence. A foreground wait also drains missing work. Completed worker passes avoid rescanning idle history.
+Up to eight ready nodes run concurrently per memory. Leaves build in order, while eligible merges run alongside. Each completed node immediately refits the view and frees a slot for newly ready work. Appending messages does not wait for model calls. Successful nodes persist independently of failed jobs. The scoped worker resumes missing nodes from SQLite after restart and retries on a ten-second cadence. A foreground wait needs only the visible summaries, so unrelated merges do not block a new turn. Completed worker passes avoid rescanning idle history.
 
 `zoom(id, n)` returns two children for an aligned power-of-two range. `zoom(id, 1)` returns indexed message text. `date(id)` returns its recorded ISO timestamp.
 
@@ -32,4 +32,8 @@ Friday uses SQLite transactions instead of daily JSONL files and Git commits. Pi
 
 Existing history is not imported automatically. The implementation has no history-import or HTML memory-browser command. Images remain in Pi's transcript and input envelopes; the summary tree summarizes text rather than image contents.
 
-Provider caching uses Pi's existing transport behavior. The reference's explicit view breakpoints and claimed token-cost savings are not implemented or verified. The byte budget is fixed; its token size depends on the model and language.
+The view is split at line ends before 50,000, 80,000, and 100,000 characters. Anthropic requests use those three prefix marks and a short-lived automatic request-end mark. Compatible OpenAI Responses requests use explicit view marks plus implicit request-end caching, `store: false`, and `reasoning.context: all_turns`. Pi retains encrypted reasoning items. The compactor uses the same view blocks before its separate compression-step block.
+
+OpenAI Responses marks are enabled only when Pi's model compatibility includes `prompt_cache_options`. Chat Completions providers use their existing implicit caching and have no equivalent explicit marks. Friday's current custom provider uses Chat Completions, so these changes do not establish improved live cache hit rates. Token-cost savings still need provider usage measurements. The byte budget is fixed; its token size depends on the model and language.
+
+OptChat uses the reference MASTER and VIEW_DOC instructions with Friday's name. Its channel policy lets the agent do work directly and use background tasks only when requested. Normal channels keep Friday's existing task policy.

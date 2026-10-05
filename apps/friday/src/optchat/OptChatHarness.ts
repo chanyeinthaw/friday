@@ -20,6 +20,7 @@ import * as Schema from 'effect/Schema'
 import { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import { PromptMessageEnvelopeJson } from '../harness/pi/PromptMessage.ts'
 import type { OptChatMemory, MemoryInput } from './OptChatMemory.ts'
+import { splitOptChatView } from './OptChatCache.ts'
 
 type BindingState = {
   memoryId: string
@@ -49,6 +50,19 @@ const capResult = (text: string): string =>
   text.length <= 30_000
     ? text
     : `${text.slice(0, 15_000)}\n[Tool result truncated for memory]\n${text.slice(-15_000)}`
+const capToolResult = (message: Extract<Message, { role: 'toolResult' }>) => {
+  const text = message.content
+    .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+    .join('\n')
+  if (text.length <= 30_000) return message
+  return {
+    ...message,
+    content: [
+      { type: 'text' as const, text: capResult(text) },
+      ...message.content.filter((part) => part.type === 'image'),
+    ],
+  }
+}
 
 export const memoryEntries = (entries: readonly EntryRecord[]): MemoryInput[] =>
   entries.flatMap((entry) => {
@@ -187,6 +201,23 @@ export const makeOptChatHarness = (memory: OptChatMemory, getHarness: () => Harn
     )
     return history
   })
+  const syncObserved = Effect.fn('OptChat.syncObserved')(function* (
+    conversation: Conversation,
+    memoryId: string,
+  ) {
+    const live = yield* piOperation('optchat-run', (context) =>
+      getHarness().snapshot(LiveDoc, conversation.id, context),
+    )
+    const first = live?.run?.inputs[0]
+    if (first !== undefined) {
+      const saved = yield* piOperation('optchat-view', (context) =>
+        getHarness().snapshot(RunView, conversation.id, String(first), context),
+      )
+      // The current input must not enter memory until its prior-history view is frozen.
+      if (saved === undefined || saved.view === '') return
+    }
+    yield* sync(conversation, memoryId)
+  })
   const hooks = (memoryId: string) => [
     hook(CompactionTask, { beforeCompact: () => ({ decline: true }) }),
     hook(GenerationTask, {
@@ -289,8 +320,18 @@ export const makeOptChatHarness = (memory: OptChatMemory, getHarness: () => Harn
                 : initial.content
             const messages: Message[] = [
               ...system,
-              { ...initial, content: [{ type: 'text', text: view }, ...content] },
-              ...tail.slice(1),
+              {
+                ...initial,
+                content: [
+                  ...splitOptChatView(view).map((text) => ({ type: 'text' as const, text })),
+                  ...content,
+                ],
+              },
+              ...tail
+                .slice(1)
+                .map((message) =>
+                  message.role === 'toolResult' ? capToolResult(message) : message,
+                ),
             ]
             yield* sync(conversation, memoryId)
             return { messages }
@@ -299,5 +340,5 @@ export const makeOptChatHarness = (memory: OptChatMemory, getHarness: () => Harn
         ),
     }),
   ]
-  return { activate, deactivate, sync, hooks }
+  return { activate, deactivate, sync, syncObserved, hooks }
 }

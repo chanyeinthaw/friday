@@ -1,4 +1,5 @@
 import * as Exit from 'effect/Exit'
+import * as Queue from 'effect/Queue'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
@@ -57,6 +58,7 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const locks = yield* PartitionedSemaphore.make<string>({ permits: 1 })
+  const pumps = yield* PartitionedSemaphore.make<string>({ permits: 1 })
   yield* sql`CREATE TABLE IF NOT EXISTS optchat_messages (memory_id TEXT NOT NULL, id INTEGER NOT NULL, source_key TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, date TEXT NOT NULL, PRIMARY KEY (memory_id, id), UNIQUE(memory_id, source_key))`
   yield* sql`CREATE TABLE IF NOT EXISTS optchat_nodes (memory_id TEXT NOT NULL, id INTEGER NOT NULL, count INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY(memory_id, id, count))`
   yield* sql`CREATE TABLE IF NOT EXISTS optchat_progress (memory_id TEXT PRIMARY KEY, complete_total INTEGER NOT NULL)`
@@ -109,16 +111,21 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
     (effect) => effect.pipe(Effect.mapError(memoryError)),
   )
 
-  const buildPass = Effect.fn('OptChat.buildPass')(
-    function* (memoryId: string) {
+  const readyJobs = Effect.fn('OptChat.readyJobs')(
+    function* (memoryId: string, blocked: ReadonlySet<string>, capacity: number) {
       const state = yield* load(memoryId)
       const total = state.messages.length
       const first = state.parts.find((part) => !state.nodes.has(nodeKey(part)))?.id ?? total
       const ready: Array<{ part: MemoryPart; source: string; context: string; merge: boolean }> = []
-      for (let count = 1; count <= total && ready.length < 8; count *= 2) {
-        for (let id = 0; id + count <= total && ready.length < 8; id += count) {
+      for (let count = 1; count <= total && ready.length < capacity; count *= 2) {
+        for (let id = 0; id + count <= total && ready.length < capacity; id += count) {
           const part = { id, count }
-          if (state.nodes.has(nodeKey(part)) || (count === 1 ? id : id + count) > first) continue
+          if (
+            state.nodes.has(nodeKey(part)) ||
+            blocked.has(nodeKey(part)) ||
+            (count === 1 ? id : id + count) > first
+          )
+            continue
           const left = state.nodes.get(nodeKey({ id, count: count / 2 }))
           const right = state.nodes.get(nodeKey({ id: id + count / 2, count: count / 2 }))
           const message = state.messages[id]
@@ -131,45 +138,71 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
           const end = count === 1 ? id : id + count
           const context = `<chat>\n${state.parts
             .filter((item) => item.id + item.count <= end)
-            .map((item) => state.nodes.get(nodeKey(item))?.text ?? '')
+            .map((item) => state.nodes.get(nodeKey(item))?.text.replaceAll('\n', ' ') ?? '')
             .join('\n')}\n</chat>`
           ready.push({ part, source, context, merge: count > 1 })
         }
       }
-      const built = yield* Effect.forEach(
-        ready,
-        (job) =>
-          Effect.gen(function* () {
-            const text =
-              bytes(job.source) <= 512
-                ? job.source
-                : yield* compress({
-                    ...job,
-                    source: job.source,
-                  })
-            const node = { ...job.part, text } satisfies MemoryNode
-            // Persist each successful call immediately, even if another job fails.
-            yield* sql`INSERT OR IGNORE INTO optchat_nodes (memory_id, id, count, text) VALUES (${memoryId}, ${node.id}, ${node.count}, ${node.text})`
-            return node
-          }).pipe(Effect.mapError(memoryError), Effect.exit),
-        { concurrency: 8 },
-      )
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          for (const result of built) {
-            if (Exit.isSuccess(result)) state.nodes.set(nodeKey(result.value), result.value)
-          }
-          yield* saveView(memoryId, fitView(state.parts, total, state.nodes, budget))
-        }),
-      )
-      for (const result of built)
-        if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause)
-      return built.length > 0
+      return ready
     },
     (effect) => effect.pipe(Effect.mapError(memoryError)),
   )
+  const buildNode = Effect.fn('OptChat.buildNode')(
+    function* (memoryId: string, job: Effect.Success<ReturnType<typeof readyJobs>>[number]) {
+      const text = bytes(job.source) <= 512 ? job.source : yield* compress(job)
+      const node = { ...job.part, text } satisfies MemoryNode
+      // Persist and refit each successful node even if a sibling job fails.
+      yield* locks.withPermit(memoryId)(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`INSERT OR IGNORE INTO optchat_nodes (memory_id, id, count, text) VALUES (${memoryId}, ${node.id}, ${node.count}, ${node.text})`
+            const current = yield* load(memoryId)
+            yield* saveView(
+              memoryId,
+              fitView(current.parts, current.messages.length, current.nodes, budget),
+            )
+          }),
+        ),
+      )
+    },
+    (effect) => effect.pipe(Effect.mapError(memoryError)),
+  )
+  const drain = Effect.fn('OptChat.drain')((memoryId: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const completions = yield* Queue.make<{
+          key: string
+          result: Exit.Exit<void, PiDurableError>
+        }>()
+        const busy = new Set<string>()
+        const failed = new Set<string>()
+        let failure: Exit.Exit<void, PiDurableError> | undefined
+        while (true) {
+          const jobs = yield* readyJobs(memoryId, new Set([...busy, ...failed]), 8 - busy.size)
+          for (const job of jobs) {
+            const key = nodeKey(job.part)
+            busy.add(key)
+            yield* buildNode(memoryId, job).pipe(
+              Effect.exit,
+              Effect.flatMap((result) => Queue.offer(completions, { key, result })),
+              Effect.forkChild,
+            )
+          }
+          if (busy.size === 0) break
+          const completed = yield* Queue.take(completions)
+          busy.delete(completed.key)
+          if (Exit.isFailure(completed.result)) {
+            failed.add(completed.key)
+            failure = completed.result
+          }
+        }
+        if (failure !== undefined && Exit.isFailure(failure))
+          return yield* Effect.failCause(failure.cause)
+      }),
+    ),
+  )
   const pump = Effect.fn('OptChat.pump')(function* (memoryId: string) {
-    yield* locks.withPermit(memoryId)(
+    yield* pumps.withPermit(memoryId)(
       Effect.gen(function* () {
         const totals = yield* sql<{
           total: number
@@ -179,22 +212,39 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
           complete_total: number
         }>`SELECT complete_total FROM optchat_progress WHERE memory_id = ${memoryId}`
         if (progress[0]?.complete_total === total) return
-        while (yield* buildPass(memoryId)) {
-          /* Drain ready nodes in dependency order. */
-        }
+        yield* drain(memoryId)
+        // Appends may arrive during a pass; the original total remains a safe progress watermark.
         yield* sql`INSERT INTO optchat_progress (memory_id, complete_total) VALUES (${memoryId}, ${total}) ON CONFLICT(memory_id) DO UPDATE SET complete_total = excluded.complete_total`
       }).pipe(Effect.mapError(memoryError)),
     )
   })
   const settle = Effect.fn('OptChat.settle')(function* (memoryId: string) {
-    yield* pump(memoryId)
-    const state = yield* load(memoryId)
-    if (state.parts.some((part) => !state.nodes.has(nodeKey(part))))
-      return yield* new PiDurableError({
-        operation: 'optchat-settle',
-        detail: 'Memory summaries are incomplete.',
-      })
-    return renderView(state.parts, state.nodes)
+    const before = yield* load(memoryId)
+    if (before.parts.every((part) => before.nodes.has(nodeKey(part))))
+      return renderView(before.parts, before.nodes)
+    const waitForView = Effect.gen(function* () {
+      while (true) {
+        const state = yield* load(memoryId)
+        if (state.parts.every((part) => state.nodes.has(nodeKey(part))))
+          return renderView(state.parts, state.nodes)
+        yield* Effect.sleep('100 millis')
+      }
+    })
+    return yield* Effect.raceFirst(
+      waitForView,
+      pump(memoryId).pipe(
+        Effect.matchEffect({
+          onSuccess: () => waitForView,
+          onFailure: (cause) =>
+            Effect.gen(function* () {
+              const state = yield* load(memoryId)
+              if (state.parts.every((part) => state.nodes.has(nodeKey(part))))
+                return renderView(state.parts, state.nodes)
+              return yield* Effect.fail(cause)
+            }),
+        }),
+      ),
+    )
   })
   return {
     append,
