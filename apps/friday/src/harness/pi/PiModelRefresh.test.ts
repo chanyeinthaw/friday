@@ -3,7 +3,7 @@ import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 import * as Effect from 'effect/Effect'
 
 import { TextGenerationError } from '../TextGeneration.ts'
-import { PiThreadRuntimeError } from './PiThreadRuntime.ts'
+import { PiDurableError } from './PiDurableError.ts'
 import { refreshSharedModelRuntime } from './PiModelRefresh.ts'
 
 it.effect('refreshes local Pi model state without network access', () =>
@@ -17,7 +17,7 @@ it.effect('refreshes local Pi model state without network access', () =>
     }
     yield* refreshSharedModelRuntime(
       runtime,
-      (input) => new PiThreadRuntimeError({ operation: 'resolve-model', ...input }),
+      (input) => new PiDurableError({ operation: 'resolve-model', ...input }),
     )
     assert.deepStrictEqual(seen, [{ allowNetwork: false }])
   }),
@@ -31,7 +31,7 @@ it.effect('maps refresh rejection to the caller typed error', () =>
     }
     const error = yield* refreshSharedModelRuntime(
       runtime,
-      (input) => new PiThreadRuntimeError({ operation: 'resolve-model', ...input }),
+      (input) => new PiDurableError({ operation: 'resolve-model', ...input }),
     ).pipe(Effect.flip)
     assert.strictEqual(error.operation, 'resolve-model')
     assert.strictEqual(error.detail, 'Failed to refresh Pi model state: disk boom')
@@ -55,7 +55,7 @@ it.effect('preserves provider errors as an AggregateError cause', () =>
     }
     const error = yield* refreshSharedModelRuntime(
       runtime,
-      (input) => new PiThreadRuntimeError({ operation: 'resolve-model', ...input }),
+      (input) => new PiDurableError({ operation: 'resolve-model', ...input }),
     ).pipe(Effect.flip)
     assert.strictEqual(error.detail, 'prov-a: bad-a; prov-b: bad-b')
     assert.instanceOf(error.cause, AggregateError)

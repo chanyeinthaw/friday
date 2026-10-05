@@ -28,8 +28,8 @@ import {
   type ThreadPersistenceContract,
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
-import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
-import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { harnessReloadSucceeded } from '../conversation/ConversationEvents.ts'
+import type { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
 import type { PlatformRegistration } from './PlatformAdapter.ts'
@@ -54,7 +54,7 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
   id: 'thread-ingestion',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/thread-ingestion',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -138,13 +138,7 @@ it.effect('routes a new Turn through Friday and publishes its final response', (
         yield* ingestion.ingest(input, () => Effect.succeed(thread))
       }).pipe(Effect.provide(TestLive))
 
-      assert.deepStrictEqual(events, [
-        'open-thread',
-        'prompt',
-        'acknowledge',
-        'working:Thinking...',
-        'finalize:Friday is done.',
-      ])
+      assert.deepStrictEqual(events, ['open-thread', 'prompt'])
     }),
   ),
 )
@@ -273,9 +267,6 @@ it.effect('adds bounded catch-up context to an existing channel Turn', () =>
         'open-thread',
         'context:Missed discussion.',
         'prompt',
-        'acknowledge',
-        'working:Thinking...',
-        'finalize:Friday is done.',
       ])
     }),
   ),
@@ -323,7 +314,7 @@ it.effect('routes follow-up input to steering without another typing lifecycle',
         yield* ingestion.ingest(input, () => Effect.succeed(thread))
       }).pipe(Effect.provide(TestLive))
 
-      assert.deepStrictEqual(events, ['open-thread', 'steer', 'acknowledge', 'working:Thinking...'])
+      assert.deepStrictEqual(events, ['open-thread', 'steer'])
     }),
   ),
 )
@@ -375,13 +366,7 @@ it.effect('keeps thread title failure non-fatal for new channel Threads', () =>
         yield* ingestion.ingest(input, () => Effect.succeed(thread))
       }).pipe(Effect.provide(TestLive))
 
-      assert.deepStrictEqual(events, [
-        'open-thread',
-        'prompt',
-        'acknowledge',
-        'working:Thinking...',
-        'finalize:Friday is done.',
-      ])
+      assert.deepStrictEqual(events, ['open-thread', 'prompt'])
     }),
   ),
 )
@@ -394,7 +379,7 @@ it.effect('dies without accepting when the resolved Thread is not a user channel
         id: 'thread-agent',
         audience: 'agent',
         parent: { threadId: thread.id, turnId: decodeTurnId('active-turn') },
-        harness: 'pi',
+        harness: 'pi-durable',
         harnessSession: null,
         workingDirectory: '/tmp/friday/thread-agent',
         model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -503,9 +488,7 @@ const makeFriday = (
         cancel: () => Effect.void,
         reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.void,
-      } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
+      } satisfies ThreadCoordinatorContract<PiDurableError, PiDurableError>
     }),
   observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
 })

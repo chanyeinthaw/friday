@@ -19,15 +19,12 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 
 import { Friday } from '../Friday.ts'
-import { ChannelTurns } from '../conversation/ChannelTurns.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
 import {
   ThreadPersistence,
   type ThreadPersistenceError,
 } from '../conversation/ThreadPersistence.ts'
-import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
-import { ConversationTitles } from '../platforms/ConversationTitles.ts'
-import { makeTaskCompletion } from './TaskCompletion.ts'
+import type { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import { makeTaskControl } from './TaskControl.ts'
 import type { MakeTasksOptions } from './TaskDependencies.ts'
 import { TaskError, taskError } from './TaskError.ts'
@@ -65,9 +62,8 @@ export interface TasksContract {
 export class Tasks extends Context.Service<Tasks, TasksContract>()('friday/tasks/Tasks') {}
 
 export const makeTasks = (options: MakeTasksOptions): TasksContract => {
-  const completion = makeTaskCompletion(options)
-  const lifecycle = makeTaskLifecycle(options, completion)
-  const control = makeTaskControl(options, completion)
+  const lifecycle = makeTaskLifecycle(options)
+  const control = makeTaskControl(options)
   const queries = makeTaskQueries(options)
 
   return Tasks.of({
@@ -83,8 +79,6 @@ export const TasksLive = Layer.effect(
     const persistence = yield* ThreadPersistence
     const friday = yield* Friday
     const models = yield* TaskModels
-    const channelTurns = yield* ChannelTurns
-    const conversationTitles = yield* ConversationTitles
     const fileSystem = yield* FileSystem.FileSystem
     const crypto = yield* Crypto.Crypto
 
@@ -92,8 +86,6 @@ export const TasksLive = Layer.effect(
       persistence,
       friday,
       models,
-      channelTurns,
-      conversationTitles,
       fileSystem,
       randomUUID: crypto.randomUUIDv4.pipe(
         Effect.mapError((cause) =>
@@ -101,9 +93,8 @@ export const TasksLive = Layer.effect(
         ),
       ),
       now: DateTime.now.pipe(Effect.map(DateTime.formatIso)),
-      fork: (effect) => effect.pipe(Effect.forkDetach, Effect.asVoid),
     })
   }),
 )
 
-export type TaskCoordinator = ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
+export type TaskCoordinator = ThreadCoordinatorContract<PiDurableError, PiDurableError>

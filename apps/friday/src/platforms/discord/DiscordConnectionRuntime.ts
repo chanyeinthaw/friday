@@ -18,8 +18,8 @@ import {
 import { reloadApplicationConfig } from '../../config/ConfigReload.ts'
 import { reloadConversationHarness } from '../../conversation/HarnessReload.ts'
 import { ThreadPersistence } from '../../conversation/ThreadPersistence.ts'
-import { ThreadRuntimePool } from '../../conversation/ThreadRuntimePool.ts'
-import { harnessReloadRefused } from '../../conversation/ThreadRuntime.ts'
+import { PiDurable } from '../../harness/pi/PiDurable.ts'
+import { harnessReloadRefused } from '../../conversation/ConversationEvents.ts'
 import { ChatSdkCallbackError, ChatSdkLifecycleError } from '../chat-sdk/Errors.ts'
 import { PlatformRegistry } from '../PlatformRegistry.ts'
 import { admitPlatformMessage } from '../PlatformAdmission.ts'
@@ -184,7 +184,7 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
   // Harness reload targets the thread bound to the invoking conversation
   // and its already-open runtime; both lookups are connection-scoped.
   const persistence = yield* ThreadPersistence
-  const pool = yield* ThreadRuntimePool
+  const durable = yield* PiDurable
   const runFridayCommand = (event: SlashCommandEvent) =>
     Effect.gen(function* () {
       const decision = decideFridayCommand({
@@ -238,7 +238,7 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
       }
       const outcome = yield* reloadConversationHarness({
         findThread: persistence.findPlatformThread,
-        reloadRuntime: pool.reloadHarness,
+        reloadRuntime: durable.reloadHarness,
       })({
         platform: 'discord',
         connectionId: discordConfig.connectionId,

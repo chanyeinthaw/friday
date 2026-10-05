@@ -601,6 +601,12 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
   `
 
   yield* sql`
+    UPDATE threads
+    SET payload_json = json_set(payload_json, '$.harness', 'pi-durable')
+    WHERE json_extract(payload_json, '$.harness') = 'pi'
+  `
+
+  yield* sql`
     CREATE TABLE IF NOT EXISTS turns (
       turn_id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,

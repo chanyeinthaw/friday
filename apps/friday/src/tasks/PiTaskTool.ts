@@ -1,3 +1,4 @@
+import { defineEffectTool, piOperation } from '@friday/pi-durable-effect'
 /* oxlint-disable anti-slop/no-unknown-parameters, effecttsgo/any-unknown-in-error-context -- Pi tool input and dispatcher failures cross the SDK boundary and are schema-decoded before use. */
 
 import {
@@ -17,7 +18,6 @@ import {
   type TaskSummary,
 } from '@friday/contracts/conversation'
 import { Type } from '@earendil-works/pi-ai'
-import { defineTool, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
@@ -153,9 +153,11 @@ const taskSummary = (task: TaskSummary) => {
   return task.profile === undefined ? base : { ...base, profile: task.profile }
 }
 
+const decodeOutput = Schema.decodeSync(Schema.fromJsonString(Schema.MutableJson))
+
 const output = <A>(value: A) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(value) }],
-  details: value,
+  details: decodeOutput(JSON.stringify(value)),
 })
 
 type StartRequest = Parameters<TasksContract['start']>[0]
@@ -209,99 +211,96 @@ export interface PiTaskOperations {
 export interface MakePiTaskToolOptions {
   readonly thread: ChannelThread
   readonly tasks: PiTaskOperations
-  readonly activeTurnId: () => TurnId | null
-  readonly runPromise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
+  readonly activeTurnId: () => TurnId | null | Promise<TurnId | null>
 }
 
-export const makePiTaskTool = (options: MakePiTaskToolOptions): ToolDefinition =>
-  defineTool({
+export const makePiTaskTool = (options: MakePiTaskToolOptions) =>
+  defineEffectTool({
     name: 'task',
-    label: 'Task',
     description:
       'Start background agent tasks, prepare workspaces, steer, cancel, or switch the model of existing tasks, list tasks for this channel thread, and inspect one known task with a safe outline and activity summaries. Model switches only accept configured subagent profile names.',
-    promptSnippet: 'Use `task` to run delegated work in background agent threads.',
     parameters: TaskToolParameters,
     executionMode: 'parallel',
-    execute: async (_toolCallId, rawInput) => {
-      const input = await options.runPromise(decodeTaskToolInput(rawInput))
-      const activeTurnId = options.activeTurnId()
-      if (activeTurnId === null && (input.action === 'start' || input.action === 'bootstrap')) {
-        throw new Error('A task can only be started from an active channel Turn.')
-      }
+    replay: 'unsafe',
+    execute: (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeTaskToolInput(rawInput)
+        const activeTurnId = yield* piOperation('task-active-turn', () =>
+          Promise.resolve(options.activeTurnId()),
+        )
+        if (activeTurnId === null && (input.action === 'start' || input.action === 'bootstrap')) {
+          return yield* Effect.fail(
+            new Error('A task can only be started from an active channel Turn.'),
+          )
+        }
 
-      switch (input.action) {
-        case 'start': {
-          const base = {
-            parentThreadId: options.thread.id,
-            parentTurnId: await options.runPromise(decodeTurnId(activeTurnId)),
-            task: input.task,
-            workingDirectory: input.workingDirectory,
-            mayWrite: input.mayWrite ?? true,
+        switch (input.action) {
+          case 'start': {
+            const base = {
+              parentThreadId: options.thread.id,
+              parentTurnId: yield* decodeTurnId(activeTurnId),
+              task: input.task,
+              workingDirectory: input.workingDirectory,
+              mayWrite: input.mayWrite ?? true,
+            }
+            const request: StartRequest =
+              input.profile === undefined ? base : { ...base, profile: input.profile }
+            return output(yield* options.tasks.start(request))
           }
-          const request: StartRequest =
-            input.profile === undefined ? base : { ...base, profile: input.profile }
-          return output(await options.runPromise(options.tasks.start(request)))
-        }
-        case 'bootstrap': {
-          const base = {
-            parentThreadId: options.thread.id,
-            parentTurnId: await options.runPromise(decodeTurnId(activeTurnId)),
-            task: input.task,
+          case 'bootstrap': {
+            const base = {
+              parentThreadId: options.thread.id,
+              parentTurnId: yield* decodeTurnId(activeTurnId),
+              task: input.task,
+            }
+            const withBranch: BootstrapRequest =
+              input.branch === undefined ? base : { ...base, branch: input.branch }
+            const request: BootstrapRequest =
+              input.profile === undefined ? withBranch : { ...withBranch, profile: input.profile }
+            return output(yield* options.tasks.bootstrap(request))
           }
-          const withBranch: BootstrapRequest =
-            input.branch === undefined ? base : { ...base, branch: input.branch }
-          const request: BootstrapRequest =
-            input.profile === undefined ? withBranch : { ...withBranch, profile: input.profile }
-          return output(await options.runPromise(options.tasks.bootstrap(request)))
-        }
-        case 'steer':
-          await options.runPromise(
-            options.tasks.steer({
+          case 'steer':
+            yield* options.tasks.steer({
               parentThreadId: options.thread.id,
               taskId: input.taskId,
               message: input.message,
-            }),
-          )
-          return output({ taskId: input.taskId, status: 'steered' })
-        case 'list': {
-          const request: ListTasksRequest =
-            input.status === undefined
-              ? { parentThreadId: options.thread.id }
-              : { parentThreadId: options.thread.id, status: input.status }
-          const tasks = await options.runPromise(options.tasks.list(request))
-          return output({ tasks: tasks.map(taskSummary) })
-        }
-        case 'cancel':
-          await options.runPromise(
-            options.tasks.cancel({
+            })
+            return output({ taskId: input.taskId, status: 'steered' })
+          case 'list': {
+            const request: ListTasksRequest =
+              input.status === undefined
+                ? { parentThreadId: options.thread.id }
+                : { parentThreadId: options.thread.id, status: input.status }
+            const tasks = yield* options.tasks.list(request)
+            return output({ tasks: tasks.map(taskSummary) })
+          }
+          case 'cancel':
+            yield* options.tasks.cancel({
               parentThreadId: options.thread.id,
               taskId: input.taskId,
               reason: input.reason,
-            }),
-          )
-          return output({ taskId: input.taskId, status: 'cancelled' })
-        case 'set-model':
-          return output(
-            await options.runPromise(
-              options.tasks.setModel({
+            })
+            return output({ taskId: input.taskId, status: 'cancelled' })
+          case 'set-model':
+            return output(
+              yield* options.tasks.setModel({
                 parentThreadId: options.thread.id,
                 taskId: input.taskId,
                 profile: input.profile,
               }),
-            ),
-          )
-        case 'inspect': {
-          const base = {
-            parentThreadId: options.thread.id,
-            taskId: input.taskId,
+            )
+          case 'inspect': {
+            const base = {
+              parentThreadId: options.thread.id,
+              taskId: input.taskId,
+            }
+            const withCursor: InspectRequest =
+              input.cursor === undefined ? base : { ...base, cursor: input.cursor }
+            const request: InspectRequest =
+              input.limit === undefined ? withCursor : { ...withCursor, limit: input.limit }
+            const result = yield* options.tasks.inspect(request)
+            return output(inspectResult(result))
           }
-          const withCursor: InspectRequest =
-            input.cursor === undefined ? base : { ...base, cursor: input.cursor }
-          const request: InspectRequest =
-            input.limit === undefined ? withCursor : { ...withCursor, limit: input.limit }
-          const result = await options.runPromise(options.tasks.inspect(request))
-          return output(inspectResult(result))
         }
-      }
-    },
+      }),
   })

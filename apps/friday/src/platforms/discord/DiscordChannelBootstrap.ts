@@ -73,7 +73,7 @@ export const makeDiscordThreadBootstrap = Effect.fn('makeDiscordThreadBootstrap'
       id: decodeThreadId(yield* crypto.randomUUIDv4),
       audience: 'user',
       parent: null,
-      harness: 'pi',
+      harness: 'pi-durable',
       harnessSession: null,
       workingDirectory,
       model: model ?? {

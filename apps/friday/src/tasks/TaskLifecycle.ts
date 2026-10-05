@@ -16,7 +16,6 @@ import * as Semaphore from 'effect/Semaphore'
 
 import { createIsolatedWorktree, isManagedWorktree } from '../repositories/RepositoryWorktrees.ts'
 import { quoteShellArgument } from './ShellQuote.ts'
-import type { TaskCompletion } from './TaskCompletion.ts'
 import type { MakeTasksOptions } from './TaskDependencies.ts'
 import { taskError } from './TaskError.ts'
 import {
@@ -45,7 +44,7 @@ interface LaunchTaskInput {
   readonly operation: 'start' | 'bootstrap'
 }
 
-export const makeTaskLifecycle = (options: MakeTasksOptions, completion: TaskCompletion) => {
+export const makeTaskLifecycle = (options: MakeTasksOptions) => {
   const launchLock = Semaphore.makeUnsafe(1)
 
   const launchTaskUnlocked = Effect.fn('Tasks.launchTask')(function* (input: LaunchTaskInput) {
@@ -200,7 +199,7 @@ export const makeTaskLifecycle = (options: MakeTasksOptions, completion: TaskCom
           ),
         ),
       )
-    const handle = yield* coordinator
+    yield* coordinator
       .prompt(turn)
       .pipe(
         Effect.mapError((cause) =>
@@ -211,14 +210,6 @@ export const makeTaskLifecycle = (options: MakeTasksOptions, completion: TaskCom
           ),
         ),
       )
-    yield* completion.watch({
-      parent: input.parent,
-      taskId,
-      threadId: thread.id,
-      task: input.task,
-      awaitTerminal: handle.awaitTerminal,
-      failureMessage: 'Task completion delivery failed',
-    })
     return { taskId, status: 'pending' as const }
   })
 

@@ -45,6 +45,7 @@ import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { startSlack } from './platforms/slack/SlackLive.ts'
 import { SlackConnections, SlackConnectionsLive } from './config/SlackConnections.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
+import { PiDurable } from './harness/pi/PiDurable.ts'
 import { interruptOrphanedTurns } from './persistence/SqliteThreadPersistence.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
 import {
@@ -100,6 +101,8 @@ const start = Effect.scoped(
       path: FRIDAY_CONTROL_SOCKET_PATH,
       reload: reloadApplicationConfig(config),
     })
+    yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
+    yield* startSlack().pipe(Effect.provide(FridaySqliteLive))
     const recoveryTimestamp = yield* DateTime.now.pipe(
       Effect.map(DateTime.formatIso),
       Effect.flatMap(Schema.decodeUnknownEffect(IsoDateTime)),
@@ -112,9 +115,9 @@ const start = Effect.scoped(
         Effect.annotateLogs({ interruptedTurnCount }),
       )
     }
-    yield* startDiscord().pipe(Effect.provide(FridaySqliteLive))
-    yield* startSlack().pipe(Effect.provide(FridaySqliteLive))
     yield* ensureFridaySkills()
+    yield* PiDurable.use((durable) => durable.recover)
+
     yield* startDocumentServer().pipe(Effect.provide(DocumentsConfiguredLive))
     const cleanupNotifications = yield* WorkspaceCleanupNotifications
     yield* cleanupNotifications.run.pipe(Effect.forkScoped)

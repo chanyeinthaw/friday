@@ -29,14 +29,14 @@ describe('Discord connection runtime wiring', () => {
     expect(liveSource).not.toMatch(/\.postEphemeral\(/u)
   })
 
-  it('wires /harness reload onto the pool with persistence thread lookup', () => {
+  it('wires /harness reload onto Pi-durable with persistence thread lookup', () => {
     // The handler must be registered for the adapter-produced /harness paths,
     // resolve the thread bound to the invoking conversation, and reload the
-    // existing runtime through the pool (never opening an absent runtime).
+    // existing Pi conversation without creating an absent conversation.
     expect(liveSource).toContain('chat.onSlashCommand(HARNESS_COMMAND_PATHS')
     expect(liveSource).toContain('reloadConversationHarness({')
     expect(liveSource).toContain('findThread: persistence.findPlatformThread')
-    expect(liveSource).toContain('reloadRuntime: pool.reloadHarness')
+    expect(liveSource).toContain('reloadRuntime: durable.reloadHarness')
   })
 
   it('keeps harness reload replies ephemeral and registers both global commands', () => {

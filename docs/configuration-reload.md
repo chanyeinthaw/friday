@@ -15,10 +15,10 @@ it into the running snapshot.
   [discord-configuration.md](./discord-configuration.md))
 - `agent.recentMessageCount` — read when loading new-conversation context
 - Primary model defaults — applied to newly bootstrapped threads
-- Subagent profiles — applied to newly opened runtimes and new tasks
+- Subagent profiles — applied to new tasks
 
-Active turns are never interrupted: open runtimes keep their resolved sessions,
-and reload does not evict or restart any work.
+Active turns are never interrupted. Existing Pi-durable conversations keep their model selections,
+and configuration reload does not restart their work.
 
 ## What stays restart-based
 
@@ -105,7 +105,7 @@ lock:
 Model and profile writes (`config model set` and `config profile add|update|remove`)
 automatically request this reload after their SQLite transaction commits. If no
 Friday process is running, the write remains successful and the next start
-loads it. Active turns and existing resolved runtimes are not interrupted.
+loads it. Active turns and existing Pi-durable conversations are not interrupted.
 See [model-configuration.md](./model-configuration.md) for the boundary between
 Friday selections and Pi's model catalog.
 
@@ -125,16 +125,15 @@ the CLI preserves the transport detail. All Discord connection changes require a
 ## Harness reload
 
 `/harness reload` is a separate, per-thread operation. It reloads the Pi
-harness session (extensions, settings, resource loader) of the existing
-runtime bound to the invoking Discord thread. The conversation and its session
-file are always preserved. Only harness resources are refreshed.
+resource registration and model configuration of the durable conversation
+bound to the invoking Discord thread. The conversation and its transcript are
+preserved. See [Pi-durable integration](./pi-durable.md) for extension compatibility.
 
 - Registered as a global application command alongside `/friday`, with the
   same idempotent create-or-patch-by-ID registration; replies ephemerally
 - Has no authorization guard, unlike `/friday reload`. Any user who can invoke
   the command in a resolvable Discord thread may reload
 - Targets only the Friday thread bound to the invoking conversation
-- Refuses safely when the thread has no open runtime (Friday never opens an
-  absent runtime just to reload it) or when a turn is active in the thread
+- Refuses when the thread has no indexed Pi conversation or when a turn is active in the thread
 - Failures are structured outcomes (`ok`, `reason`, `detail`), never thrown
   across the transport boundary

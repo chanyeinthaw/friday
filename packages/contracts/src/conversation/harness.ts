@@ -2,7 +2,9 @@ import * as Schema from 'effect/Schema'
 
 const HarnessIdentifier = Schema.String.pipe(Schema.check(Schema.isTrimmed(), Schema.isNonEmpty()))
 
-export const HarnessId = HarnessIdentifier.pipe(Schema.brand('HarnessId'))
+// These serialized field names remain compatible with Friday's existing records.
+// Agent execution is exclusively owned by pi-durable.
+export const HarnessId = Schema.Literal('pi-durable').pipe(Schema.brand('HarnessId'))
 export type HarnessId = typeof HarnessId.Type
 
 export const HarnessSessionId = HarnessIdentifier.pipe(Schema.brand('HarnessSessionId'))

@@ -11,7 +11,7 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Semaphore from 'effect/Semaphore'
 
-import type { ThreadRuntimeEvent } from './ThreadRuntime.ts'
+import type { ConversationEvent } from './ConversationEvents.ts'
 import {
   PlatformCapabilityUnavailableError,
   PlatformNotFoundError,
@@ -38,7 +38,7 @@ export interface ChannelProgressContract {
   ) => Effect.Effect<void, ProgressError>
   readonly observe: (
     threadId: ThreadId,
-    event: ThreadRuntimeEvent,
+    event: ConversationEvent,
   ) => Effect.Effect<void, ProgressError>
   readonly finalize: (
     thread: ChannelThread,
@@ -122,6 +122,20 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
       }
       const states = new Map<ThreadId, ChannelProgressState>()
       const operationTimeout = options.operationTimeout ?? '5 seconds'
+
+      const publish = (thread: ChannelThread, text: string) =>
+        platforms.publish({ binding: thread.conversationBinding, text }).pipe(
+          Effect.catchTag('PlatformCapabilityUnavailableError', (cause) =>
+            Effect.fail(new PlatformOperationError({ kind: 'publish', cause })),
+          ),
+          Effect.timeoutOrElse({
+            duration: operationTimeout,
+            orElse: () =>
+              Effect.fail(
+                new PlatformOperationError({ kind: 'publish', cause: 'Publication timed out.' }),
+              ),
+          }),
+        )
 
       // Working-message decoration is best-effort and bounded; it must never block a turn.
       const attempt = (operation: string, effect: Effect.Effect<void, DecorationError>) =>
@@ -227,13 +241,17 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
           lockFor(thread.id).withPermit(
             Effect.gen(function* () {
               const current = states.get(thread.id)
-              if (!current || current.turnId !== turnId) return
-              states.delete(thread.id)
+              // Recovery has no in-memory working message; publication must still happen.
+              if (!current || current.turnId !== turnId) {
+                if (text.trim().length > 0) yield* publish(thread, text)
+                return
+              }
               if (text.trim().length === 0) {
                 yield* attempt(
                   'discard-working',
                   platforms.discardWorking(thread.conversationBinding),
                 )
+                states.delete(thread.id)
                 return
               }
               const finalized = yield* attempt(
@@ -241,11 +259,9 @@ export const makeChannelProgressLive = (options: ChannelProgressOptions = {}) =>
                 platforms.finalizeWorking({ binding: thread.conversationBinding, text }),
               )
               if (!finalized) {
-                yield* attempt(
-                  'publish-fallback',
-                  platforms.publish({ binding: thread.conversationBinding, text }),
-                )
+                yield* publish(thread, text)
               }
+              states.delete(thread.id)
             }),
           ),
       })

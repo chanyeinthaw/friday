@@ -1,15 +1,14 @@
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
-import * as Crypto from 'effect/Crypto'
+import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
+import type { Storage } from '@earendil-works/pi-durable'
+import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
 import { FridayLive as FridayServiceLive } from './Friday.ts'
 import { ChannelProgress, ChannelProgressLive } from './conversation/ChannelProgress.ts'
 import { ChannelTurnsLive } from './conversation/ChannelTurns.ts'
-import { makeThreadCoordinator } from './conversation/ThreadCoordinator.ts'
-import { ThreadRuntimePoolLive } from './conversation/ThreadRuntimePool.ts'
-import { ThreadRuntimeError, ThreadRuntimes } from './conversation/ThreadRuntimes.ts'
 import { AppConfig, AppConfigLive } from './config/AppConfigLive.ts'
 import {
   DefaultIdentityText,
@@ -23,9 +22,12 @@ import { makePiTextGeneration } from './harness/pi/PiTextGeneration.ts'
 import { makePiPlatformThreadRouter } from './harness/pi/PiPlatformThreadRouter.ts'
 import { TextGeneration } from './harness/TextGeneration.ts'
 import { PlatformThreadRouter } from './platforms/PlatformThreadRouter.ts'
-import { makePiThreadRuntime } from './harness/pi/PiThreadRuntime.ts'
-import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
-import { ConversationTitlesLive } from './platforms/ConversationTitles.ts'
+import { PiDurable, makePiDurable } from './harness/pi/PiDurable.ts'
+import { makePiSqliteStorage } from '@friday/pi-durable-effect/sqlite'
+import { FRIDAY_HOME } from './FridayHome.ts'
+import { ThreadPersistence } from './conversation/ThreadPersistence.ts'
+import { FridayHomeLive, FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
+import { ConversationTitles, ConversationTitlesLive } from './platforms/ConversationTitles.ts'
 import { PlatformIngestionLive } from './platforms/PlatformIngestion.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './platforms/PlatformRegistry.ts'
 import {
@@ -35,82 +37,6 @@ import {
 import { makeTaskModels, TaskModels } from './tasks/TaskModels.ts'
 import { TaskToolDispatcher, TaskToolDispatcherLive } from './tasks/TaskToolDispatcher.ts'
 import { Tasks, TasksLive } from './tasks/Tasks.ts'
-
-const ThreadRuntimesLive = Layer.effect(
-  ThreadRuntimes,
-  Effect.gen(function* () {
-    const modelRuntime = yield* PiModelRuntime
-    const crypto = yield* Crypto.Crypto
-    const config = yield* AppConfig
-    const systemPromptTemplates = yield* SystemPromptTemplates
-    const tasks = yield* TaskToolDispatcher
-    const platforms = yield* PlatformRegistry
-    const identity = yield* IdentityConfiguration
-    const rootUsers = yield* RootUsers
-
-    // Resolve channel-only context immediately before prompt rendering. The
-    // full root-user registry never reaches templates, only the scoped subset.
-    const identityTextForChannel: NonNullable<
-      Parameters<typeof makePiThreadRuntime>[0]['identityTextForChannel']
-    > = () => identity.get().pipe(Effect.orElseSucceed(() => DefaultIdentityText))
-    const rootUsersForBinding: NonNullable<
-      Parameters<typeof makePiThreadRuntime>[0]['rootUsersForBinding']
-    > = (binding) =>
-      rootUsers.list().pipe(
-        Effect.map((registry) => selectRootUsersForBinding(registry, binding)),
-        Effect.orElseSucceed(() => [] as const),
-      )
-
-    return ThreadRuntimes.of({
-      open: (thread) =>
-        makePiThreadRuntime({
-          thread,
-          modelRuntime,
-          systemPromptTemplates,
-          // Read when the system prompt renders so harness reloads see the
-          // latest configured profiles without replacing the Pi session.
-          availableAgentModels: () => config.current().models.subagents,
-          tasks,
-          platforms,
-          identityTextForChannel,
-          rootUsersForBinding,
-        }).pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
-          Effect.mapError(
-            (cause) =>
-              new ThreadRuntimeError({
-                operation: 'open',
-                cause,
-              }),
-          ),
-          Effect.map((runtime) => ({
-            threadId: runtime.threadId,
-            harnessSession: runtime.harnessSession,
-            prompt: (request) =>
-              runtime
-                .prompt(request)
-                .pipe(
-                  Effect.mapError(
-                    (cause) => new ThreadRuntimeError({ operation: 'prompt', cause }),
-                  ),
-                ),
-            // Pi currently exposes no event-stream error, but the service
-            // boundary permits other harnesses to expose one later.
-            cancel: (turnId) =>
-              runtime
-                .cancel(turnId)
-                .pipe(
-                  Effect.mapError(
-                    (cause) => new ThreadRuntimeError({ operation: 'prompt', cause }),
-                  ),
-                ),
-            reload: () => runtime.reload(),
-            events: runtime.events,
-          })),
-        ),
-    })
-  }),
-)
 
 const AppConfigConfiguredLive = AppConfigLive.pipe(Layer.provide(FridaySqliteLive))
 const IdentityConfigurationConfiguredLive = IdentityConfigurationLive.pipe(
@@ -140,22 +66,58 @@ const PlatformThreadRouterConfiguredLive = Layer.effect(
 ).pipe(Layer.provide(CoreLive))
 const ConversationTitlesConfiguredLive = ConversationTitlesLive.pipe(Layer.provide(CoreLive))
 const ChannelProgressConfiguredLive = ChannelProgressLive.pipe(Layer.provide(CoreLive))
-const RuntimeLive = ThreadRuntimesLive.pipe(Layer.provide(CoreLive))
-const PoolLive = ThreadRuntimePoolLive((thread) =>
+class PiStorage extends Context.Service<PiStorage, Storage>()('friday/pi/Storage') {}
+const PiStorageLive = Layer.effect(PiStorage, makePiSqliteStorage().pipe(Effect.orDie)).pipe(
+  Layer.provide(
+    SqliteClient.layer({ filename: `${FRIDAY_HOME}/pi-durable.sqlite` }).pipe(
+      Layer.provide(FridayHomeLive),
+    ),
+  ),
+)
+const RuntimeLive = Layer.effect(
+  PiDurable,
   Effect.gen(function* () {
-    const runtime = yield* ThreadRuntimes.use((runtimes) => runtimes.open(thread))
-    const coordinator = yield* makeThreadCoordinator(runtime)
+    const models = yield* PiModelRuntime
+    const persistence = yield* ThreadPersistence
     const progress = yield* ChannelProgress
-    yield* coordinator.start
-    if (thread.audience === 'user') {
-      yield* coordinator.onEvent((event) => progress.observe(thread.id, event).pipe(Effect.ignore))
-    }
-    return coordinator
+    const tasks = yield* TaskToolDispatcher
+    const platforms = yield* PlatformRegistry
+    const templates = yield* SystemPromptTemplates
+    const config = yield* AppConfig
+    const identity = yield* IdentityConfiguration
+    const rootUsers = yield* RootUsers
+    const conversationTitles = yield* ConversationTitles
+    return yield* makePiDurable({
+      storage: yield* PiStorage,
+      models,
+      persistence,
+      progress,
+      tasks,
+      platforms,
+      templates,
+      availableAgentModels: () => config.current().models.subagents,
+      identityText: () => identity.get().pipe(Effect.orElseSucceed(() => DefaultIdentityText)),
+      rootUsers: (thread) =>
+        rootUsers.list().pipe(
+          Effect.map((users) => selectRootUsersForBinding(users, thread.conversationBinding)),
+          Effect.orElseSucceed(() => []),
+        ),
+      conversationTitles,
+    })
   }),
-).pipe(Layer.provide(Layer.mergeAll(CoreLive, RuntimeLive, ChannelProgressConfiguredLive)))
-const AgentLive = FridayServiceLive.pipe(Layer.provide(PoolLive))
+).pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      CoreLive,
+      PiStorageLive,
+      ChannelProgressConfiguredLive,
+      ConversationTitlesConfiguredLive,
+    ),
+  ),
+)
+const AgentLive = FridayServiceLive.pipe(Layer.provide(RuntimeLive))
 const ChannelTurnsConfiguredLive = ChannelTurnsLive.pipe(
-  Layer.provide(Layer.mergeAll(CoreLive, AgentLive, ChannelProgressConfiguredLive)),
+  Layer.provide(Layer.mergeAll(CoreLive, AgentLive)),
 )
 const TaskModelsConfiguredLive = Layer.effect(
   TaskModels,
@@ -165,16 +127,7 @@ const TaskModelsConfiguredLive = Layer.effect(
   }),
 ).pipe(Layer.provide(CoreLive))
 const TasksConfiguredLive = TasksLive.pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      CoreLive,
-      AgentLive,
-      ChannelProgressConfiguredLive,
-      ConversationTitlesConfiguredLive,
-      ChannelTurnsConfiguredLive,
-      TaskModelsConfiguredLive,
-    ),
-  ),
+  Layer.provide(Layer.mergeAll(CoreLive, AgentLive, TaskModelsConfiguredLive)),
 )
 const TaskToolBindingLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -197,7 +150,6 @@ const IngestionLive = PlatformIngestionLive.pipe(
 export const FridayLive = Layer.mergeAll(
   CoreLive,
   RuntimeLive,
-  PoolLive,
   AgentLive,
   TextGenerationLive,
   PlatformThreadRouterConfiguredLive,

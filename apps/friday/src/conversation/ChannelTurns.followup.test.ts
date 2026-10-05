@@ -18,9 +18,13 @@ import { ChannelProgress } from './ChannelProgress.ts'
 import { ChannelTurns, ChannelTurnsLive } from './ChannelTurns.ts'
 import { ThreadPersistence, type ThreadPersistenceContract } from './ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from './ThreadCoordinator.ts'
-import { harnessReloadSucceeded, isSteerRejected, SteerRejectedError } from './ThreadRuntime.ts'
-import type { ThreadRuntimeError } from './ThreadRuntimes.ts'
-import { ThreadRuntimeError as WrappedRuntimeError } from './ThreadRuntimes.ts'
+import {
+  harnessReloadSucceeded,
+  isSteerRejected,
+  SteerRejectedError,
+} from './ConversationEvents.ts'
+import type { PiDurableError } from '../harness/pi/PiDurableError.ts'
+import { PiDurableError as WrappedRuntimeError } from '../harness/pi/PiDurableError.ts'
 
 const decodeThread = Schema.decodeSync(ChannelThread)
 const decodeTurnId = Schema.decodeSync(TurnId)
@@ -30,7 +34,7 @@ const thread = decodeThread({
   id: 'thread-followup',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/followup',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -121,7 +125,7 @@ const runAccept = (
         interruptTurn: () => Effect.void,
         failTurn: () => Effect.void,
       }
-      const coordinator: ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError> = {
+      const coordinator: ThreadCoordinatorContract<PiDurableError, PiDurableError> = {
         prompt: (turn) =>
           Effect.sync(() => harness.started.push(String(turn.id))).pipe(
             Effect.as({
@@ -155,8 +159,6 @@ const runAccept = (
         cancel: () => Effect.void,
         reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.void,
       }
       const friday: FridayContract = {
         openThread: (opened) =>
@@ -207,7 +209,7 @@ it.effect('steers the same conversation when its turn is genuinely active', () =
     assert.deepStrictEqual(harness.steers, ['turn-active'])
     assert.deepStrictEqual(harness.opens, ['thread-followup'])
     assert.deepStrictEqual(harness.started, [])
-    assert.deepStrictEqual(harness.accepts, ['thread-followup:turn-active'])
+    assert.deepStrictEqual(harness.accepts, [])
     assert.deepStrictEqual(harness.finalizes, [])
   }),
 )
@@ -218,9 +220,8 @@ it.effect('falls back exactly once to a new turn when steering is rejected', () 
     yield* runAccept(harness, thread, Option.some(activeTurn(thread.id)), 'reject')
     assert.deepStrictEqual(harness.steers, ['turn-active'])
     assert.lengthOf(harness.started, 1)
-    assert.lengthOf(harness.accepts, 1)
-    assert.isFalse(harness.accepts[0]?.endsWith(':turn-active'))
-    assert.lengthOf(harness.finalizes, 1)
+    assert.lengthOf(harness.accepts, 0)
+    assert.lengthOf(harness.finalizes, 0)
   }),
 )
 
@@ -228,20 +229,17 @@ it.effect('returns after dispatch while completion waits for the terminal event'
   Effect.gen(function* () {
     const harness = freshHarness()
     const terminal = yield* Deferred.make<void>()
-    const finalized = yield* Deferred.make<void>()
 
     yield* runAccept(harness, thread, Option.none(), 'succeed', {
       terminalGate: Deferred.await(terminal),
-      onFinalize: Deferred.succeed(finalized, undefined),
       afterAccept: Effect.gen(function* () {
         assert.lengthOf(harness.started, 1)
         assert.lengthOf(harness.finalizes, 0)
         yield* Deferred.succeed(terminal, undefined)
-        yield* Deferred.await(finalized)
       }),
     })
 
-    assert.lengthOf(harness.finalizes, 1)
+    assert.lengthOf(harness.finalizes, 0)
   }),
 )
 
@@ -261,7 +259,6 @@ it.effect('starts an independent turn for a different conversation', () =>
     yield* runAccept(harness, otherThread, Option.none(), 'succeed')
     assert.deepStrictEqual(harness.steers, [])
     assert.lengthOf(harness.started, 1)
-    assert.lengthOf(harness.accepts, 1)
-    assert.isTrue(harness.accepts[0]?.startsWith('thread-followup-other:'))
+    assert.lengthOf(harness.accepts, 0)
   }),
 )

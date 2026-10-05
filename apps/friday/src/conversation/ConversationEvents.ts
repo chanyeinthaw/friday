@@ -1,20 +1,12 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion -- Typed steer rejection inspects unknown wrapped causes. */
 import type {
   Activity,
-  HarnessSession,
   HarnessTurnId,
-  InputMessage,
   IsoDateTime,
-  SteeringActivity,
-  ThreadId,
   TokenUsage,
   TurnId,
 } from '@friday/contracts/conversation'
-import type * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import type * as Stream from 'effect/Stream'
-
-export type PromptMode = 'steer' | 'turn'
 
 /** Typed rejection when steering finds no genuinely active turn. */
 export class SteerRejectedError extends Schema.Error<SteerRejectedError>('SteerRejectedError')({
@@ -29,7 +21,7 @@ const hasSteerRejectedTag = (value: unknown): boolean =>
   '_tag' in value &&
   (value as { readonly _tag: unknown })._tag === 'SteerRejectedError'
 
-/** Matches a direct rejection or one wrapped as `cause` (e.g. via ThreadRuntimeError). */
+/** Matches a direct rejection or one wrapped as `cause` (e.g. via PiDurableError). */
 export const isSteerRejected = (error: unknown): boolean => {
   if (hasSteerRejectedTag(error)) return true
   if (typeof error === 'object' && error !== null && 'cause' in error) {
@@ -42,13 +34,7 @@ export const isSteerRejected = (error: unknown): boolean => {
   return false
 }
 
-export interface PromptRequest {
-  readonly turnId: TurnId
-  readonly message: InputMessage
-  readonly mode?: PromptMode
-}
-
-export type ThreadRuntimeEvent =
+export type ConversationEvent =
   | {
       readonly type: 'turn-started'
       readonly turnId: TurnId
@@ -129,18 +115,3 @@ export const formatHarnessReloadOutcome = (outcome: HarnessReloadOutcome): strin
     : outcome.reason === 'reload-failed'
       ? `Harness reload failed: ${outcome.detail}`
       : `Harness reload refused (${outcome.reason}): ${outcome.detail}`
-
-export interface ThreadRuntime<PromptError = never, EventError = never> {
-  readonly threadId: ThreadId
-  readonly harnessSession: HarnessSession
-  readonly prompt: (request: PromptRequest) => Effect.Effect<void, PromptError>
-  readonly cancel: (turnId: TurnId) => Effect.Effect<void, PromptError>
-  /** Reloads the harness session in place; never fails, reports an outcome. */
-  readonly reload: () => Effect.Effect<HarnessReloadOutcome>
-  readonly events: Stream.Stream<ThreadRuntimeEvent, EventError>
-}
-
-export interface SteeringRequest {
-  readonly turnId: TurnId
-  readonly activity: SteeringActivity
-}

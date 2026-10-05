@@ -1,0 +1,14 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,2 +1,3 @@
++export { buildSystemPrompt } from "./core/system-prompt.js";
+ // Core session management
+ export { parseArgs } from "./cli/args.js";
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -1,2 +1,3 @@
++export { buildSystemPrompt } from "./core/system-prompt.js";
+ export { type Args, parseArgs } from "./cli/args.ts";
+ export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION, } from "./config.ts";
