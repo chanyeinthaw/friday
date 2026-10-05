@@ -1,3 +1,4 @@
+import { findOptChatBinding } from '../../optchat/OptChatBindings.ts'
 import { DiscordInteractionResponseFlag } from '@chat-adapter/discord'
 import { Chat, type SlashCommandEvent } from 'chat'
 import { PlatformConversationId } from '@friday/contracts/conversation'
@@ -96,8 +97,24 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
       users: { mode: 'deny', ids: [] },
       guilds: [],
     }))
-  const resolveChannelPolicy = (guildId: string, channelId: string) =>
-    Option.getOrUndefined(resolveDiscordChannelPolicy(currentPolicies(), guildId, channelId))
+  const resolveChannelPolicy = (guildId: string, channelId: string) => {
+    const policy = Option.getOrUndefined(
+      resolveDiscordChannelPolicy(currentPolicies(), guildId, channelId),
+    )
+    const optChat = findOptChatBinding(config.current().agent.optChats, {
+      platform: 'discord',
+      connectionId: discordConfig.connectionId,
+      channelId,
+    })
+    return policy === undefined || optChat === undefined
+      ? policy
+      : {
+          ...policy,
+          invocationMode: 'all-messages' as const,
+          replyMode: 'reply-in-channel' as const,
+          users: { mode: 'allow' as const, ids: [optChat.ownerUserId] },
+        }
+  }
   const discord = yield* Effect.try({
     try: () =>
       new FridayDiscordAdapter({
@@ -109,7 +126,16 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
         // Friday owns invocation, reply mode, and permission policy
         // through the snapshot; the adapter drops anything unresolved.
         resolveChannelPolicy,
-        replyInChannelChannelIds: () => replyInChannelChannelIds(currentPolicies()),
+        replyInChannelChannelIds: () => [
+          ...replyInChannelChannelIds(currentPolicies()),
+          ...(config.current().agent.optChats ?? [])
+            .filter(
+              (binding) =>
+                binding.connectionId === discordConfig.connectionId &&
+                binding.platform === 'discord',
+            )
+            .map((binding) => binding.channelId),
+        ],
         // The adapter flattens (or drops) subcommands in the command
         // path depending on arguments; match every produced path and
         // make the Friday and harness command replies ephemeral.
@@ -286,13 +312,7 @@ export const makeDiscordConnectionRuntime = Effect.fn('makeDiscordConnectionRunt
               if (location.guildId === undefined || location.channelId === undefined) {
                 return undefined
               }
-              return Option.getOrUndefined(
-                resolveDiscordChannelPolicy(
-                  currentPolicies(),
-                  location.guildId,
-                  location.channelId,
-                ),
-              )
+              return resolveChannelPolicy(location.guildId, location.channelId)
             } catch {
               return undefined
             }

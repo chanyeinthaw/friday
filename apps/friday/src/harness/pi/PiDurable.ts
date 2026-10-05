@@ -11,6 +11,12 @@ import {
   runPiEffect,
 } from '@friday/pi-durable-effect'
 /* oxlint-disable effecttsgo/async-function, effecttsgo/node-builtin-import -- Promise callbacks implement the Pi SDK boundary; filesystem resources are loaded by Pi's discovery utilities. */
+import { findOptChatBinding } from '../../optchat/OptChatBindings.ts'
+import { makeOptChatHarness } from '../../optchat/OptChatHarness.ts'
+import { makeOptChatTools } from '../../optchat/OptChatTools.ts'
+import { optChatInstructions } from '../../optchat/OptChatPrompt.ts'
+import type { OptChatMemory } from '../../optchat/OptChatMemory.ts'
+import * as Schedule from 'effect/Schedule'
 import type { Context as PiContext } from '@earendil-works/chord'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import {
@@ -105,6 +111,10 @@ const decodeJsonLine = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))
 const legacyCursor = Schema.decodeUnknownOption(Schema.Struct({ sessionFile: Schema.String }))
 
 export interface PiDurableOptions {
+  readonly optChat?: {
+    readonly memory: OptChatMemory
+    readonly bindings: () => AppConfig['agent']['optChats']
+  }
   readonly storage: Storage
   readonly models: Models
   readonly persistence: ThreadPersistenceContract
@@ -252,7 +262,17 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
     return Option.getOrElse(found, () => thread)
   })
 
+  const optChat =
+    options.optChat === undefined
+      ? undefined
+      : makeOptChatHarness(options.optChat.memory, () => harness)
+  const optChatFor = (thread: Thread) =>
+    thread.audience === 'user'
+      ? findOptChatBinding(options.optChat?.bindings(), thread.conversationBinding)
+      : undefined
+  const workerThreads = new Set<ThreadId>()
   const registerThread = Effect.fn('PiDurable.registerThread')(function* (thread: Thread) {
+    const binding = optChatFor(thread)
     const customLoader = options.loadResources
     const resources = yield* Effect.cached(
       customLoader === undefined
@@ -279,6 +299,7 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
       } else if (current.role === 'bootstrap') {
         base = yield* options.templates.renderBootstrapAgent(current.workingDirectory)
       } else base += `\n\n${renderModelHint(current)}`
+      if (binding !== undefined) base += `\n\n${optChatInstructions}`
       // A discovered SYSTEM.md remains the preamble; Friday policies remain an independent section.
       const resourceOptions = {
         cwd: current.workingDirectory,
@@ -328,7 +349,14 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
           ]
         : []
     return yield* toolRegistry.provide(`friday:${thread.id}`, {
-      tools: [...codingTools, ...tools],
+      tools: [
+        ...codingTools,
+        ...tools,
+        ...(binding === undefined || options.optChat === undefined
+          ? []
+          : makeOptChatTools(options.optChat.memory, binding.id)),
+      ],
+      hooks: binding === undefined ? [] : (optChat?.hooks(binding.id) ?? []),
       systemPrompt: prompt,
     })
   })
@@ -707,6 +735,21 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
       threadId: thread.id,
       harnessSession: { id: decodeSessionId(String(id)), resumeCursor: { conversationId: id } },
     })
+    const binding = optChatFor(thread)
+    if (binding !== undefined && optChat !== undefined && options.optChat !== undefined) {
+      yield* optChat.activate(conversation, binding.id)
+      if (!workerThreads.has(thread.id)) {
+        workerThreads.add(thread.id)
+        yield* options.optChat.memory.pump(binding.id).pipe(
+          Effect.tapError((cause) => Effect.logWarning('optchat.compactor.failed', cause)),
+          Effect.ignore,
+          Effect.repeat(Schedule.spaced('10 seconds')),
+          Effect.forkIn(scope),
+        )
+      }
+    }
+    if (binding === undefined && optChat !== undefined && live?.run === undefined)
+      yield* optChat.deactivate(conversation)
     yield* watch(thread, conversation)
     return conversation
   })
@@ -836,6 +879,14 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
         record.status === 'done' ? record.answer : undefined,
       )
       yield* project(thread, turn.id, record.status === 'done' ? entries : runHistory(entries), [])
+      const binding = optChatFor(thread)
+      if (
+        binding !== undefined &&
+        optChat !== undefined &&
+        record.type === 'input' &&
+        record.status === 'done'
+      )
+        yield* optChat.sync(conversation, binding.id, record.answer + 1)
     }
   })
 

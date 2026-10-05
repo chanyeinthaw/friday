@@ -937,7 +937,7 @@ it.effect('reports unknown subcommands with the known sibling list at every dept
         arguments_: ['config', 'wat'],
         prefix: 'friday config',
         head: 'wat',
-        known: 'reload, model, profile, admin, identity, root-user, discord, slack',
+        known: 'reload, optchat, model, profile, admin, identity, root-user, discord, slack',
       },
       {
         arguments_: ['config', 'admin', 'wat'],
@@ -1015,7 +1015,7 @@ it.effect('asks for a subcommand when a command prefix stops at a branch', () =>
       {
         arguments_: ['config'],
         prefix: 'friday config',
-        known: 'reload, model, profile, admin, identity, root-user, discord, slack',
+        known: 'reload, optchat, model, profile, admin, identity, root-user, discord, slack',
       },
       {
         arguments_: ['config', 'admin'],

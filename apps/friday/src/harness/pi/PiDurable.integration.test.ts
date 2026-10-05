@@ -27,6 +27,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { makeOptChatMemory } from '../../optchat/OptChatMemory.ts'
+import { PiDurableError } from './PiDurableError.ts'
 import { PlatformOperationError } from '../../platforms/PlatformRegistry.ts'
 import { RootUser } from '../../config/RootUsers.ts'
 import { rootUsersForBinding } from '../../identity/RootUsers.ts'
@@ -42,6 +44,7 @@ const makeAgentThread = Schema.decodeUnknownSync(AgentThread)
 const makeSession = Schema.decodeUnknownSync(HarnessSession)
 const makeThread = Schema.decodeUnknownSync(ChannelThread)
 const makeTurn = Schema.decodeUnknownSync(Turn)
+const makeSteering = Schema.decodeUnknownSync(SteeringActivity)
 
 const threadAt = (directory: string) =>
   makeThread({
@@ -229,7 +232,7 @@ test('reopens SQLite and resumes an interrupted generation with reply delivery',
     }),
   ))
 
-const steering = Schema.decodeUnknownSync(SteeringActivity)({
+const steering = makeSteering({
   id: 'steering-input',
   sequence: 0,
   status: 'completed',
@@ -693,5 +696,325 @@ test('channel prompts include scoped root users and resources while child prompt
         ok: false,
         reason: 'reload-failed',
       })
+    }),
+  ))
+
+test('OptChat starts each turn from its own view and preserves in-run tool history', () =>
+  withDatabase((directory) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(directory)
+      const thread = makeThread({
+        ...f.thread,
+        id: 'optchat-thread',
+        conversationBinding: {
+          ...f.thread.conversationBinding,
+          platform: 'discord',
+          channelId: 'discord:guild:channel',
+          conversationId: 'discord:guild:channel:channel',
+        },
+      })
+      yield* f.persistence.createThread(thread)
+      const memory = yield* makeOptChatMemory(() =>
+        Effect.succeed('user: Tokyo; talk: selected Tokyo.'),
+      )
+      const requests: import('@earendil-works/pi-ai').Message[][] = []
+      f.faux.setResponses([
+        async (context) => {
+          requests.push([...context.messages])
+          return fauxAssistantMessage('Tokyo selected.')
+        },
+        async (context) => {
+          requests.push([...context.messages])
+          return fauxAssistantMessage(fauxToolCall('date', { id: 0 }), { stopReason: 'toolUse' })
+        },
+        async (context) => {
+          requests.push([...context.messages])
+          return fauxAssistantMessage('The decision was made today.')
+        },
+      ])
+      const durable = yield* f.openWith({
+        optChat: {
+          memory,
+          bindings: () => [
+            {
+              id: 'chan',
+              platform: 'discord',
+              connectionId: 'test',
+              channelId: 'channel',
+              ownerUserId: 'owner',
+            },
+          ],
+        },
+      })
+      yield* durable.recover
+      const coordinator = yield* durable.openThread(thread)
+      const first = turnFor(thread, 'optchat-1')
+      yield* (yield* coordinator.prompt({
+        ...first,
+        input: { ...first.input, content: { text: 'Choose Tokyo.', images: [] } },
+      })).awaitTerminal
+      const second = turnFor(thread, 'optchat-2', 2)
+      expect(
+        (yield* (yield* coordinator.prompt({
+          ...second,
+          input: { ...second.input, content: { text: 'When did we decide?', images: [] } },
+        })).awaitTerminal).status,
+      ).toBe('completed')
+      expect(requests).toHaveLength(3)
+      const firstUser = requests[0]?.find((message) => message.role === 'user')
+      expect(firstUser?.content).toEqual([
+        { type: 'text', text: '<chat>\n\n</chat>' },
+        { type: 'text', text: 'Choose Tokyo.' },
+      ])
+      expect(requests[1]?.some((message) => message.role === 'assistant')).toBe(false)
+      expect(JSON.stringify(requests[1])).toContain('0+1|user: Choose Tokyo.')
+      expect(JSON.stringify(requests[1])).toContain('1+1|talk: Tokyo selected.')
+      expect(requests[2]?.some((message) => message.role === 'toolResult')).toBe(true)
+      expect(getCurrentTools(requests[1] ?? []).map((tool) => tool.name)).toContain('zoom')
+      expect(yield* memory.zoom('chan', 0, 1)).toBe('0+0|user: Choose Tokyo.')
+    }),
+  ))
+
+test('OptChat recovery preserves the frozen view and does not duplicate memory inputs', () =>
+  withDatabase((directory) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(directory)
+      const thread = makeThread({
+        ...f.thread,
+        id: 'optchat-recovery',
+        conversationBinding: {
+          ...f.thread.conversationBinding,
+          platform: 'discord',
+          channelId: 'discord:guild:channel',
+          conversationId: 'discord:guild:channel:channel',
+        },
+      })
+      yield* f.persistence.createThread(thread)
+      const memory = yield* makeOptChatMemory(() => Effect.succeed('user: Keep the region.'))
+      const optChat = {
+        memory,
+        bindings: () => [
+          {
+            id: 'recovery',
+            platform: 'discord' as const,
+            connectionId: 'test',
+            channelId: 'channel',
+            ownerUserId: 'owner',
+          },
+        ],
+      }
+      const started = yield* Deferred.make<void>()
+      const requests: import('@earendil-works/pi-ai').Message[][] = []
+      f.faux.setResponses([
+        async (context, options) => {
+          requests.push([...context.messages])
+          await Effect.runPromise(Deferred.succeed(started, undefined))
+          await Effect.runPromise(Effect.never, { signal: options?.signal })
+          return fauxAssistantMessage('unreachable')
+        },
+        async (context) => {
+          requests.push([...context.messages])
+          return fauxAssistantMessage('Recovered OptChat answer.')
+        },
+      ])
+      const firstScope = yield* Scope.make()
+      const first = yield* f.openWith({ optChat }).pipe(Scope.provide(firstScope))
+      yield* first.recover
+      yield* (yield* first.openThread(thread)).prompt(turnFor(thread, 'optchat-recover-turn'))
+      yield* Deferred.await(started)
+      yield* Scope.close(firstScope, Exit.void)
+      const second = yield* f.openWith({ optChat })
+      yield* second.recover
+      yield* Deferred.await(f.delivered)
+      expect(requests).toHaveLength(2)
+      expect(requests[1]).toEqual(requests[0])
+      expect(yield* memory.zoom('recovery', 0, 1)).toContain('Help with this repository.')
+      expect(yield* memory.zoom('recovery', 1, 1)).toContain('Recovered OptChat answer.')
+      expect(yield* memory.zoom('recovery', 2, 1)).toBe('No line 2+1.')
+    }),
+  ))
+
+test('OptChat request-hook failure stops before any provider request', () =>
+  withDatabase((directory) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(directory)
+      const thread = makeThread({
+        ...f.thread,
+        id: 'optchat-failure',
+        conversationBinding: {
+          ...f.thread.conversationBinding,
+          platform: 'discord',
+          channelId: 'discord:guild:channel',
+          conversationId: 'discord:guild:channel:channel',
+        },
+      })
+      yield* f.persistence.createThread(thread)
+      const memory = yield* makeOptChatMemory(() => Effect.succeed('summary'))
+      const durable = yield* f.openWith({
+        optChat: {
+          memory: {
+            ...memory,
+            append: () =>
+              Effect.fail(
+                new PiDurableError({ operation: 'optchat-test', detail: 'Storage unavailable.' }),
+              ),
+          },
+          bindings: () => [
+            {
+              id: 'failure',
+              platform: 'discord',
+              connectionId: 'test',
+              channelId: 'channel',
+              ownerUserId: 'owner',
+            },
+          ],
+        },
+      })
+      yield* durable.recover
+      const terminal = yield* (yield* (yield* durable.openThread(thread)).prompt(
+        turnFor(thread, 'optchat-fail-turn'),
+      )).awaitTerminal
+      expect(terminal.status).toBe('failed')
+      expect(f.faux.state.callCount).toBe(0)
+    }),
+  ))
+
+test('OptChat steering keeps the frozen view while adding the new message to the active run', () =>
+  withDatabase((directory) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(directory)
+      const thread = makeThread({
+        ...f.thread,
+        id: 'optchat-steering',
+        conversationBinding: {
+          ...f.thread.conversationBinding,
+          platform: 'discord',
+          channelId: 'discord:guild:channel',
+          conversationId: 'discord:guild:channel:channel',
+        },
+      })
+      yield* f.persistence.createThread(thread)
+      const memory = yield* makeOptChatMemory(() => Effect.succeed('user: Keep the chosen city.'))
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const requests: import('@earendil-works/pi-ai').Message[][] = []
+      f.faux.setResponses([
+        async (context, options) => {
+          requests.push([...context.messages])
+          await Effect.runPromise(Deferred.succeed(started, undefined))
+          await Effect.runPromise(Deferred.await(release), { signal: options?.signal })
+          return fauxAssistantMessage(fauxToolCall('date', { id: 0 }), { stopReason: 'toolUse' })
+        },
+        async (context) => {
+          requests.push([...context.messages])
+          return fauxAssistantMessage('Kyoto selected.')
+        },
+      ])
+      const durable = yield* f.openWith({
+        optChat: {
+          memory,
+          bindings: () => [
+            {
+              id: 'steering',
+              platform: 'discord',
+              connectionId: 'test',
+              channelId: 'channel',
+              ownerUserId: 'owner',
+            },
+          ],
+        },
+      })
+      yield* durable.recover
+      const coordinator = yield* durable.openThread(thread)
+      const turn = turnFor(thread, 'optchat-steer-turn')
+      const handle = yield* coordinator.prompt(turn)
+      yield* Deferred.await(started)
+      yield* coordinator.steer(
+        turn.id,
+        makeSteering({
+          id: 'optchat-steer',
+          sequence: 0,
+          status: 'completed',
+          type: 'steering',
+          message: { source: 'user', content: { text: 'Actually choose Kyoto.', images: [] } },
+          createdAt: turn.requestedAt,
+          updatedAt: turn.requestedAt,
+          completedAt: turn.requestedAt,
+        }),
+      )
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* handle.awaitTerminal).status).toBe('completed')
+      expect(requests).toHaveLength(2)
+      expect(requests[1]?.find((message) => message.role === 'user')).toEqual(
+        requests[0]?.find((message) => message.role === 'user'),
+      )
+      expect(JSON.stringify(requests[1])).toContain('Actually choose Kyoto.')
+      expect(yield* memory.zoom('steering', 3, 1)).toContain('Actually choose Kyoto.')
+    }),
+  ))
+
+test('re-enabling OptChat resumes its memory without importing the normal-channel interval', () =>
+  withDatabase((directory) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(directory)
+      const thread = makeThread({
+        ...f.thread,
+        id: 'optchat-toggle',
+        conversationBinding: {
+          ...f.thread.conversationBinding,
+          platform: 'discord',
+          channelId: 'discord:guild:channel',
+          conversationId: 'discord:guild:channel:channel',
+        },
+      })
+      yield* f.persistence.createThread(thread)
+      const memory = yield* makeOptChatMemory(() => Effect.succeed('user: First opted message.'))
+      let enabled = true
+      const requests: import('@earendil-works/pi-ai').Message[][] = []
+      f.faux.setResponses(
+        ['First opted answer.', 'Normal answer.', 'Third opted answer.'].map(
+          (answer) => async (context) => {
+            requests.push([...context.messages])
+            return fauxAssistantMessage(answer)
+          },
+        ),
+      )
+      const durable = yield* f.openWith({
+        optChat: {
+          memory,
+          bindings: () =>
+            enabled
+              ? [
+                  {
+                    id: 'toggle',
+                    platform: 'discord',
+                    connectionId: 'test',
+                    channelId: 'channel',
+                    ownerUserId: 'owner',
+                  },
+                ]
+              : [],
+        },
+      })
+      yield* durable.recover
+      for (let index = 0; index < 3; index++) {
+        enabled = index !== 1
+        const coordinator = yield* durable.openThread(thread)
+        const turn = turnFor(thread, `optchat-toggle-${index}`, index + 1)
+        yield* (yield* coordinator.prompt({
+          ...turn,
+          input: {
+            ...turn.input,
+            content: {
+              text: index === 1 ? 'Normal channel input.' : `Opted input ${index}.`,
+              images: [],
+            },
+          },
+        })).awaitTerminal
+      }
+      expect(JSON.stringify(requests[2])).not.toContain('Normal channel input.')
+      expect(JSON.stringify(requests[2])).not.toContain('Normal answer.')
+      expect(JSON.stringify(requests[2])).toContain('First opted answer.')
+      expect(yield* memory.zoom('toggle', 2, 1)).toContain('Opted input 2.')
     }),
   ))

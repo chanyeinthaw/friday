@@ -1,3 +1,7 @@
+import {
+  OptChatConfigurationError,
+  type OptChatConfigurationContract,
+} from './config/OptChatConfiguration.ts'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -261,6 +265,7 @@ export type FridayCliOperations<
     rootUser: RootUser,
   ) => Effect.Effect<RootUserRemoveOutcome, RootUserError>
   readonly listRootUsers: () => Effect.Effect<ReadonlyArray<RootUser>, RootUserError>
+  readonly optChatConfiguration?: OptChatConfigurationContract
   readonly getIdentityText: () => Effect.Effect<IdentityText, IdentityConfigurationError>
   readonly setIdentityText: (
     text: IdentityText,
@@ -400,6 +405,7 @@ export type FridayCliOperations<
   >
 }
 
+type OptChatAction = Extract<FridayCliAction, { readonly type: `config-optchat-${string}` }>
 type ProfileAction = Extract<FridayCliAction, { readonly type: `config-profile-${string}` }>
 type ConnectionAction = Extract<
   FridayCliAction,
@@ -447,7 +453,10 @@ type GuildAction = Extract<
       | `config-slack-channel-${string}`
   }
 >
-type RuntimeAction = Exclude<FridayCliAction, ConfigurationAction | CatalogAction | GuildAction>
+type RuntimeAction = Exclude<
+  FridayCliAction,
+  ConfigurationAction | CatalogAction | GuildAction | OptChatAction
+>
 type GroupFor<ActionType extends FridayCliAction['type']> =
   ActionType extends ConfigurationAction['type']
     ? 'configuration'
@@ -455,7 +464,9 @@ type GroupFor<ActionType extends FridayCliAction['type']> =
       ? 'catalog'
       : ActionType extends GuildAction['type']
         ? 'guild'
-        : 'runtime'
+        : ActionType extends OptChatAction['type']
+          ? 'optchat'
+          : 'runtime'
 
 /** An exhaustive, type-checked action-to-handler assignment keeps each dispatcher small. */
 const cliActionGroups = {
@@ -465,6 +476,9 @@ const cliActionGroups = {
   'config-model-list': 'configuration',
   'config-model-get': 'configuration',
   'config-model-set': 'configuration',
+  'config-optchat-list': 'optchat',
+  'config-optchat-add': 'optchat',
+  'config-optchat-disable': 'optchat',
   'config-identity-get': 'configuration',
   'config-identity-set': 'configuration',
   'config-profile-list': 'configuration',
@@ -524,6 +538,8 @@ const cliActionGroups = {
   readonly [ActionType in FridayCliAction['type']]: GroupFor<ActionType>
 }
 
+const isOptChatAction = (action: FridayCliAction): action is OptChatAction =>
+  cliActionGroups[action.type] === 'optchat'
 const isConfigurationAction = (action: FridayCliAction): action is ConfigurationAction =>
   cliActionGroups[action.type] === 'configuration'
 const isProfileAction = (action: ConfigurationAction): action is ProfileAction =>
@@ -575,6 +591,7 @@ export const runFridayCli = <
 ): Effect.Effect<
   void,
   | FridayCliError
+  | OptChatConfigurationError
   | ConfigReloadRejectedError
   | E
   | WorktreeError
@@ -616,6 +633,23 @@ export const runFridayCli = <
         return yield* new ConfigReloadRejectedError({ detail: result.value.detail })
       }
       yield* Console.log(formatConfigReloadOutcome(result.value))
+    })
+    const runOptChatAction = Effect.fn('Cli.runOptChatAction')(function* (
+      selected: Extract<FridayCliAction, { type: `config-optchat-${string}` }>,
+    ) {
+      const configuration = options.optChatConfiguration
+      if (configuration === undefined)
+        return yield* new OptChatConfigurationError({
+          detail: 'OptChat configuration is unavailable.',
+        })
+      if (selected.type === 'config-optchat-list') {
+        yield* Console.log(JSON.stringify(yield* configuration.list(), null, 2))
+        return
+      }
+      if (selected.type === 'config-optchat-add') yield* configuration.add(selected.binding)
+      else yield* configuration.disable(selected.id)
+      yield* Console.log('OptChat configuration saved; memory is retained.')
+      yield* reloadAfterCommit()
     })
     const runConfigurationAction = Effect.fn('Cli.runConfigurationAction')(function* (
       selected: ConfigurationAction,
@@ -1216,6 +1250,7 @@ export const runFridayCli = <
         }
       }
     })
+    if (isOptChatAction(action)) return yield* runOptChatAction(action)
     if (isConfigurationAction(action)) return yield* runConfigurationAction(action)
     if (isCatalogAction(action)) return yield* runCatalogAction(action)
     if (isGuildAction(action)) return yield* runGuildAction(action)

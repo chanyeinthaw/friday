@@ -41,7 +41,12 @@ import {
   type DocumentFormat,
 } from '../documents/Documents.ts'
 
+import type { OptChatBinding } from '../config/AppConfig.ts'
+
 export type FridayCliAction =
+  | { readonly type: 'config-optchat-list' }
+  | { readonly type: 'config-optchat-add'; readonly binding: OptChatBinding }
+  | { readonly type: 'config-optchat-disable'; readonly id: string }
   | { readonly type: 'help'; readonly topic: ReadonlyArray<string> }
   | { readonly type: 'start' }
   | { readonly type: 'version' }

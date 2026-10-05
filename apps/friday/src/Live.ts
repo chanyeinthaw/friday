@@ -1,3 +1,5 @@
+import { makeOptChatMemory } from './optchat/OptChatMemory.ts'
+import { makeOptChatCompressor } from './optchat/OptChatCompactor.ts'
 import * as BunCrypto from '@effect/platform-bun/BunCrypto'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
@@ -87,7 +89,11 @@ const RuntimeLive = Layer.effect(
     const identity = yield* IdentityConfiguration
     const rootUsers = yield* RootUsers
     const conversationTitles = yield* ConversationTitles
+    const optChatMemory = yield* makeOptChatMemory(
+      makeOptChatCompressor(models, () => config.current().models.utility, FRIDAY_HOME),
+    )
     return yield* makePiDurable({
+      optChat: { memory: optChatMemory, bindings: () => config.current().agent.optChats },
       storage: yield* PiStorage,
       models,
       persistence,
@@ -110,6 +116,7 @@ const RuntimeLive = Layer.effect(
     Layer.mergeAll(
       CoreLive,
       PiStorageLive,
+      FridaySqliteLive,
       ChannelProgressConfiguredLive,
       ConversationTitlesConfiguredLive,
     ),

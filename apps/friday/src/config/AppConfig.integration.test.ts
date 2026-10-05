@@ -335,3 +335,27 @@ test('reload keeps startup Discord topology and admin allow-list pinned', async 
       assert.strictEqual(connection.users.mode, 'all')
     }).pipe(Effect.provide(reloadable), Effect.provide(database)),
   ))
+
+test('configuration reload enables and disables channel-owner OptChat bindings', () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* configured
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`INSERT INTO optchat_bindings (id, platform, connection_id, channel_id, owner_user_id) VALUES ('chan', 'discord', 'discord-personal', '222222222222222222', 'owner')`
+      const live = yield* AppConfig.pipe(
+        Effect.provide(makeAppConfigLive({ environment: { DISCORD_BOT_TOKEN: 'discord-token' } })),
+      )
+      assert.deepStrictEqual(live.current().agent.optChats, [
+        {
+          id: 'chan',
+          platform: 'discord',
+          connectionId: 'discord-personal',
+          channelId: '222222222222222222',
+          ownerUserId: 'owner',
+        },
+      ])
+      yield* sql`UPDATE optchat_bindings SET enabled = 0 WHERE id = 'chan'`
+      yield* live.reload
+      assert.strictEqual(live.current().agent.optChats, undefined)
+    }).pipe(Effect.provide(database)),
+  ))

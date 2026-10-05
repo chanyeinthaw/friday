@@ -156,6 +156,16 @@ export const AdminConfig = Schema.Struct({
 })
 export type AdminConfig = typeof AdminConfig.Type
 
+export const OptChatBinding = Schema.Struct({
+  id: Identifier,
+  platform: Schema.Literals(['discord', 'slack']),
+  connectionId: Identifier,
+  channelId: Identifier,
+  ownerUserId: Identifier,
+})
+export type OptChatBinding = typeof OptChatBinding.Type
+const decodeOptChatBindings = Schema.decodeUnknownEffect(Schema.Array(OptChatBinding))
+
 export const AppConfig = Schema.Struct({
   installationId: Identifier,
   models: Schema.Struct({
@@ -168,6 +178,7 @@ export const AppConfig = Schema.Struct({
     slack: Schema.Array(SlackPlatformConfig),
   }),
   agent: Schema.Struct({
+    optChats: Schema.optionalKey(Schema.Array(OptChatBinding)),
     recentMessageCount: Schema.Int.pipe(
       Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
     ),
@@ -535,6 +546,9 @@ const readAllRows = Effect.fn('AppConfig.readAllRows')(function* () {
   `
   return {
     installation,
+    optChats: yield* decodeOptChatBindings(
+      yield* sql`SELECT id, platform, connection_id AS connectionId, channel_id AS channelId, owner_user_id AS ownerUserId FROM optchat_bindings WHERE enabled = 1 ORDER BY id`,
+    ),
     agent,
     profiles: yield* decodeSubagentProfileRows(profiles),
     discord: yield* decodeDiscordConnectionRows(discord),
@@ -788,7 +802,10 @@ export const loadAppConfig = Effect.fn('loadAppConfig')(function* (options?: {
         }),
       ),
     },
-    agent: { recentMessageCount: rows.agent.recent_message_count },
+    agent:
+      rows.optChats.length === 0
+        ? { recentMessageCount: rows.agent.recent_message_count }
+        : { recentMessageCount: rows.agent.recent_message_count, optChats: rows.optChats },
     admin: {
       discordUserIds: rows.adminUsers.map((user) => user.user_id),
     },

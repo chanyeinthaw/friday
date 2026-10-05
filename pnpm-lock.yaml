@@ -25,6 +25,7 @@ catalogs:
 patchedDependencies:
   '@chat-adapter/discord@4.40.0': 70843947ec19b08ab0dc39966b9aa697e39feca99e46602384251ad2e9a71a2f
   '@earendil-works/pi-coding-agent@1.0.2': 22e225c1b062cdc703b0d4d9c40d351364fd36fb9871463123e09373e5e52b39
+  '@earendil-works/pi-durable@1.0.2': ee78e231a5c1ab42e895f5617beb02151d0ab31a4406959d2419ea315c1ee286
 
 importers:
 
@@ -83,7 +84,7 @@ importers:
         version: 1.0.2(patch_hash=22e225c1b062cdc703b0d4d9c40d351364fd36fb9871463123e09373e5e52b39)(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(ws@8.21.3)(zod@4.4.3)
       '@earendil-works/pi-durable':
         specifier: 1.0.2
-        version: 1.0.2(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
+        version: 1.0.2(patch_hash=ee78e231a5c1ab42e895f5617beb02151d0ab31a4406959d2419ea315c1ee286)(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
       '@effect/platform-bun':
         specifier: 4.0.0-rc.109
         version: 4.0.0-rc.109(effect@4.0.0-rc.109)
@@ -157,7 +158,7 @@ importers:
         version: 1.0.2(patch_hash=22e225c1b062cdc703b0d4d9c40d351364fd36fb9871463123e09373e5e52b39)(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(ws@8.21.3)(zod@4.4.3)
       '@earendil-works/pi-durable':
         specifier: 1.0.2
-        version: 1.0.2(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
+        version: 1.0.2(patch_hash=ee78e231a5c1ab42e895f5617beb02151d0ab31a4406959d2419ea315c1ee286)(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-rc.109
@@ -3554,7 +3555,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-durable@1.0.2(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)':
+  '@earendil-works/pi-durable@1.0.2(patch_hash=ee78e231a5c1ab42e895f5617beb02151d0ab31a4406959d2419ea315c1ee286)(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)':
     dependencies:
       '@earendil-works/chord': 1.0.2
       '@earendil-works/pi-ai': 1.0.2(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.10.2)(ws@8.21.3)(zod@4.4.3)
