@@ -21,8 +21,8 @@ import {
   type ThreadPersistenceContract,
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
-import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
-import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { harnessReloadSucceeded } from '../conversation/ConversationEvents.ts'
+import type { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
 import type { PlatformInput, PlatformRegistration } from './PlatformAdapter.ts'
@@ -47,7 +47,7 @@ const thread: ThreadType = Schema.decodeSync(ChannelThread)({
   id: 'thread-discord-title',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/thread-discord-title',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -138,9 +138,7 @@ const runIngest = (
             cancel: () => Effect.void,
             reload: () => Effect.succeed(harnessReloadSucceeded()),
             onEvent: () => Effect.void,
-            start: Effect.void,
-            drain: Effect.void,
-          } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>),
+          } satisfies ThreadCoordinatorContract<PiDurableError, PiDurableError>),
         observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
       }
       const platform: PlatformRegistration<never> = {

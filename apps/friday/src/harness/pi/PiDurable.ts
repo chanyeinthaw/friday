@@ -8,6 +8,7 @@ import {
   createToolRegistry,
   openHarness,
   piOperation,
+  runPiEffect,
 } from '@friday/pi-durable-effect'
 /* oxlint-disable effecttsgo/async-function, effecttsgo/node-builtin-import -- Promise callbacks implement the Pi SDK boundary; filesystem resources are loaded by Pi's discovery utilities. */
 import type { Context as PiContext } from '@earendil-works/chord'
@@ -75,7 +76,7 @@ import type { IdentityText } from '../../config/IdentityConfiguration.ts'
 import type { RootUser } from '../../config/RootUsers.ts'
 import type { PlatformRegistryContract } from '../../platforms/PlatformRegistry.ts'
 import type { ConversationTitlesContract } from '../../platforms/ConversationTitles.ts'
-import { makePiMessagesTool } from '../../platforms/PiMessagesTool.ts'
+import { makeUserFacingPlatformTools } from '../../platforms/UserPlatformTools.ts'
 import { fridaySkillPathsForAudience } from '../../skills/FridaySkills.ts'
 import {
   renderModelHint,
@@ -109,7 +110,10 @@ export interface PiDurableOptions {
   readonly persistence: ThreadPersistenceContract
   readonly progress: ChannelProgressContract
   readonly tasks: PiTaskOperations
-  readonly platforms: Pick<PlatformRegistryContract, 'searchMessages'>
+  readonly platforms: Pick<
+    PlatformRegistryContract,
+    'searchMessages' | 'getMessage' | 'postMessage' | 'listMembers' | 'discoverPlatforms'
+  >
   readonly templates: SystemPromptTemplatesContract
   readonly availableAgentModels: () => AppConfig['models']['subagents']
   readonly identityText: () => Effect.Effect<IdentityText>
@@ -291,26 +295,35 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
     const tools =
       thread.audience === 'user'
         ? [
-            makePiMessagesTool({
+            ...makeUserFacingPlatformTools({
               thread,
               platforms: options.platforms,
             }),
             makePiTaskTool({
               thread,
               tasks: options.tasks,
-              activeTurnId: async () => {
-                const index = await harness.snapshot(FridayThreads, BACKGROUND_CONTEXT)
+              activeTurnId: Effect.gen(function* () {
+                const index = yield* piOperation('active-turn', (context) =>
+                  harness.snapshot(FridayThreads, context),
+                )
                 const id = index?.threads.find(
                   (item) => item.threadId === thread.id,
                 )?.conversationId
                 if (id === undefined) return null
-                const live = await harness.snapshot(LiveDoc, id, BACKGROUND_CONTEXT)
+                const live = yield* piOperation('active-turn', (context) =>
+                  harness.snapshot(LiveDoc, id, context),
+                )
                 const input = live?.run?.inputs[0]
                 if (input === undefined) return null
-                const submission = await harness.submission(input, BACKGROUND_CONTEXT)
-                const record = await submission?.status(BACKGROUND_CONTEXT)
+                const submission = yield* piOperation('active-turn', (context) =>
+                  harness.submission(input, context),
+                )
+                const record =
+                  submission === undefined
+                    ? undefined
+                    : yield* piOperation('active-turn', (context) => submission.status(context))
                 return record?.requestId === undefined ? null : decodeTurnId(record.requestId)
-              },
+              }),
             }),
           ]
         : []
@@ -353,13 +366,21 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
     if (watching.has(thread.id)) return
     const subscription = yield* piOperation('watch', () => conversation.watch(BACKGROUND_CONTEXT))
     watching.add(thread.id)
-    const update = async (view: typeof subscription.value) => {
-      const live = await harness.snapshot(LiveDoc, conversation.id, BACKGROUND_CONTEXT)
+    const update = Effect.fn('PiDurable.updateProjection')(function* (
+      view: typeof subscription.value,
+    ) {
+      const live = yield* piOperation('projection', (context) =>
+        harness.snapshot(LiveDoc, conversation.id, context),
+      )
       const input = live?.run?.inputs[0]
       if (input === undefined) return
-      const submission = await (
-        await harness.submission(input, BACKGROUND_CONTEXT)
-      )?.status(BACKGROUND_CONTEXT)
+      const handle = yield* piOperation('projection', (context) =>
+        harness.submission(input, context),
+      )
+      const submission =
+        handle === undefined
+          ? undefined
+          : yield* piOperation('projection', (context) => handle.status(context))
       if (
         submission?.type !== 'input' ||
         submission.entry === undefined ||
@@ -367,51 +388,51 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
       )
         return
       const firstEntry = submission.entry
-      await Effect.runPromise(
-        project(
-          thread,
-          decodeTurnId(submission.requestId),
-          view.entries.filter((entry) => entry.id >= firstEntry),
-          live?.tools ?? [],
-        ),
+      yield* project(
+        thread,
+        decodeTurnId(submission.requestId),
+        view.entries.filter((entry) => entry.id >= firstEntry),
+        live?.tools ?? [],
       )
-    }
+    })
     subscription.start((view) =>
       Effect.runPromise(
-        Effect.tryPromise(() => update(view)).pipe(
+        update(view).pipe(
           Effect.catchCause((cause) => Effect.logWarning('pi.projection.failed', cause)),
         ),
       ),
     )
     yield* Scope.addFinalizer(scope, Effect.promise(() => subscription.stop()).pipe(Effect.asVoid))
-    yield* Effect.tryPromise(() => update(subscription.value)).pipe(Effect.ignore)
+    yield* update(subscription.value).pipe(Effect.ignore)
   })
 
-  const history = async (
+  const history = Effect.fn('PiDurable.history')(function* (
     conversation: Conversation,
     start: EntryRecord['id'],
     context: PiContext,
     end?: EntryRecord['id'],
-  ) => {
+  ) {
     const entries: EntryRecord[] = []
     let cursor: Cursor | undefined
     do {
       const query =
         end === undefined ? { minEntryId: start } : { minEntryId: start, maxEntryId: end }
-      const page = await conversation.entries(query, 100, cursor, context)
+      const page = yield* piOperation('history', () =>
+        conversation.entries(query, 100, cursor, context),
+      )
       entries.push(...page.items)
       cursor = page.next
     } while (cursor !== undefined)
     return entries.toReversed()
-  }
+  })
 
-  const sharesAnswer = async (
+  const sharesAnswer = Effect.fn('PiDurable.sharesAnswer')(function* (
     parent: import('@earendil-works/pi-durable').SettledSubmissionRecord | undefined,
     settled: import('@earendil-works/pi-durable').SettledSubmissionRecord & { type: 'input' },
     entries: readonly EntryRecord[],
     conversation: Conversation,
     context: PiContext,
-  ) => {
+  ) {
     if (parent?.type !== 'input') return false
     if (parent.status === 'done' && settled.status === 'done')
       return parent.answer === settled.answer
@@ -421,125 +442,164 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
       settled.status !== 'unanswered'
     )
       return false
-    const parentEntries = runHistory(await history(conversation, parent.entry, context))
+    const parentEntries = runHistory(yield* history(conversation, parent.entry, context))
     const parentTask = parentEntries.find((entry) => entry.kind === 'pi.assistant')?.byTaskId
     return parentTask !== undefined && entries[0]?.byTaskId === parentTask
-  }
+  })
 
   const completeTurn = defineTask<{ turnId: string }, CompletionCheckpoint, string>({
     name: 'friday.complete-turn',
     version: 1,
     initial: () => ({ phase: 'wait' }),
     phases: {
-      wait: async (task, runtime, context) => {
-        const receipt = await runtime.snapshot(
-          FridayTurn,
-          runtime.conversationId,
-          task.input.turnId,
-          context,
-        )
-        if (receipt?.submissionId === null || receipt?.submissionId === undefined)
-          throw new Error('Missing Friday submission receipt.')
-        const submission = await harness.submission(receipt.submissionId, context)
-        if (submission === undefined) throw new Error('Missing Pi submission.')
-        const settled = await submission.wait(context)
-        if (settled.type !== 'input') throw new Error('Friday turn must refer to a Pi input.')
-        const original = decodeTurn(receipt.turnJson)
-        const conversation = await harness.conversation(runtime.conversationId, context)
-        if (conversation === undefined) throw new Error('Missing Pi conversation.')
-        const parentReceipt =
-          receipt.parentTurnId === null
-            ? undefined
-            : await runtime.snapshot(
-                FridayTurn,
-                runtime.conversationId,
-                receipt.parentTurnId,
+      wait: (task, runtime, context): Promise<void> =>
+        runPiEffect(
+          Effect.gen(function* () {
+            const receipt = yield* piOperation('complete-turn', () =>
+              runtime.snapshot(FridayTurn, runtime.conversationId, task.input.turnId, context),
+            )
+            const submissionId = receipt?.submissionId
+            if (receipt === undefined || submissionId === null || submissionId === undefined)
+              return yield* new PiDurableError({
+                operation: 'complete-turn',
+                detail: 'Missing Friday submission receipt.',
+              })
+            const submission = yield* piOperation('complete-turn', () =>
+              harness.submission(submissionId, context),
+            )
+            if (submission === undefined)
+              return yield* new PiDurableError({
+                operation: 'complete-turn',
+                detail: 'Missing Pi submission.',
+              })
+            const settled = yield* piOperation('complete-turn', () => submission.wait(context))
+            if (settled.type !== 'input')
+              return yield* new PiDurableError({
+                operation: 'complete-turn',
+                detail: 'Friday turn must refer to a Pi input.',
+              })
+            const original = decodeTurn(receipt.turnJson)
+            const conversation = yield* piOperation('complete-turn', () =>
+              harness.conversation(runtime.conversationId, context),
+            )
+            if (conversation === undefined)
+              return yield* new PiDurableError({
+                operation: 'complete-turn',
+                detail: 'Missing Pi conversation.',
+              })
+            const parentTurnId = receipt.parentTurnId
+            const parentReceipt =
+              parentTurnId === null
+                ? undefined
+                : yield* piOperation('complete-turn', () =>
+                    runtime.snapshot(FridayTurn, runtime.conversationId, parentTurnId, context),
+                  )
+            const parentSubmissionId = parentReceipt?.submissionId
+            const parentSubmission =
+              parentSubmissionId == null
+                ? undefined
+                : yield* piOperation('complete-turn', () =>
+                    harness.submission(parentSubmissionId, context),
+                  )
+            const parent =
+              parentSubmission === undefined
+                ? undefined
+                : yield* piOperation('complete-turn', () => parentSubmission.wait(context))
+            const entries =
+              settled.entry === undefined
+                ? []
+                : yield* history(
+                    conversation,
+                    settled.entry,
+                    context,
+                    settled.status === 'done' ? settled.answer : undefined,
+                  )
+            const shared = yield* sharesAnswer(parent, settled, entries, conversation, context)
+            const turn = completedTurn(original, settled, entries, runtime.now())
+            yield* piOperation('complete-turn', () =>
+              runtime.commit(
+                () => ({
+                  status: 'running',
+                  checkpoint: {
+                    phase: 'deliver',
+                    turnJson: encodeTurn(turn),
+                    shared,
+                    attempt: 0,
+                    retryAt: 0,
+                  },
+                }),
                 context,
-              )
-        const parentSubmission =
-          parentReceipt?.submissionId == null
-            ? undefined
-            : await harness.submission(parentReceipt.submissionId, context)
-        const parent =
-          parentSubmission === undefined ? undefined : await parentSubmission.wait(context)
-        const entries =
-          settled.entry === undefined
-            ? []
-            : await history(
-                conversation,
-                settled.entry,
-                context,
-                settled.status === 'done' ? settled.answer : undefined,
-              )
-        const shared = await sharesAnswer(parent, settled, entries, conversation, context)
-        const turn = completedTurn(original, settled, entries, runtime.now())
-        await runtime.commit(
-          () => ({
-            status: 'running',
-            checkpoint: {
-              phase: 'deliver',
-              turnJson: encodeTurn(turn),
-              shared,
-              attempt: 0,
-              retryAt: 0,
-            },
+              ),
+            )
           }),
           context,
-        )
-      },
-      deliver: async (task, runtime, context) => {
-        const checkpoint = task.state.checkpoint
-        if (checkpoint.retryAt > runtime.now()) await runtime.sleep(checkpoint.retryAt, context)
-        const turn = decodeTurn(checkpoint.turnJson)
-        const receipt = await runtime.snapshot(FridayTurn, runtime.conversationId, turn.id, context)
-        if (receipt?.delivered) {
-          await runtime.commit(
-            () => ({
-              status: 'terminal',
-              outcome: { status: 'completed', result: checkpoint.turnJson },
-            }),
-            context,
-          )
-          return
-        }
-        const outcome = await Effect.runPromiseExit(
-          lockFor(turn.threadId).withPermit(
-            deliver(turn, runtime.conversationId, checkpoint.shared),
-          ),
-          { signal: context.abortSignal },
-        )
-        if (Exit.isFailure(outcome)) {
-          if (context.abortSignal?.aborted) return
-          runtime.report(outcome.cause)
-          await runtime.commit(
-            () => ({
-              status: 'running',
-              checkpoint: {
-                ...checkpoint,
-                attempt: checkpoint.attempt + 1,
-                retryAt:
-                  runtime.now() + Math.min(60_000, 1000 * 2 ** Math.min(checkpoint.attempt, 6)),
-              },
-            }),
-            context,
-          )
-          return
-        }
-        await runtime.commit(async (tx) => {
-          ;(
-            await tx.doc(
-              FridayTurn,
-              runtime.conversationId,
-              turn.id,
-              receipt?.turnJson ?? checkpoint.turnJson,
+        ),
+      deliver: (task, runtime, context): Promise<void> =>
+        runPiEffect(
+          Effect.gen(function* () {
+            const checkpoint = task.state.checkpoint
+            if (checkpoint.retryAt > runtime.now())
+              yield* piOperation('complete-turn', () => runtime.sleep(checkpoint.retryAt, context))
+            const turn = decodeTurn(checkpoint.turnJson)
+            const receipt = yield* piOperation('complete-turn', () =>
+              runtime.snapshot(FridayTurn, runtime.conversationId, turn.id, context),
             )
-          ).delivered = true
-          return {
-            status: 'terminal',
-            outcome: { status: 'completed', result: checkpoint.turnJson },
-          }
-        }, context)
-      },
+            if (receipt?.delivered) {
+              yield* piOperation('complete-turn', () =>
+                runtime.commit(
+                  () => ({
+                    status: 'terminal',
+                    outcome: { status: 'completed', result: checkpoint.turnJson },
+                  }),
+                  context,
+                ),
+              )
+              return
+            }
+            const outcome = yield* Effect.exit(
+              lockFor(turn.threadId).withPermit(
+                deliver(turn, runtime.conversationId, checkpoint.shared),
+              ),
+            )
+            if (Exit.isFailure(outcome)) {
+              if (context.abortSignal?.aborted) return
+              runtime.report(outcome.cause)
+              yield* piOperation('complete-turn', () =>
+                runtime.commit(
+                  () => ({
+                    status: 'running',
+                    checkpoint: {
+                      ...checkpoint,
+                      attempt: checkpoint.attempt + 1,
+                      retryAt:
+                        runtime.now() +
+                        Math.min(60_000, 1000 * 2 ** Math.min(checkpoint.attempt, 6)),
+                    },
+                  }),
+                  context,
+                ),
+              )
+              return
+            }
+            yield* piOperation('complete-turn', () =>
+              runtime.commit(async (tx) => {
+                ;(
+                  await tx.doc(
+                    FridayTurn,
+                    runtime.conversationId,
+                    turn.id,
+                    receipt?.turnJson ?? checkpoint.turnJson,
+                  )
+                ).delivered = true
+                return {
+                  status: 'terminal',
+                  outcome: { status: 'completed', result: checkpoint.turnJson },
+                }
+              }, context),
+            )
+          }),
+          context,
+        ),
     },
     abort: (_task, runtime, context) =>
       runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), context),
@@ -567,16 +627,24 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
     // The selected legacy branch and compaction summary become the new conversation's initial model context.
     const legacyMessages =
       indexed === undefined && Option.isSome(legacy)
-        ? yield* piOperation('import-session', async () => {
-            const content = await readFile(legacy.value.sessionFile, 'utf8')
-            // Validate every line before Pi's parser, which otherwise skips corrupt JSON.
-            const lines = content.split('\n').filter((line) => line.trim().length > 0)
-            for (const line of lines) decodeJsonLine(line)
-            const entries = parseSessionEntries(content)
-            if (entries[0]?.type !== 'session')
-              throw new Error('Legacy session is missing its header.')
-            migrateSessionEntries(entries)
-            return buildSessionContext(entries.filter((entry) => entry.type !== 'session')).messages
+        ? yield* Effect.gen(function* () {
+            const content = yield* piOperation('read-session', () =>
+              readFile(legacy.value.sessionFile, 'utf8'),
+            )
+            return yield* Effect.try({
+              try: () => {
+                // Validate every line before Pi's parser, which otherwise skips corrupt JSON.
+                const lines = content.split('\n').filter((line) => line.trim().length > 0)
+                for (const line of lines) decodeJsonLine(line)
+                const entries = parseSessionEntries(content)
+                if (entries[0]?.type !== 'session')
+                  throw new Error('Legacy session is missing its header.')
+                migrateSessionEntries(entries)
+                return buildSessionContext(entries.filter((entry) => entry.type !== 'session'))
+                  .messages
+              },
+              catch: (cause) => new PiDurableError({ operation: 'import-session', cause }),
+            })
           })
         : []
     const id = yield* piOperation('create-conversation', (context) =>
@@ -631,7 +699,8 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
       )
     yield* piOperation('save-thread', (context) =>
       conversation.commit(async (tx) => {
-        ;(await tx.doc(FridayConversation, id)).threadJson = encodeThread(thread)
+        const saved = await tx.doc(FridayConversation, id)
+        saved.threadJson = encodeThread(thread)
       }, context),
     )
     yield* options.persistence.setThreadHarnessSession({
@@ -726,10 +795,15 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
     )
     return {
       turnId: turn.id,
-      awaitTerminal: piOperation('await-completion', async (context) => {
-        const completed = await harness.waitForTask(completionTaskId, context)
+      awaitTerminal: Effect.gen(function* () {
+        const completed = yield* piOperation('await-completion', (context) =>
+          harness.waitForTask(completionTaskId, context),
+        )
         if (completed.state.outcome.status !== 'completed')
-          throw new Error(`Friday completion ${completed.state.outcome.status}.`)
+          return yield* new PiDurableError({
+            operation: 'await-completion',
+            detail: `Friday completion ${completed.state.outcome.status}.`,
+          })
         return terminalTurn(decodeTurn(completed.state.outcome.result))
       }),
     }
@@ -755,13 +829,11 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
         : yield* piOperation('submission', (context) => submission.status(context))
     if (record?.entry !== undefined) {
       const firstEntry = record.entry
-      const entries = yield* piOperation('history', (context) =>
-        history(
-          conversation,
-          firstEntry,
-          context,
-          record.status === 'done' ? record.answer : undefined,
-        ),
+      const entries = yield* history(
+        conversation,
+        firstEntry,
+        BACKGROUND_CONTEXT,
+        record.status === 'done' ? record.answer : undefined,
       )
       yield* project(thread, turn.id, record.status === 'done' ? entries : runHistory(entries), [])
     }
@@ -972,14 +1044,20 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
         ),
       cancel: (turnId: TurnId) =>
         lockFor(thread.id).withPermit(
-          piOperation('cancel', async (context) => {
-            const receipt = await harness.snapshot(FridayTurn, conversation.id, turnId, context)
-            if (receipt?.submissionId == null) return
-            const submission = await harness.submission(receipt.submissionId, context)
+          Effect.gen(function* () {
+            const receipt = yield* piOperation('cancel', (context) =>
+              harness.snapshot(FridayTurn, conversation.id, turnId, context),
+            )
+            const submissionId = receipt?.submissionId
+            if (submissionId == null || receipt?.delivered) return
+            const submission = yield* piOperation('cancel', (context) =>
+              harness.submission(submissionId, context),
+            )
             if (submission === undefined) return
-            if (receipt.delivered) return
-            const status = await submission.status(context)
-            const live = await harness.snapshot(LiveDoc, conversation.id, context)
+            const status = yield* piOperation('cancel', (context) => submission.status(context))
+            const live = yield* piOperation('cancel', (context) =>
+              harness.snapshot(LiveDoc, conversation.id, context),
+            )
             const run = live?.run
             const active =
               run !== undefined &&
@@ -987,23 +1065,33 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
                 (thread.audience === 'agent' && status.status === 'queued'))
                 ? run
                 : undefined
-            const records = await Promise.all(
-              (active?.inputs ?? []).map(async (id) => {
-                const input = await harness.submission(id, context)
-                return input?.status(context)
-              }),
+            const records = yield* Effect.forEach(
+              active?.inputs ?? [],
+              (id) =>
+                Effect.gen(function* () {
+                  const input = yield* piOperation('cancel', (context) =>
+                    harness.submission(id, context),
+                  )
+                  return input === undefined
+                    ? undefined
+                    : yield* piOperation('cancel', (context) => input.status(context))
+                }),
+              { concurrency: 'unbounded' },
             )
-            await conversation.commit(async (tx) => {
-              const receipt = await tx.doc(FridayTurn, conversation.id, turnId, '')
-              receipt.cancelled = true
-              for (const record of records) {
-                if (record?.requestId === undefined) continue
-                const input = await tx.doc(FridayTurn, conversation.id, record.requestId, '')
-                input.cancelled = true
-              }
-            }, context)
-            await submission.abort(context)
-            if (active !== undefined) await harness.abortTask(active.taskId, context)
+            yield* piOperation('cancel', (context) =>
+              conversation.commit(async (tx) => {
+                const receipt = await tx.doc(FridayTurn, conversation.id, turnId, '')
+                receipt.cancelled = true
+                for (const record of records) {
+                  if (record?.requestId === undefined) continue
+                  const input = await tx.doc(FridayTurn, conversation.id, record.requestId, '')
+                  input.cancelled = true
+                }
+              }, context),
+            )
+            yield* piOperation('cancel', (context) => submission.abort(context))
+            if (active !== undefined)
+              yield* piOperation('cancel', (context) => harness.abortTask(active.taskId, context))
           }),
         ),
       reload: () => lockFor(thread.id).withPermit(reloadHarness(thread.id)),
@@ -1064,11 +1152,14 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
   })
 
   return PiDurable.of({
-    openThread: (thread) => Deferred.await(ready).pipe(Effect.andThen(openThread(thread))),
-    reloadHarness: (threadId) =>
-      Deferred.await(ready).pipe(
-        Effect.andThen(lockFor(threadId).withPermit(reloadHarness(threadId))),
-      ),
+    openThread: Effect.fn('PiDurable.openReadyThread')(function* (thread) {
+      yield* Deferred.await(ready)
+      return yield* openThread(thread)
+    }),
+    reloadHarness: Effect.fn('PiDurable.reloadReadyThread')(function* (threadId) {
+      yield* Deferred.await(ready)
+      return yield* lockFor(threadId).withPermit(reloadHarness(threadId))
+    }),
     recover,
     observe: (threadId) =>
       Effect.gen(function* () {

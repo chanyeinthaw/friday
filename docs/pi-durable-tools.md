@@ -31,7 +31,7 @@ The wrapper propagates Pi cancellation to the Effect and runs Effect finalizers.
 Use `api.output` for streaming and `piOperation` around its Promise operations.
 The invocation API expires when the callback returns.
 
-Pass existing Effect service contracts into tool factories, as Friday's messages and task tools do.
+Pass existing Effect service contracts into tool factories, as Friday's platform and task tools do.
 For a callback that requires services from Effect context, capture `makePiRunner<MyService>()` during construction.
 Run native `defineTool` callbacks through that runner while the service scope remains open.
 
@@ -57,7 +57,7 @@ It also accepts an Effect `systemPrompt` callback and durable task definitions.
 
 Friday constructs its list in `registerThread` in `apps/friday/src/harness/pi/PiDurable.ts`.
 Add a tool to that list for the audiences that need it.
-User threads receive coding tools, `messages`, and `task`.
+User threads receive coding tools, `discover_platforms`, `query_platform`, `post_platform`, and `task`.
 Background threads receive coding tools.
 Routing receives only `thread_route`, and title generation receives no tools.
 No competing `subagent` tool is registered.

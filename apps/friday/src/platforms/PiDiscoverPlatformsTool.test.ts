@@ -1,3 +1,5 @@
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- Malformed inputs and unused invocation APIs are intentional tool boundary fixtures. */
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { assert, it } from '@effect/vitest'
 import { ChannelThread } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
@@ -13,7 +15,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-discover-tool',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/discover-tool',
   model: { provider: 'openai', modelId: 'gpt' },
@@ -36,7 +38,7 @@ const slackThread = Schema.decodeSync(ChannelThread)({
   id: 'thread-discover-tool-slack',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/discover-tool',
   model: { provider: 'openai', modelId: 'gpt' },
@@ -78,14 +80,10 @@ const neverRun = (): Platforms => ({
   discoverPlatforms: () => Effect.die('should not run'),
 })
 
-// SAFETY: The discovery tool does not read ExtensionContext for these operations.
-const extensionContext = {} as never
-
 it('is named discover_platforms with no compatibility alias', () => {
   const tool = makePiDiscoverPlatformsTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
   assert.strictEqual(tool.name, 'discover_platforms')
@@ -96,17 +94,10 @@ it('dispatches current without a target on the current connection', async () => 
   const tool = makePiDiscoverPlatformsTool({
     thread,
     platforms: discoverStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The discovery tool does not read ExtensionContext for these operations.
-  const result = await tool.execute(
-    'call-1',
-    { action: 'current' },
-    undefined,
-    undefined,
-    extensionContext,
-  )
+  // SAFETY: The discovery tool does not read ToolExecutionApi for these operations.
+  const result = await tool.execute({ action: 'current' } as never, {} as never, BACKGROUND_CONTEXT)
 
   assert.strictEqual(requests.length, 1)
   assert.deepStrictEqual(requests[0], {
@@ -122,16 +113,13 @@ it('dispatches scopes with search and pagination', async () => {
   const tool = makePiDiscoverPlatformsTool({
     thread,
     platforms: discoverStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The discovery tool does not read ExtensionContext for these operations.
+  // SAFETY: The discovery tool does not read ToolExecutionApi for these operations.
   await tool.execute(
-    'call-1',
-    { action: 'scopes', query: 'guild', limit: 10, cursor: '10' },
-    undefined,
-    undefined,
-    extensionContext,
+    { action: 'scopes', query: 'guild', limit: 10, cursor: '10' } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.deepStrictEqual(requests[0], {
@@ -148,20 +136,17 @@ it('dispatches threads with an explicit channel target on the current connection
   const tool = makePiDiscoverPlatformsTool({
     thread,
     platforms: discoverStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The discovery tool does not read ExtensionContext for these operations.
+  // SAFETY: The discovery tool does not read ToolExecutionApi for these operations.
   await tool.execute(
-    'call-1',
     {
       action: 'threads',
       channelTarget: { platform: 'discord', guildId: 'guild-9', channelId: 'channel-9' },
       limit: 5,
-    },
-    undefined,
-    undefined,
-    extensionContext,
+    } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.deepStrictEqual(requests[0], {
@@ -178,25 +163,21 @@ it('rejects cross-connection thread parents', async () => {
   const tool = makePiDiscoverPlatformsTool({
     thread,
     platforms: discoverStub([]),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    // SAFETY: The discovery tool does not read ExtensionContext for these operations.
-    await tool.execute(
-      'call-1',
+  const error = await tool
+    .execute(
       {
         action: 'threads',
         channelTarget: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /current discord connection/)
 })
 
@@ -204,14 +185,10 @@ it('rejects thread targets for thread discovery', async () => {
   const tool = makePiDiscoverPlatformsTool({
     thread,
     platforms: discoverStub([]),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    // SAFETY: The discovery tool does not read ExtensionContext for these operations.
-    await tool.execute(
-      'call-1',
+  const error = await tool
+    .execute(
       {
         action: 'threads',
         channelTarget: {
@@ -220,14 +197,14 @@ it('rejects thread targets for thread discovery', async () => {
           channelId: 'channel-9',
           threadId: 'thread-9',
         },
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /channel target/)
 })
 
@@ -235,22 +212,14 @@ it('rejects the guild filter on the Slack connection', async () => {
   const tool = makePiDiscoverPlatformsTool({
     thread: slackThread,
     platforms: discoverStub([]),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    // SAFETY: The discovery tool does not read ExtensionContext for these operations.
-    await tool.execute(
-      'call-1',
-      { action: 'channels', guildId: 'guild-9' },
-      undefined,
-      undefined,
-      extensionContext,
+  const error = await tool
+    .execute({ action: 'channels', guildId: 'guild-9' } as never, {} as never, BACKGROUND_CONTEXT)
+    .then(
+      () => undefined,
+      (cause) => cause,
     )
-  } catch (cause) {
-    error = cause
-  }
   assert.match(String(error), /Discord-only/)
 })
 
@@ -258,21 +227,13 @@ it('rejects blank search filters', async () => {
   const tool = makePiDiscoverPlatformsTool({
     thread,
     platforms: discoverStub([]),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    // SAFETY: The discovery tool does not read ExtensionContext for these operations.
-    await tool.execute(
-      'call-1',
-      { action: 'scopes', query: '  ' },
-      undefined,
-      undefined,
-      extensionContext,
+  const error = await tool
+    .execute({ action: 'scopes', query: '  ' } as never, {} as never, BACKGROUND_CONTEXT)
+    .then(
+      () => undefined,
+      (cause) => cause,
     )
-  } catch (cause) {
-    error = cause
-  }
   assert.match(String(error), /non-empty/)
 })

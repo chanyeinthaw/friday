@@ -13,7 +13,6 @@ import {
 import * as Effect from 'effect/Effect'
 
 import { PiDurableError } from './PiDurableError.ts'
-export { PiDurableError } from './PiDurableError.ts'
 
 /** Interrupting a wait cancels that wait; admitted durable work remains owned by Pi. */
 export const piOperation = <A>(operation: string, call: (context: PiContext) => Promise<A>) =>
@@ -36,7 +35,7 @@ export const openHarness = <Tool extends ToolRegistration>(
 export const runPiEffect = <A, E>(effect: Effect.Effect<A, E>, context: PiContext) =>
   Effect.runPromise(effect, { signal: context.abortSignal })
 
-/** Capture services once during extension construction, before Pi invokes its callbacks. */
+/** Capture services once during tool construction, before Pi invokes its callbacks. */
 export const makePiRunner = <R>() =>
   Effect.gen(function* () {
     const services = yield* Effect.context<R>()

@@ -1,6 +1,5 @@
 import type { Thread } from '@friday/contracts/conversation'
-import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import type * as Effect from 'effect/Effect'
+import type { ToolRegistration } from '@earendil-works/pi-durable'
 
 import { makePiDiscoverPlatformsTool } from './PiDiscoverPlatformsTool.ts'
 import { makePiPostPlatformTool } from './PiPostPlatformTool.ts'
@@ -15,7 +14,6 @@ export interface UserFacingPlatformToolsOptions {
     'searchMessages' | 'getMessage' | 'postMessage' | 'listMembers' | 'discoverPlatforms'
   >
   readonly idempotency?: PlatformPostIdempotency | undefined
-  readonly runPromise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 }
 
 /**
@@ -26,24 +24,21 @@ export interface UserFacingPlatformToolsOptions {
  */
 export const makeUserFacingPlatformTools = (
   options: UserFacingPlatformToolsOptions,
-): ReadonlyArray<ToolDefinition> => {
+): ReadonlyArray<ToolRegistration> => {
   if (options.thread.audience !== 'user') return []
   return [
     makePiQueryPlatformTool({
       thread: options.thread,
       platforms: options.platforms,
-      runPromise: options.runPromise,
     }),
     makePiPostPlatformTool({
       thread: options.thread,
       platforms: options.platforms,
       idempotency: options.idempotency,
-      runPromise: options.runPromise,
     }),
     makePiDiscoverPlatformsTool({
       thread: options.thread,
       platforms: options.platforms,
-      runPromise: options.runPromise,
     }),
   ]
 }

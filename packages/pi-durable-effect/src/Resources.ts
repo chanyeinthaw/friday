@@ -6,7 +6,8 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import * as Effect from 'effect/Effect'
 
-import { PiDurableError, piOperation } from './Runtime.ts'
+import { PiDurableError } from './PiDurableError.ts'
+import { piOperation } from './Runtime.ts'
 
 export type PiResources = Pick<
   ResourceLoader,

@@ -1,4 +1,4 @@
-import { defineEffectTool, piOperation } from '@friday/pi-durable-effect'
+import { defineEffectTool, type PiDurableError } from '@friday/pi-durable-effect'
 /* oxlint-disable anti-slop/no-unknown-parameters, effecttsgo/any-unknown-in-error-context -- Pi tool input and dispatcher failures cross the SDK boundary and are schema-decoded before use. */
 
 import {
@@ -23,6 +23,11 @@ import * as Schema from 'effect/Schema'
 
 import type { TaskToolDispatchError } from './TaskToolDispatcher.ts'
 import type { TasksContract } from './Tasks.ts'
+
+class TaskToolInputError extends Schema.Error<TaskToolInputError>('TaskToolInputError')({
+  _tag: Schema.tag('TaskToolInputError'),
+  message: Schema.String,
+}) {}
 
 const TaskToolInput = Schema.Union([
   Schema.Struct({
@@ -211,7 +216,7 @@ export interface PiTaskOperations {
 export interface MakePiTaskToolOptions {
   readonly thread: ChannelThread
   readonly tasks: PiTaskOperations
-  readonly activeTurnId: () => TurnId | null | Promise<TurnId | null>
+  readonly activeTurnId: Effect.Effect<TurnId | null, PiDurableError>
 }
 
 export const makePiTaskTool = (options: MakePiTaskToolOptions) =>
@@ -225,13 +230,11 @@ export const makePiTaskTool = (options: MakePiTaskToolOptions) =>
     execute: (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeTaskToolInput(rawInput)
-        const activeTurnId = yield* piOperation('task-active-turn', () =>
-          Promise.resolve(options.activeTurnId()),
-        )
+        const activeTurnId = yield* options.activeTurnId
         if (activeTurnId === null && (input.action === 'start' || input.action === 'bootstrap')) {
-          return yield* Effect.fail(
-            new Error('A task can only be started from an active channel Turn.'),
-          )
+          return yield* new TaskToolInputError({
+            message: 'A task can only be started from an active channel Turn.',
+          })
         }
 
         switch (input.action) {

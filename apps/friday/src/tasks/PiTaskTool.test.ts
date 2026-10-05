@@ -67,7 +67,7 @@ const execute = async (calls: Array<unknown>, input: unknown) => {
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations(calls),
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   // SAFETY: The task tool does not read ToolExecutionApi for these operations.
   return tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
@@ -87,7 +87,7 @@ it('surfaces task failure details through the Pi tool boundary', async () => {
           }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await expect(
@@ -145,7 +145,7 @@ it('scopes inspect calls to the channel thread and returns the safe outline', as
           }),
         ),
     },
-    activeTurnId: () => null,
+    activeTurnId: Effect.succeed(null),
   })
 
   const result = await tool.execute(
@@ -190,7 +190,7 @@ it('passes opaque inspect cursors only for older history', async () => {
           }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await tool.execute(
@@ -212,7 +212,7 @@ it('rejects inspect limits above the maximum at the tool boundary', async () => 
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await expect(
@@ -228,7 +228,7 @@ it('rejects empty inspect identifiers and out-of-range limits at the tool bounda
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const executeInspect = (input: unknown) =>
     tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
@@ -246,7 +246,7 @@ it('keeps inspect identifier validation in parity across TypeBox and Effect', ()
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const validateInspect = (input: { action: 'inspect'; taskId: string; cursor?: string }) =>
     validateToolArguments(tool, {
@@ -316,7 +316,7 @@ it('scopes set-model calls to the channel thread and passes the configured profi
           }),
         ),
     },
-    activeTurnId: () => null,
+    activeTurnId: Effect.succeed(null),
   })
 
   const result = await tool.execute(
@@ -342,7 +342,7 @@ it('rejects blank set-model identifiers and profiles at the tool boundary', asyn
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const executeModelSet = (input: unknown) =>
     tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
@@ -366,7 +366,7 @@ it('passes an explicit bootstrap branch through to the bootstrap request', async
           Effect.as({ taskId: decodeTaskId('task-bootstrapped'), status: 'pending' as const }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await tool.execute(
@@ -395,7 +395,7 @@ it('omits the bootstrap branch when the channel agent does not choose one', asyn
           Effect.as({ taskId: decodeTaskId('task-bootstrapped'), status: 'pending' as const }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await tool.execute(
@@ -416,7 +416,7 @@ it('rejects blank bootstrap branches at the tool boundary', async () => {
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const executeBootstrap = (input: unknown) =>
     tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
@@ -430,7 +430,7 @@ it('keeps bootstrap branch validation in parity across TypeBox and Effect', () =
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const validateBootstrap = (input: { action: 'bootstrap'; task: string; branch: string }) =>
     validateToolArguments(tool, {

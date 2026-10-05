@@ -1,3 +1,5 @@
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- Malformed inputs and unused invocation APIs are intentional tool boundary fixtures. */
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { assert, it } from '@effect/vitest'
 import { ChannelThread, MessageAuthor, PlatformMessageId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
@@ -33,7 +35,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-query-tool',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/query-tool',
   model: { provider: 'openai', modelId: 'gpt' },
@@ -78,9 +80,6 @@ const neverRun = (): Platforms => ({
   getMessage: () => Effect.die('should not run'),
 })
 
-// SAFETY: The query tool does not read ExtensionContext for these operations.
-const extensionContext = {} as never
-
 const decodeSlackThread = Schema.decodeSync(ChannelThread)
 const encodeThread = Schema.encodeSync(ChannelThread)
 
@@ -88,7 +87,6 @@ it('is named query_platform with no compatibility alias', () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
   assert.strictEqual(tool.name, 'query_platform')
@@ -99,21 +97,18 @@ it('dispatches bounded search through an explicit target on the current connecti
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: searchStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  // SAFETY: The query tool does not read ToolExecutionApi for these operations.
   const result = await tool.execute(
-    'call-1',
     {
       action: 'search',
       target: { platform: 'discord', guildId: 'guild-9', channelId: 'channel-9' },
       query: 'Dokploy',
       limit: 10,
-    },
-    undefined,
-    undefined,
-    extensionContext,
+    } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.strictEqual(requests.length, 1)
@@ -133,20 +128,17 @@ it('dispatches fetch without a query and defaults the limit', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: searchStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  // SAFETY: The query tool does not read ToolExecutionApi for these operations.
   await tool.execute(
-    'call-1',
     {
       action: 'fetch',
       target: { platform: 'discord', guildId: 'guild-1', threadId: 'thread-1' },
       before: 'message-5',
-    },
-    undefined,
-    undefined,
-    extensionContext,
+    } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.deepStrictEqual(requests[0], {
@@ -174,20 +166,17 @@ it('dispatches a matching-workspace Slack fetch on the current connection', asyn
   const tool = makePiQueryPlatformTool({
     thread: slackThread,
     platforms: searchStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  // SAFETY: The query tool does not read ToolExecutionApi for these operations.
   await tool.execute(
-    'call-1',
     {
       action: 'fetch',
       target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
       limit: 10,
-    },
-    undefined,
-    undefined,
-    extensionContext,
+    } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.strictEqual(requests.length, 1)
@@ -202,25 +191,22 @@ it('rejects cross-connection targets', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
+  const error = await tool
+    .execute(
       {
         action: 'search',
         target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
         query: 'hello',
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /current discord connection/)
 })
 
@@ -228,25 +214,22 @@ it('rejects search without a query', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
+  const error = await tool
+    .execute(
       {
         action: 'search',
         target: { platform: 'discord', guildId: 'guild-1', channelId: 'channel-1' },
         query: '   ',
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /Search requires a non-empty query/)
 })
 
@@ -255,20 +238,17 @@ it('dispatches single-message retrieval by id against an explicit target', async
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: getStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  // SAFETY: The query tool does not read ToolExecutionApi for these operations.
   const result = await tool.execute(
-    'call-1',
     {
       action: 'get',
       target: { platform: 'discord', guildId: 'guild-9', channelId: 'channel-9' },
       messageId: 'message-9',
-    },
-    undefined,
-    undefined,
-    extensionContext,
+    } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.deepStrictEqual(requests, [
@@ -287,16 +267,13 @@ it('dispatches single-message retrieval by URL without a target', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: getStub(requests),
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  // SAFETY: The query tool does not read ToolExecutionApi for these operations.
   await tool.execute(
-    'call-1',
-    { action: 'get', messageUrl: 'https://discord.com/channels/guild/channel/message-9' },
-    undefined,
-    undefined,
-    extensionContext,
+    { action: 'get', messageUrl: 'https://discord.com/channels/guild/channel/message-9' } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.deepStrictEqual(requests, [
@@ -313,21 +290,14 @@ it('requires a target for bare message ids', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
-      { action: 'get', messageId: 'message-9' },
-      undefined,
-      undefined,
-      extensionContext,
+  const error = await tool
+    .execute({ action: 'get', messageId: 'message-9' } as never, {} as never, BACKGROUND_CONTEXT)
+    .then(
+      () => undefined,
+      (cause) => cause,
     )
-  } catch (cause) {
-    error = cause
-  }
   assert.match(String(error), /requires an explicit target/)
 })
 
@@ -345,25 +315,22 @@ it('rejects Slack URLs with a clear permalink error', async () => {
   const tool = makePiQueryPlatformTool({
     thread: slackThread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
+  const error = await tool
+    .execute(
       {
         action: 'get',
         target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
         messageUrl: 'https://example.slack.com/archives/C456/p123',
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /permalink/i)
 })
 
@@ -371,7 +338,6 @@ it('rejects get without exactly one of messageUrl or messageId', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
   const errors = await Promise.all(
@@ -389,12 +355,10 @@ it('rejects get without exactly one of messageUrl or messageId', async () => {
         messageId: 'message-9',
       },
     ].map(async (input) => {
-      try {
-        await tool.execute('call-1', input, undefined, undefined, extensionContext)
-      } catch (cause) {
-        return cause
-      }
-      return undefined
+      return tool.execute(input as never, {} as never, BACKGROUND_CONTEXT).then(
+        () => undefined,
+        (cause) => cause,
+      )
     }),
   )
   for (const error of errors) {
@@ -406,21 +370,18 @@ it('rejects Discord targets missing both channel and thread', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
-      { action: 'fetch', target: { platform: 'discord', guildId: 'guild-1' } },
-      undefined,
-      undefined,
-      extensionContext,
+  const error = await tool
+    .execute(
+      { action: 'fetch', target: { platform: 'discord', guildId: 'guild-1' } } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.isDefined(error)
 })
 
@@ -437,12 +398,10 @@ it('dispatches bounded members through an explicit target on the current connect
           return { members: [], truncated: false }
         }),
     },
-    runPromise: Effect.runPromise,
   })
 
-  // SAFETY: The query tool does not read ExtensionContext for these operations.
+  // SAFETY: The query tool does not read ToolExecutionApi for these operations.
   await tool.execute(
-    'call-1',
     {
       action: 'members',
       target: {
@@ -453,10 +412,9 @@ it('dispatches bounded members through an explicit target on the current connect
       },
       limit: 10,
       cursor: 'after-U1',
-    },
-    undefined,
-    undefined,
-    extensionContext,
+    } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.strictEqual(requests.length, 1)
@@ -477,20 +435,20 @@ it('rejects cross-connection members targets', async () => {
   const tool = makePiQueryPlatformTool({
     thread,
     platforms: neverRun(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
-      { action: 'members', target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' } },
-      undefined,
-      undefined,
-      extensionContext,
+  const error = await tool
+    .execute(
+      {
+        action: 'members',
+        target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /current discord connection/)
 })

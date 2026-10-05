@@ -225,7 +225,7 @@ it.effect('keeps root-user identities out of every normal task content surface',
         inspect: () => Effect.die('not used'),
         setModel: () => Effect.die('not used'),
       },
-      activeTurnId: () => decodeTurnId('turn-root-user-task-surface-parent'),
+      activeTurnId: Effect.succeed(decodeTurnId('turn-root-user-task-surface-parent')),
     })
     const toolResult = yield* Effect.promise(() =>
       // SAFETY: Pi's SDK context is unused by this tool operation.

@@ -93,15 +93,16 @@ export const validateWorkingDirectory = Effect.fn('Tasks.validateWorkingDirector
       `Task working directory '${workingDirectory}' must be absolute.`,
     )
   }
-  const directory = yield* fileSystem.realPath(workingDirectory).pipe(
-    Effect.flatMap((path) => fileSystem.stat(path).pipe(Effect.as(path))),
-    Effect.mapError(() =>
-      taskError(
-        'invalid-working-directory',
-        `Task working directory '${workingDirectory}' does not exist.`,
+  const directory = yield* fileSystem
+    .realPath(workingDirectory)
+    .pipe(
+      Effect.mapError(() =>
+        taskError(
+          'invalid-working-directory',
+          `Task working directory '${workingDirectory}' does not exist.`,
+        ),
       ),
-    ),
-  )
+    )
   const info = yield* fileSystem
     .stat(directory)
     .pipe(

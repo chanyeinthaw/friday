@@ -10,7 +10,8 @@ import {
 import { CodingTools } from '@earendil-works/pi-durable/tools'
 import * as Effect from 'effect/Effect'
 
-import { PiDurableError, runPiEffect } from './Runtime.ts'
+import { PiDurableError } from './PiDurableError.ts'
+import { runPiEffect } from './Runtime.ts'
 
 export const codingTools = CodingTools.tools ?? []
 

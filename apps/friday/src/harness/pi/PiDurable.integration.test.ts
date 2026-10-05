@@ -136,6 +136,10 @@ const fixture = Effect.fn('makeDurableFixture')(function* (directory: string) {
     },
     platforms: {
       searchMessages: () => Effect.succeed({ messages: [], scannedCount: 0, truncated: false }),
+      getMessage: () => Effect.die('unexpected'),
+      postMessage: () => Effect.die('unexpected'),
+      listMembers: () => Effect.die('unexpected'),
+      discoverPlatforms: () => Effect.die('unexpected'),
     },
     templates: makeSystemPromptTemplates({
       channelAgent: 'Identity: {{identity}}\n{{rootUsers}}',
@@ -663,7 +667,16 @@ test('channel prompts include scoped root users and resources while child prompt
       expect(channelSystem).toContain('<project_instructions path="AGENTS.md">')
       expect(channelSystem).toContain(`<cwd>\n${thread.workingDirectory}\n</cwd>`)
       expect(channelSystem).toContain('<friday>')
-      expect(channelTools).toEqual(['bash', 'edit', 'messages', 'read', 'task', 'write'])
+      expect(channelTools).toEqual([
+        'bash',
+        'discover_platforms',
+        'edit',
+        'post_platform',
+        'query_platform',
+        'read',
+        'task',
+        'write',
+      ])
       expect(childTools).toEqual(['bash', 'edit', 'read', 'write'])
       expect(channelSystem).toContain('trusted-user')
       expect(channelSystem).not.toContain('other-scope-user')

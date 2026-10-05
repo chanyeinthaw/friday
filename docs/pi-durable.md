@@ -20,7 +20,7 @@ The harness discriminator is `pi-durable`.
 ## Execution and recovery
 
 `PiDurable` owns one application-scoped `Harness`.
-`CodingTools` provides the coding tools, and Friday registers native `task` and `messages` tools for user threads.
+`CodingTools` provides the coding tools, and Friday registers native `task`, `discover_platforms`, `query_platform`, and `post_platform` tools for user threads.
 Title generation and adaptive routing use temporary Pi-durable harnesses with memory storage.
 Friday supplies plain tool lists through `createToolRegistry`; the Effect package owns Pi's internal named registrations.
 There is no separate subagent tool.
@@ -44,7 +44,7 @@ Startup registers conversation extensions before scheduler recovery and blocks n
 Platform adapters and the task dispatcher are installed before recovery starts.
 Pi resumes interrupted generation and applies each tool's recorded replay policy.
 Friday's task tool is replay unsafe. Its effects must not repeat after an uncertain interruption.
-The messages tool is replay safe.
+Discovery and query tools are replay safe. The posting tool remains replay unsafe because its idempotency cache is process-local.
 
 ## Legacy state
 
