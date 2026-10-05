@@ -1,6 +1,6 @@
 ---
 name: friday-cli
-description: Use when inspecting or changing Friday's configuration, model profiles, Discord access, worktrees, or workspace cleanup.
+description: Use when inspecting or changing Friday's configuration, OptChat channel bindings, model profiles, Discord access, worktrees, or workspace cleanup.
 ---
 
 # Friday CLI
@@ -41,6 +41,7 @@ Prefer `--json` for results that will be parsed or compared:
 "$FRIDAY_BIN" config root-user list --json
 "$FRIDAY_BIN" config discord connection list --json
 "$FRIDAY_BIN" config discord guild list <connection-id> --json
+"$FRIDAY_BIN" config optchat list
 "$FRIDAY_BIN" model list --available --json
 "$FRIDAY_BIN" worktree list --json
 "$FRIDAY_BIN" document list --json
@@ -100,6 +101,36 @@ The guild channel policy decides which channels admit Friday. A channel override
 A channel `--users` policy replaces the guild user policy. It does not merge with it. Repeat any guild-level allowed IDs that should remain allowed in that channel.
 
 Channel overrides can change invocation, users, and reply mode. Omitted flags preserve their current values. `channel reset` removes all overrides for that channel.
+
+## Configure OptChat channels
+
+Each binding gives one channel and owner a separate endless chat and memory. Other channels keep normal routing.
+
+Read `config optchat list` before changing a binding. This command returns JSON without a `--json` flag, including disabled bindings.
+
+When the channel is idle, add a binding with native channel and user IDs:
+
+```sh
+"$FRIDAY_BIN" config optchat add <memory-id> <discord|slack> <connection-id> <channel-id> <owner-user-id>
+"$FRIDAY_BIN" config optchat list
+```
+
+Use channel IDs without Friday's `discord:` or `slack:` prefixes. The platform connection must already exist and match the platform.
+
+One owner owns each designated channel. The memory ID, platform, connection, channel, and owner cannot be reassigned. Repeat the same `add` arguments to re-enable a disabled binding.
+
+OptChat accepts the owner's top-level messages without a mention and replies directly in the channel. Other users and native-thread messages do not enter its memory. Existing guild, workspace, and channel admission policies still apply. OptChat bypasses automatic thread routing and recent-channel context.
+
+Disable a binding when its channel is idle:
+
+```sh
+"$FRIDAY_BIN" config optchat disable <memory-id>
+"$FRIDAY_BIN" config optchat list
+```
+
+Disabling preserves memory and restores normal channel behavior. Messages from disabled intervals and pre-enrollment history are excluded from OptChat memory.
+
+OptChat writes request a live configuration reload automatically. No process restart is required. Summaries use the configured utility model. The channel agent receives scoped `zoom` and `date` tools for its memory.
 
 ## Other operations
 
