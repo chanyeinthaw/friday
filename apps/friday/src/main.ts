@@ -35,6 +35,12 @@ import { DiscordConnections, DiscordConnectionsLive } from './config/DiscordConn
 import { AppConfig } from './config/AppConfigLive.ts'
 import { DiscordAdmins, DiscordAdminsLive } from './config/DiscordAdmins.ts'
 import { RootUsers, RootUsersLive } from './config/RootUsers.ts'
+import {
+  OptChatConfiguration,
+  OptChatConfigurationLive,
+  OptChatConfigurationError,
+  isOptChatConfigurationError,
+} from './config/OptChatConfiguration.ts'
 import { IdentityConfiguration, IdentityConfigurationLive } from './config/IdentityConfiguration.ts'
 import { ModelConfiguration, ModelConfigurationLive } from './config/ModelConfiguration.ts'
 import { getPiModel, listPiModels, reloadPiModels } from './harness/pi/PiModelCatalog.ts'
@@ -341,6 +347,47 @@ const application = Effect.scoped(
           Effect.flatMap((rootUsers) => rootUsers.list()),
           Effect.provide(RootUsersConfiguredLive),
         ),
+      optChatConfiguration: {
+        list: () =>
+          OptChatConfiguration.pipe(
+            Effect.flatMap((service) => service.list()),
+            Effect.provide(OptChatConfigurationLive.pipe(Layer.provide(FridaySqliteLive))),
+            Effect.mapError((cause) =>
+              isOptChatConfigurationError(cause)
+                ? cause
+                : new OptChatConfigurationError({
+                    detail: 'OptChat configuration could not be loaded.',
+                    cause,
+                  }),
+            ),
+          ),
+        add: (binding) =>
+          OptChatConfiguration.pipe(
+            Effect.flatMap((service) => service.add(binding)),
+            Effect.provide(OptChatConfigurationLive.pipe(Layer.provide(FridaySqliteLive))),
+            Effect.mapError((cause) =>
+              isOptChatConfigurationError(cause)
+                ? cause
+                : new OptChatConfigurationError({
+                    detail: 'OptChat configuration could not be loaded.',
+                    cause,
+                  }),
+            ),
+          ),
+        disable: (id) =>
+          OptChatConfiguration.pipe(
+            Effect.flatMap((service) => service.disable(id)),
+            Effect.provide(OptChatConfigurationLive.pipe(Layer.provide(FridaySqliteLive))),
+            Effect.mapError((cause) =>
+              isOptChatConfigurationError(cause)
+                ? cause
+                : new OptChatConfigurationError({
+                    detail: 'OptChat configuration could not be loaded.',
+                    cause,
+                  }),
+            ),
+          ),
+      },
       getIdentityText: () =>
         IdentityConfiguration.pipe(
           Effect.flatMap((identity) => identity.get()),

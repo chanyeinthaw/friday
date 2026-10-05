@@ -31,6 +31,15 @@ export const runStructuralMigrations = Effect.fn('runStructuralMigrations')(func
   const sql = yield* SqlClient.SqlClient
 
   yield* sql`PRAGMA foreign_keys = ON`
+  yield* sql`CREATE TABLE IF NOT EXISTS optchat_bindings (
+    id TEXT PRIMARY KEY CHECK (id != ''),
+    platform TEXT NOT NULL CHECK (platform IN ('discord', 'slack')),
+    connection_id TEXT NOT NULL CHECK (connection_id != ''),
+    channel_id TEXT NOT NULL CHECK (channel_id != ''),
+    owner_user_id TEXT NOT NULL CHECK (owner_user_id != ''),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    UNIQUE (connection_id, channel_id)
+  )`
   yield* runChatSdkStateMigrations()
 
   yield* sql`

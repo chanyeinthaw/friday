@@ -1,6 +1,12 @@
 /* oxlint-disable eslint/no-underscore-dangle -- Effect schema errors use the canonical _tag discriminator. */
 
-import type { ChannelThread, InputMessage, Thread, Turn } from '@friday/contracts/conversation'
+import {
+  PlatformConversationId,
+  type ChannelThread,
+  type InputMessage,
+  type Thread,
+  type Turn,
+} from '@friday/contracts/conversation'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -10,6 +16,7 @@ import * as PartitionedSemaphore from 'effect/PartitionedSemaphore'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
+import { findOptChatBinding } from '../optchat/OptChatBindings.ts'
 import { ChannelTurns, type ChannelTurnError } from '../conversation/ChannelTurns.ts'
 import { AppConfig } from '../config/AppConfigLive.ts'
 import { TextGeneration } from '../harness/TextGeneration.ts'
@@ -82,6 +89,7 @@ export class PlatformIngestion extends Context.Service<
   PlatformIngestionContract
 >()('friday/platforms/PlatformIngestion') {}
 
+const decodeConversationId = Schema.decodeSync(PlatformConversationId)
 const ingestKey = (input: PlatformInput): string =>
   `${input.binding.connectionId}:${input.binding.channelId}`
 
@@ -211,6 +219,29 @@ export const PlatformIngestionLive = Layer.effect(
       routeThread?: (input: PlatformInput) => Effect.Effect<PlatformInput>,
       shouldGenerateTitle?: (input: PlatformInput) => Effect.Effect<boolean>,
     ) {
+      const optChat = findOptChatBinding(config.current().agent.optChats, input.binding)
+      if (
+        optChat !== undefined &&
+        (input.message.author?.platformUserId !== optChat.ownerUserId ||
+          input.historySource === 'thread' ||
+          input.discordHistorySource === 'thread')
+      )
+        return
+      if (optChat !== undefined) {
+        const parts = String(input.binding.conversationId).split(':')
+        const root = parts.slice(0, 3).join(':')
+        const conversationId = input.binding.platform === 'discord' ? `${root}:${parts[2]}` : root
+        const { context: _context, ...message } = input.message
+        input = {
+          ...input,
+          message,
+          initialContext: [],
+          binding: {
+            ...input.binding,
+            conversationId: decodeConversationId(conversationId),
+          },
+        }
+      }
       const key = ingestKey(input)
       const annotations = ingestAnnotations(input)
       // The binding semaphore covers lookup, enrichment, routing, and thread
@@ -224,17 +255,19 @@ export const PlatformIngestionLive = Layer.effect(
             const { enrichedInput, created } = yield* enrichWithContext(
               input,
               foundThread,
-              loadContext,
+              optChat === undefined ? loadContext : undefined,
             )
             const routedInput =
-              routeThread !== undefined ? yield* routeThread(enrichedInput) : enrichedInput
+              optChat === undefined && routeThread !== undefined
+                ? yield* routeThread(enrichedInput)
+                : enrichedInput
             const isRouted =
               String(routedInput.binding.conversationId) !==
               String(enrichedInput.binding.conversationId)
             const targetLookup = isRouted ? yield* lookupAdmission(routedInput) : foundThread
             const targetCreated = isRouted ? Option.isNone(targetLookup) : created
             const thread = yield* resolveChannelThread(targetLookup, routedInput, createThread)
-            if (targetCreated) {
+            if (targetCreated && optChat === undefined) {
               const shouldGenerate =
                 shouldGenerateTitle !== undefined ? yield* shouldGenerateTitle(routedInput) : true
               if (shouldGenerate) {

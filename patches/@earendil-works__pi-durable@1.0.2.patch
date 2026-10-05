@@ -1,0 +1,14 @@
+diff --git a/dist/harness/scheduler.js b/dist/harness/scheduler.js
+index 4e2d00f0d3539bb9ada6195d0979fda171f14ad0..e29d25e31afc0d14d7f9fde5bc4d4cbe83827323 100644
+--- a/dist/harness/scheduler.js
++++ b/dist/harness/scheduler.js
+@@ -949,7 +949,8 @@ export class TaskScheduler {
+                         await invoke(handler.bind(handlers));
+                     }
+                     catch (error) {
+-                        if (invocation.controller.signal.aborted)
++                        // A context transform must fail closed instead of sending the untransformed transcript.
++                        if (invocation.controller.signal.aborted || name === "beforeRequest")
+                             throw error;
+                         this.#report(error);
+                     }

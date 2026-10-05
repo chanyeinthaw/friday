@@ -3,6 +3,7 @@ import {
   defineExtension,
   section,
   type AgentChange,
+  type HookRegistration,
   type AnyTask,
   type PromptInput,
   type ToolRegistration,
@@ -19,6 +20,7 @@ export interface ToolOptions<E> {
   readonly tools: readonly ToolRegistration[]
   readonly systemPrompt?: (input: PromptInput) => Effect.Effect<string, E>
   readonly tasks?: readonly AnyTask[]
+  readonly hooks?: readonly HookRegistration[]
 }
 
 /** Pi requires named extension registrations internally; callers supply tools and a prompt. */
@@ -44,6 +46,7 @@ export const createToolRegistry = () => {
                   ),
                 ],
           tasks: options.tasks ?? [],
+          hooks: options.hooks ?? [],
         })
         registry.install(extension)
         return { extensions: [extension], tools: options.tools }

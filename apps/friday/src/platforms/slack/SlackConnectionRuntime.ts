@@ -1,3 +1,4 @@
+import { findOptChatBinding } from '../../optchat/OptChatBindings.ts'
 import { Chat } from 'chat'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -88,8 +89,24 @@ export const makeSlackConnectionRuntime = Effect.fn('makeSlackConnectionRuntime'
       defaultReplyMode: 'reply-in-thread',
       channels: [],
     }))
-  const resolveChannelPolicy = (teamId: string, channelId: string) =>
-    Option.getOrUndefined(resolveSlackChannelPolicy(currentPolicies(), teamId, channelId))
+  const resolveChannelPolicy = (teamId: string, channelId: string) => {
+    const policy = Option.getOrUndefined(
+      resolveSlackChannelPolicy(currentPolicies(), teamId, channelId),
+    )
+    const optChat = findOptChatBinding(config.current().agent.optChats, {
+      platform: 'slack',
+      connectionId: slackConfig.connectionId,
+      channelId,
+    })
+    return policy === undefined || optChat === undefined
+      ? policy
+      : {
+          ...policy,
+          invocationMode: 'all-messages' as const,
+          replyMode: 'reply-in-channel' as const,
+          users: { mode: 'allow' as const, ids: [optChat.ownerUserId] },
+        }
+  }
   const seenMessages = makeMessageDedup(2000)
   const slack = yield* Effect.try({
     try: () =>

@@ -30,3 +30,4 @@ minimumReleaseAgeExclude:
 patchedDependencies:
   '@chat-adapter/discord@4.40.0': patches/@chat-adapter__discord@4.40.0.patch
   '@earendil-works/pi-coding-agent@1.0.2': patches/@earendil-works__pi-coding-agent@1.0.2.patch
+  '@earendil-works/pi-durable@1.0.2': patches/@earendil-works__pi-durable@1.0.2.patch

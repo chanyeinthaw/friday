@@ -19,7 +19,7 @@ import { Friday, type FridayContract } from '../Friday.ts'
 import { AppConfig } from '../config/AppConfigLive.ts'
 import { TextGeneration } from '../harness/TextGeneration.ts'
 import { ChannelProgressLive } from '../conversation/ChannelProgress.ts'
-import { ChannelTurnsLive } from '../conversation/ChannelTurns.ts'
+import { ChannelTurns, ChannelTurnsLive } from '../conversation/ChannelTurns.ts'
 import {
   ThreadPersistence,
   type ThreadPersistenceContract,
@@ -32,6 +32,7 @@ import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts
 import type { PlatformInput, PlatformRegistration } from './PlatformAdapter.ts'
 import { PlatformRegistry, PlatformRegistryLive } from './PlatformRegistry.ts'
 
+const decodeInputMessage = Schema.decodeUnknownSync(InputMessage)
 const GUILD = '111111111111111111'
 const CHANNEL = '222222222222222222'
 const THREAD = '333333333333333333'
@@ -461,5 +462,88 @@ it.effect('seeds the routed turn with bounded parent-channel context', () =>
     assert.isDefined(seeded)
     assert.strictEqual(seeded.length, 1)
     assert.strictEqual(seeded[0]?.content.text, 'Parent discussion.')
+  }),
+)
+
+it.effect('OptChat admits only its owner and bypasses context loading and thread routing', () =>
+  Effect.gen(function* () {
+    const harness = freshHarness()
+    const ownerInput: PlatformInput = {
+      ...parentInput,
+      message: decodeInputMessage({
+        ...parentInput.message,
+        author: { platformUserId: 'owner', mention: null, username: null, displayName: null },
+      }),
+    }
+    const optChats = [
+      {
+        id: 'chan',
+        platform: 'discord' as const,
+        connectionId: 'discord',
+        channelId: CHANNEL,
+        ownerUserId: 'owner',
+      },
+    ]
+    const persistence = makePersistence(harness, { parentThread, targetThread: null })
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ThreadPersistence, persistence),
+      Layer.succeed(
+        ChannelTurns,
+        ChannelTurns.of({
+          accept: ({ thread }) =>
+            Effect.sync(() => {
+              harness.acceptedThreads.push(thread.id)
+            }),
+        }),
+      ),
+      Layer.succeed(
+        TextGeneration,
+        TextGeneration.of({
+          generateThreadTitle: () => Effect.die('OptChat must not rename its channel'),
+        }),
+      ),
+      Layer.succeed(
+        ConversationTitles,
+        ConversationTitles.of({
+          generated: () => Effect.void,
+          taskStarted: () => Effect.void,
+          taskFinished: () => Effect.void,
+        }),
+      ),
+      Layer.succeed(
+        AppConfig,
+        AppConfig.of({
+          current: () => ({ ...testConfig, agent: { ...testConfig.agent, optChats } }),
+          reload: Effect.die('unexpected'),
+        }),
+      ),
+    )
+    yield* Effect.gen(function* () {
+      const ingestion = yield* PlatformIngestion
+      const create = () => Effect.die('The channel binding already exists')
+      const context = () => Effect.die('OptChat must not fetch channel history')
+      const route = () => Effect.die('OptChat must not route into a thread')
+      yield* ingestion.ingest(ownerInput, create, context, route)
+      yield* ingestion.ingest(
+        {
+          ...ownerInput,
+          message: decodeInputMessage({
+            ...ownerInput.message,
+            author: {
+              platformUserId: 'someone-else',
+              mention: null,
+              username: null,
+              displayName: null,
+            },
+          }),
+        },
+        create,
+        context,
+        route,
+      )
+      yield* ingestion.ingest({ ...ownerInput, historySource: 'thread' }, create, context, route)
+      assert.deepStrictEqual(harness.acceptedThreads, ['thread-parent'])
+      assert.deepStrictEqual(harness.lookups, [parentConversation])
+    }).pipe(Effect.provide(PlatformIngestionLive.pipe(Layer.provide(dependencies))))
   }),
 )
