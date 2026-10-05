@@ -1,3 +1,4 @@
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 /* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/strict-effect-provide, effecttsgo/async-function -- This focused test drives the task service and Pi tool at their Effect/Promise boundaries. */
 
 import { assert, it } from '@effect/vitest'
@@ -21,8 +22,7 @@ import * as Schema from 'effect/Schema'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 
 import type { FridayContract } from '../Friday.ts'
-import type { ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
-import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
+import { harnessReloadSucceeded } from '../conversation/ConversationEvents.ts'
 import type { ThreadPersistenceContract } from '../conversation/ThreadPersistence.ts'
 import { makePiTaskTool } from './PiTaskTool.ts'
 import { makeTaskModels } from './TaskModels.ts'
@@ -56,7 +56,7 @@ const parent = decodeChannelThread({
   id: 'thread-root-user-task-surface-parent',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -90,7 +90,6 @@ it.effect('keeps root-user identities out of every normal task content surface',
     const createdThreads: Array<Thread> = []
     const persistedTurns: Array<TurnType> = []
     const promptedTurns: Array<TurnType> = []
-    const activityLabels: Array<string | undefined> = []
     const identifiers = [
       'root-user-surface-task',
       'root-user-surface-turn',
@@ -98,7 +97,6 @@ it.effect('keeps root-user identities out of every normal task content surface',
     ]
     let taskIsTerminal = false
     let promptCount = 0
-    let forkCount = 0
 
     const taskThreadId = decodeThreadId('task-root-user-surface-task')
     const taskId = decodeTaskId('task-root-user-surface-task')
@@ -186,33 +184,17 @@ it.effect('keeps root-user identities out of every normal task content surface',
           cancel: () => Effect.void,
           reload: () => Effect.succeed(harnessReloadSucceeded()),
           onEvent: () => Effect.void,
-          start: Effect.void,
           drain: Effect.never,
         }),
       observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     }
-    const conversationTitles = {
-      generated: () => Effect.void,
-      taskStarted: (_thread: typeof parent, _taskId: typeof taskId, task?: string) =>
-        Effect.sync(() => {
-          activityLabels.push(task)
-        }),
-      taskFinished: () => Effect.void,
-    }
-    const channelTurns: ChannelTurnsContract = { accept: () => Effect.void }
     const tasks = makeTasks({
       persistence,
       friday,
       models: makeTaskModels(() => [profile]),
-      channelTurns,
-      conversationTitles,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-identifier'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: (effect) => {
-        forkCount += 1
-        return forkCount === 1 ? effect : effect.pipe(Effect.forkChild, Effect.asVoid)
-      },
     })
 
     const taskText = 'Inspect the repository and report the result.'
@@ -243,23 +225,16 @@ it.effect('keeps root-user identities out of every normal task content surface',
         inspect: () => Effect.die('not used'),
         setModel: () => Effect.die('not used'),
       },
-      activeTurnId: () => decodeTurnId('turn-root-user-task-surface-parent'),
-      runPromise: Effect.runPromise,
+      activeTurnId: Effect.succeed(decodeTurnId('turn-root-user-task-surface-parent')),
     })
     const toolResult = yield* Effect.promise(() =>
       // SAFETY: Pi's SDK context is unused by this tool operation.
-      taskTool.execute(
-        'root-user-surface-list',
-        { action: 'list' },
-        undefined,
-        undefined,
-        {} as never,
-      ),
+      taskTool.execute({ action: 'list' }, {} as never, BACKGROUND_CONTEXT),
     )
     const toolText = toolResult.content
-      .flatMap((entry) => (entry.type === 'text' ? [entry.text] : []))
+      ?.flatMap((entry) => (entry.type === 'text' ? [entry.text] : []))
       .join('\n')
-    assert.include(toolText, taskText)
+    assert.include(toolText ?? '', taskText)
 
     taskIsTerminal = true
     const continuationText = 'Continue by checking the focused test output.'
@@ -271,12 +246,10 @@ it.effect('keeps root-user identities out of every normal task content surface',
 
     assert.lengthOf(promptedTurns, 2)
     assert.strictEqual(promptedTurns[1]?.input.content.text, continuationText)
-    assert.deepStrictEqual(activityLabels, [taskText, taskText])
 
     for (const text of [
       ...persistedTurns.map((turn) => turn.input.content.text),
       ...listed.map((summary) => summary.task),
-      ...activityLabels.filter((label): label is string => label !== undefined),
       toolText,
       continuationText,
     ]) {

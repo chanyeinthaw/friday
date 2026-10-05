@@ -17,7 +17,7 @@ const thread = decodeThread({
   id: 'thread-title',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/title',
   model: { provider: 'openai', modelId: 'gpt' },

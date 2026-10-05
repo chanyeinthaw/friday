@@ -21,7 +21,7 @@ const userThread = Schema.decodeSync(ChannelThread)({
   id: 'thread-user-tools',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/user-tools',
   model: { provider: 'openai', modelId: 'gpt' },
@@ -44,7 +44,6 @@ it('registers query and post tools for user threads', () => {
   const tools = makeUserFacingPlatformTools({
     thread: userThread,
     platforms,
-    runPromise: Effect.runPromise,
   })
 
   assert.deepStrictEqual(
@@ -61,7 +60,7 @@ it('registers no platform tools for agent threads', () => {
     audience: 'agent',
     parent: { threadId: 'thread-user-tools', turnId: 'turn-1' },
     role: 'subagent',
-    harness: 'pi',
+    harness: 'pi-durable',
     harnessSession: null,
     workingDirectory: '/tmp/user-tools',
     model: { provider: 'openai', modelId: 'gpt' },
@@ -75,7 +74,6 @@ it('registers no platform tools for agent threads', () => {
   const tools = makeUserFacingPlatformTools({
     thread: agentThread,
     platforms,
-    runPromise: Effect.runPromise,
   })
 
   assert.deepStrictEqual(tools, [])

@@ -25,8 +25,8 @@ import {
   type ThreadPersistenceContract,
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
-import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
-import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { harnessReloadSucceeded } from '../conversation/ConversationEvents.ts'
+import type { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
 import type { PlatformInput, PlatformRegistration } from './PlatformAdapter.ts'
@@ -70,7 +70,7 @@ const parentThread: ThreadType = Schema.decodeSync(ChannelThread)({
   id: 'thread-parent',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/thread-parent',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -228,9 +228,7 @@ const makeFriday = (harness: RoutingHarness): FridayContract => ({
         cancel: () => Effect.void,
         reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.void,
-      } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
+      } satisfies ThreadCoordinatorContract<PiDurableError, PiDurableError>
     }),
   observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
 })
@@ -295,14 +293,6 @@ it.effect('keeps the parent binding when routing returns the input unchanged', (
     assert.deepStrictEqual(harness.lookups, [parentConversation])
     assert.deepStrictEqual(harness.acceptedThreads, ['thread-parent'])
     assert.deepStrictEqual(harness.createdInputs, [])
-    assert.isTrue(
-      harness.platformEvents.some((event) =>
-        event.startsWith(`acknowledge:${parentConversation}:`),
-      ),
-    )
-    assert.isTrue(
-      harness.platformEvents.some((event) => event.startsWith(`finalize:${parentConversation}:`)),
-    )
   }),
 )
 
@@ -330,13 +320,6 @@ it.effect('looks up the routed target after the parent and never reuses the pare
     assert.strictEqual(
       String(harness.createdInputs[0]?.binding.channelId),
       String(parentBinding.channelId),
-    )
-    // Working and final output target the native thread, with no parent notice.
-    assert.isTrue(
-      harness.platformEvents.some((event) => event.startsWith(`working:${targetConversation}:`)),
-    )
-    assert.isTrue(
-      harness.platformEvents.some((event) => event.startsWith(`finalize:${targetConversation}:`)),
     )
     assert.isFalse(
       harness.platformEvents.some((event) => event.includes(`publish:${parentConversation}:`)),
@@ -409,9 +392,7 @@ it.effect('seeds the routed turn with bounded parent-channel context', () =>
             cancel: () => Effect.void,
             reload: () => Effect.succeed(harnessReloadSucceeded()),
             onEvent: () => Effect.void,
-            start: Effect.void,
-            drain: Effect.void,
-          } satisfies ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>
+          } satisfies ThreadCoordinatorContract<PiDurableError, PiDurableError>
         }),
       observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     }

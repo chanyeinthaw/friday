@@ -5,20 +5,18 @@ import * as Layer from 'effect/Layer'
 
 import type { ThreadCoordinatorContract } from './conversation/ThreadCoordinator.ts'
 import type { ThreadPersistenceError } from './conversation/ThreadPersistence.ts'
-import {
-  ThreadRuntimePool,
-  type ThreadRuntimeObservation,
-} from './conversation/ThreadRuntimePool.ts'
-import type { ThreadRuntimeError } from './conversation/ThreadRuntimes.ts'
+import { PiDurable } from './harness/pi/PiDurable.ts'
+import type { PiRuntimeObservation } from './harness/pi/PiDurableError.ts'
+import type { PiDurableError } from './harness/pi/PiDurableError.ts'
 
 export interface FridayContract {
   readonly openThread: (
     thread: Thread,
   ) => Effect.Effect<
-    ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError>,
-    ThreadRuntimeError | ThreadPersistenceError
+    ThreadCoordinatorContract<PiDurableError, PiDurableError>,
+    PiDurableError | ThreadPersistenceError
   >
-  readonly observeRuntime: (threadId: Thread['id']) => Effect.Effect<ThreadRuntimeObservation>
+  readonly observeRuntime: (threadId: Thread['id']) => Effect.Effect<PiRuntimeObservation>
 }
 
 export class Friday extends Context.Service<Friday, FridayContract>()('friday/Friday') {}
@@ -26,11 +24,11 @@ export class Friday extends Context.Service<Friday, FridayContract>()('friday/Fr
 export const FridayLive = Layer.effect(
   Friday,
   Effect.gen(function* () {
-    const pool = yield* ThreadRuntimePool
+    const durable = yield* PiDurable
 
     return Friday.of({
-      openThread: pool.acquire,
-      observeRuntime: pool.observe,
+      openThread: durable.openThread,
+      observeRuntime: durable.observe,
     })
   }),
 )

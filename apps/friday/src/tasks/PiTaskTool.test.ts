@@ -1,3 +1,5 @@
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- These boundary tests supply malformed inputs and an unused SDK execution API deliberately. */
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 /* oxlint-disable anti-slop/no-unknown-parameters, effecttsgo/async-function -- The Pi tool contract accepts unknown input and is Promise-based. */
 
 import { assert, expect, it } from '@effect/vitest'
@@ -29,7 +31,7 @@ const channelThread = decodeChannelThread({
   id: 'thread-task-tool',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/task-tool',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -65,11 +67,10 @@ const execute = async (calls: Array<unknown>, input: unknown) => {
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations(calls),
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
-  // SAFETY: The task tool does not read ExtensionContext for these operations.
-  return tool.execute('call-task', input, undefined, undefined, {} as never)
+  // SAFETY: The task tool does not read ToolExecutionApi for these operations.
+  return tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
 }
 
 it('surfaces task failure details through the Pi tool boundary', async () => {
@@ -86,23 +87,19 @@ it('surfaces task failure details through the Pi tool boundary', async () => {
           }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await expect(
     tool.execute(
-      'call-task',
       {
         action: 'start',
         task: 'Inspect the project.',
         workingDirectory: '/tmp/project',
         mayWrite: false,
       },
-      undefined,
-      undefined,
-      // SAFETY: The task tool does not read ExtensionContext for this operation.
       {} as never,
+      BACKGROUND_CONTEXT,
     ),
   ).rejects.toThrow('The requested directory is busy.')
 })
@@ -148,22 +145,18 @@ it('scopes inspect calls to the channel thread and returns the safe outline', as
           }),
         ),
     },
-    activeTurnId: () => null,
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(null),
   })
 
   const result = await tool.execute(
-    'call-inspect',
     { action: 'inspect', taskId: 'task-owned', limit: 5 },
-    undefined,
-    undefined,
-    // SAFETY: The task tool does not read ExtensionContext for this operation.
     {} as never,
+    BACKGROUND_CONTEXT,
   )
   assert.deepStrictEqual(calls, [
     { parentThreadId: channelThread.id, taskId: decodeTaskId('task-owned'), limit: 5 },
   ])
-  const text = String(result?.content[0]?.type === 'text' ? result.content[0].text : '')
+  const text = String(result.content?.[0]?.type === 'text' ? result.content?.[0].text : '')
   assert.include(text, 'task-owned')
   assert.include(text, 'Read the config')
   assert.notInclude(text, '/tmp/friday')
@@ -197,17 +190,13 @@ it('passes opaque inspect cursors only for older history', async () => {
           }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await tool.execute(
-    'call-inspect-cursor',
     { action: 'inspect', taskId: 'task-owned', cursor: 'opaque-cursor', limit: 5 },
-    undefined,
-    undefined,
-    // SAFETY: The task tool does not read ExtensionContext for this operation.
     {} as never,
+    BACKGROUND_CONTEXT,
   )
   assert.deepStrictEqual(calls, [
     {
@@ -223,18 +212,14 @@ it('rejects inspect limits above the maximum at the tool boundary', async () => 
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await expect(
     tool.execute(
-      'call-inspect-limit',
       { action: 'inspect', taskId: 'task-owned', limit: 21 },
-      undefined,
-      undefined,
-      // SAFETY: The task tool does not read ExtensionContext for this operation.
       {} as never,
+      BACKGROUND_CONTEXT,
     ),
   ).rejects.toThrow()
 })
@@ -243,18 +228,10 @@ it('rejects empty inspect identifiers and out-of-range limits at the tool bounda
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const executeInspect = (input: unknown) =>
-    tool.execute(
-      'call-inspect-constraints',
-      input,
-      undefined,
-      undefined,
-      // SAFETY: The task tool does not read ExtensionContext for this operation.
-      {} as never,
-    )
+    tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
 
   await expect(executeInspect({ action: 'inspect', taskId: '  ' })).rejects.toThrow()
   await expect(
@@ -269,8 +246,7 @@ it('keeps inspect identifier validation in parity across TypeBox and Effect', ()
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const validateInspect = (input: { action: 'inspect'; taskId: string; cursor?: string }) =>
     validateToolArguments(tool, {
@@ -319,7 +295,7 @@ it('scopes task start calls to the current channel Thread and active Turn', asyn
     },
   ])
   assert.include(
-    String(result?.content[0]?.type === 'text' ? result.content[0].text : ''),
+    String(result.content?.[0]?.type === 'text' ? result.content?.[0].text : ''),
     'task-started',
   )
 })
@@ -340,17 +316,13 @@ it('scopes set-model calls to the channel thread and passes the configured profi
           }),
         ),
     },
-    activeTurnId: () => null,
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(null),
   })
 
   const result = await tool.execute(
-    'call-set-model',
     { action: 'set-model', taskId: 'task-owned', profile: 'muse13-free' },
-    undefined,
-    undefined,
-    // SAFETY: The task tool does not read ExtensionContext for this operation.
     {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.deepStrictEqual(calls, [
@@ -361,7 +333,7 @@ it('scopes set-model calls to the channel thread and passes the configured profi
     },
   ])
   assert.include(
-    String(result?.content[0]?.type === 'text' ? result.content[0].text : ''),
+    String(result.content?.[0]?.type === 'text' ? result.content?.[0].text : ''),
     'muse13-free',
   )
 })
@@ -370,18 +342,10 @@ it('rejects blank set-model identifiers and profiles at the tool boundary', asyn
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const executeModelSet = (input: unknown) =>
-    tool.execute(
-      'call-set-model-constraints',
-      input,
-      undefined,
-      undefined,
-      // SAFETY: The task tool does not read ExtensionContext for this operation.
-      {} as never,
-    )
+    tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
 
   await expect(
     executeModelSet({ action: 'set-model', taskId: '  ', profile: 'primary' }),
@@ -402,17 +366,13 @@ it('passes an explicit bootstrap branch through to the bootstrap request', async
           Effect.as({ taskId: decodeTaskId('task-bootstrapped'), status: 'pending' as const }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await tool.execute(
-    'call-bootstrap-branch',
     { action: 'bootstrap', task: 'Prepare the repository.', branch: 'feat/add-login' },
-    undefined,
-    undefined,
-    // SAFETY: The task tool does not read ExtensionContext for this operation.
     {} as never,
+    BACKGROUND_CONTEXT,
   )
   assert.deepStrictEqual(calls, [
     {
@@ -435,17 +395,13 @@ it('omits the bootstrap branch when the channel agent does not choose one', asyn
           Effect.as({ taskId: decodeTaskId('task-bootstrapped'), status: 'pending' as const }),
         ),
     },
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
 
   await tool.execute(
-    'call-bootstrap-no-branch',
     { action: 'bootstrap', task: 'Investigate the repository read-only.' },
-    undefined,
-    undefined,
-    // SAFETY: The task tool does not read ExtensionContext for this operation.
     {} as never,
+    BACKGROUND_CONTEXT,
   )
   assert.deepStrictEqual(calls, [
     {
@@ -460,18 +416,10 @@ it('rejects blank bootstrap branches at the tool boundary', async () => {
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const executeBootstrap = (input: unknown) =>
-    tool.execute(
-      'call-bootstrap-constraints',
-      input,
-      undefined,
-      undefined,
-      // SAFETY: The task tool does not read ExtensionContext for this operation.
-      {} as never,
-    )
+    tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
 
   await expect(
     executeBootstrap({ action: 'bootstrap', task: 'Prepare the repository.', branch: '  ' }),
@@ -482,8 +430,7 @@ it('keeps bootstrap branch validation in parity across TypeBox and Effect', () =
   const tool = makePiTaskTool({
     thread: channelThread,
     tasks: taskOperations([]),
-    activeTurnId: () => decodeTurnId('turn-active'),
-    runPromise: Effect.runPromise,
+    activeTurnId: Effect.succeed(decodeTurnId('turn-active')),
   })
   const validateBootstrap = (input: { action: 'bootstrap'; task: string; branch: string }) =>
     validateToolArguments(tool, {

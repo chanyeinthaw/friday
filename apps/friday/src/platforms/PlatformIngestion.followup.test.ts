@@ -27,8 +27,8 @@ import {
   type ThreadPersistenceContract,
 } from '../conversation/ThreadPersistence.ts'
 import type { ThreadCoordinatorContract } from '../conversation/ThreadCoordinator.ts'
-import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
-import type { ThreadRuntimeError } from '../conversation/ThreadRuntimes.ts'
+import { harnessReloadSucceeded } from '../conversation/ConversationEvents.ts'
+import type { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import { ConversationTitles } from './ConversationTitles.ts'
 import { PlatformIngestion, PlatformIngestionLive } from './PlatformIngestion.ts'
 import { rebindToSlackThread } from './slack/SlackThreadRouting.ts'
@@ -70,7 +70,7 @@ const parentThread = decodeThread({
   id: 'thread-parent',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/parent',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -158,7 +158,7 @@ it.effect('starts an independently routed new turn for a parent message after ro
       }
       const coordinatorFor = (
         threadId: string,
-      ): ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError> => ({
+      ): ThreadCoordinatorContract<PiDurableError, PiDurableError> => ({
         prompt: (turn) =>
           Effect.sync(() => prompts.push(`${threadId}:${String(turn.id)}`)).pipe(
             Effect.as({
@@ -175,8 +175,6 @@ it.effect('starts an independently routed new turn for a parent message after ro
         cancel: () => Effect.void,
         reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.void,
       })
       const friday: FridayContract = {
         openThread: (thread) =>
@@ -304,7 +302,7 @@ it.effect('releases the binding semaphore before terminal waiting so follow-ups 
         interruptTurn: () => Effect.void,
         failTurn: () => Effect.void,
       }
-      const coordinator: ThreadCoordinatorContract<ThreadRuntimeError, ThreadRuntimeError> = {
+      const coordinator: ThreadCoordinatorContract<PiDurableError, PiDurableError> = {
         prompt: (turn) =>
           Effect.sync(() => prompts.push(String(turn.id))).pipe(
             Effect.andThen(Deferred.succeed(promptStarted, undefined)),
@@ -327,8 +325,6 @@ it.effect('releases the binding semaphore before terminal waiting so follow-ups 
         cancel: () => Effect.void,
         reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.void,
       }
       const friday: FridayContract = {
         openThread: () => Effect.succeed(coordinator),

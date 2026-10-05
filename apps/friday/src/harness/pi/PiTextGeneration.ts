@@ -1,4 +1,6 @@
-import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-agent'
+import { AssistantEntry } from '@earendil-works/pi-durable'
+import { withPiUtility } from './PiUtilityHarness.ts'
+import { piOperation } from '@friday/pi-durable-effect'
 import * as Effect from 'effect/Effect'
 
 import { PiModelRuntime } from './Live.ts'
@@ -47,43 +49,46 @@ export const makePiTextGeneration = Effect.fn('makePiTextGeneration')(function* 
           detail: `Model '${input.model.provider}/${input.model.modelId}' is unavailable.`,
         })
       }
-      const session = yield* Effect.tryPromise({
-        try: () =>
-          createAgentSession({
-            cwd: input.workingDirectory,
-            modelRuntime,
-            model,
-            thinkingLevel: input.thinkingLevel,
-            sessionManager: SessionManager.inMemory(input.workingDirectory),
-            noTools: 'all',
-          }),
-        catch: (cause) =>
-          new TextGenerationError({
-            operation: 'thread-title',
-            detail: 'Failed to create the title-generation session.',
-            cause,
-          }),
-      })
-      const response = yield* Effect.tryPromise({
-        try: async () => {
-          try {
-            await session.session.prompt(titlePrompt(input.message))
-            return session.session.messages
-              .toReversed()
-              .find((message) => message.role === 'assistant')
-              ?.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
-              .join('')
-          } finally {
-            session.session.dispose()
-          }
+      const response = yield* withPiUtility(
+        modelRuntime,
+        {
+          model: input.model,
+          thinkingLevel: input.thinkingLevel,
+          cwd: input.workingDirectory,
+          tools: [],
         },
-        catch: (cause) =>
-          new TextGenerationError({
-            operation: 'thread-title',
-            detail: 'Title generation failed.',
-            cause,
+        [],
+        (conversation) =>
+          piOperation('thread-title', async (context) => {
+            const submission = await conversation.submit(
+              { type: 'input', content: titlePrompt(input.message) },
+              context,
+            )
+            const settled = await submission.wait(context)
+            if (settled.type !== 'input' || settled.status !== 'done')
+              throw new Error('Title generation failed.')
+            const answer = await conversation.commit(
+              (tx) => tx.entry(AssistantEntry, settled.answer),
+              context,
+            )
+            return answer?.model
+              ?.flatMap((message) =>
+                message.role === 'assistant'
+                  ? message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+                  : [],
+              )
+              .join('')
           }),
-      })
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation: 'thread-title',
+              detail: 'Title generation failed.',
+              cause,
+            }),
+        ),
+      )
       const title = cleanTitle(response ?? '')
       return title.length > 0
         ? title

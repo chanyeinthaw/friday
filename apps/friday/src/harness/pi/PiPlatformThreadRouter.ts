@@ -1,11 +1,7 @@
-import {
-  createAgentSession,
-  SessionManager,
-  type CreateAgentSessionOptions,
-  type ModelRuntime,
-} from '@earendil-works/pi-coding-agent'
+import type { Models } from '@earendil-works/pi-ai'
 import { Type } from '@earendil-works/pi-ai'
-import { defineTool } from '@earendil-works/pi-coding-agent'
+import { withPiUtility } from './PiUtilityHarness.ts'
+import { defineEffectTool, piOperation } from '@friday/pi-durable-effect'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -22,34 +18,10 @@ import {
   type ThreadRouteDecision,
 } from '../../platforms/PlatformThreadRouter.ts'
 
-export interface RoutingSession {
-  readonly prompt: (text: string) => Promise<void>
-  readonly dispose: () => void
-}
-
-export interface RoutingSessionResult {
-  readonly session: RoutingSession
-}
-
-/**
- * Minimal session factory surface the router needs. The real Pi
- * `createAgentSession` satisfies this structurally, while test doubles can
- * implement it without casting around the wider SDK result type.
- */
-export type CreateRoutingSession = (
-  options: CreateAgentSessionOptions,
-) => Promise<RoutingSessionResult>
-
 export interface MakePiPlatformThreadRouterOptions {
   readonly operationTimeout?: Duration.Input
-  readonly createSession?: CreateRoutingSession
+  readonly models?: Models
   readonly workingDirectory?: string
-  /**
-   * Narrow ModelRuntime surface the router reads. Production defaults to the
-   * shared PiModelRuntime service; tests inject a fake without casting around
-   * the wider SDK runtime type.
-   */
-  readonly modelRuntime?: Pick<ModelRuntime, 'refresh' | 'getModel' | 'getAuth'>
 }
 
 const threadRouteParameters = Type.Object({
@@ -107,135 +79,69 @@ const threadRoutePrompt = (input: ThreadRouteDecideInput): string =>
 const routerError = (detail: string, cause?: unknown): PlatformThreadRouterError =>
   new PlatformThreadRouterError({ operation: 'thread-route', detail, cause })
 
-/**
- * Interruptible session acquisition with race-safe late disposal.
- *
- * The Pi SDK offers no cancellation for `createAgentSession()`: interrupting
- * the Effect only stops waiting, the underlying promise still resolves. When
- * the outer timeout interrupts this acquisition, a side channel disposes a
- * late-resolving session immediately. When acquisition wins, `signal.aborted`
- * is false and ownership stays with the Scope finalizer, so each session is
- * disposed exactly once.
- */
-const acquireRoutingSession = (
-  createSession: CreateRoutingSession,
-  options: CreateAgentSessionOptions,
-): Effect.Effect<RoutingSessionResult, PlatformThreadRouterError> =>
-  Effect.tryPromise({
-    try: (signal) => {
-      const underlying = createSession(options)
-      void underlying.then(
-        (created) => {
-          if (signal.aborted) {
-            Effect.runSync(Effect.sync(() => created.session.dispose()).pipe(Effect.ignore))
-          }
-        },
-        () => undefined,
-      )
-      return underlying
-    },
-    catch: (cause) => routerError('Failed to create the routing session.', cause),
-  })
-
 export const makePiPlatformThreadRouter = (options: MakePiPlatformThreadRouterOptions = {}) =>
   Effect.gen(function* () {
-    // Optional service lookup so tests can inject a narrow fake runtime
-    // without providing the full PiModelRuntime service. Production always
-    // wires the Live layer, so the service is present when no override is given.
-    const modelRuntime =
-      options.modelRuntime ?? Option.getOrThrow(yield* Effect.serviceOption(PiModelRuntime))
+    const models = options.models ?? Option.getOrThrow(yield* Effect.serviceOption(PiModelRuntime))
     const config = yield* AppConfig
-    const operationTimeout = options.operationTimeout ?? '30 seconds'
-    const createSession = options.createSession ?? createAgentSession
-    const workingDirectory = options.workingDirectory ?? FRIDAY_HOME
-
     return PlatformThreadRouter.of({
-      decide: (input: ThreadRouteDecideInput) =>
-        Effect.gen(function* () {
-          // One bounded deadline for the whole external routing operation:
-          // shared refresh, model/auth resolution, session acquisition,
-          // prompt/tool result. The session is owned by the Scope below once
-          // acquisition succeeds, so a timeout during or after acquisition
-          // still disposes exactly once; a session resolving after the
-          // timeout is disposed by the acquisition side channel.
-          const operation = Effect.scoped(
-            Effect.gen(function* () {
-              // One coherent read: a reload between two reads could otherwise pair
-              // a provider from one snapshot with a thinking level from another.
-              const utility = config.current().models.utility
-              yield* refreshSharedModelRuntime(modelRuntime, (failure) =>
-                routerError(failure.detail, failure.cause),
-              )
-              const model = modelRuntime.getModel(utility.provider, utility.modelId)
-              const auth = yield* Effect.tryPromise({
-                try: () => modelRuntime.getAuth(utility.provider),
-                catch: (cause) => routerError('Failed to resolve model authentication.', cause),
-              }).pipe(
-                Effect.mapError((cause) =>
-                  cause instanceof PlatformThreadRouterError
-                    ? cause
-                    : routerError('Failed to resolve model authentication.', cause),
-                ),
-              )
-              if (model === undefined || model === null || !auth) {
-                return yield* routerError(
-                  `Model '${utility.provider}/${utility.modelId}' is unavailable.`,
-                )
-              }
-              let captured: ThreadRouteDecision | undefined
-              const threadRouteTool = defineTool({
-                name: 'thread_route',
-                label: 'Thread Route',
-                description:
-                  'Record the adaptive routing decision. Call once with keep-channel/channel-appropriate or create-thread/explicit-request|thread-beneficial, then stop.',
-                promptSnippet: 'Call `thread_route` once with the routing decision, then stop.',
-                parameters: threadRouteParameters,
-                execute: async (_toolCallId, rawInput) => {
-                  const decoded = await Effect.runPromise(decodeThreadRouteDecision(rawInput))
-                  captured = decoded
-                  return {
-                    content: [{ type: 'text' as const, text: 'Routing decision recorded.' }],
-                    details: decoded,
-                  }
-                },
-              })
-              // Explicit allowlist: only the custom thread_route tool is active.
-              // `tools` filters built-in and extension tools; `noTools: 'all'`
-              // would disable even the custom tool (verified against the SDK).
-              // Acquisition stays interruptible so the outer deadline can win;
-              // the uninterruptible Scope handoff below guarantees disposal even
-              // when interruption lands immediately after acquisition.
-              const created = yield* Effect.acquireRelease(
-                acquireRoutingSession(createSession, {
-                  cwd: workingDirectory,
-                  // SAFETY: the narrow test runtime is only paired with an
-                  // injected fake session factory that ignores modelRuntime;
-                  // production always supplies the full shared runtime here.
-                  modelRuntime: modelRuntime as ModelRuntime,
-                  model,
-                  thinkingLevel: utility.thinkingLevel,
-                  sessionManager: SessionManager.inMemory(workingDirectory),
-                  tools: ['thread_route'],
-                  customTools: [threadRouteTool],
-                }),
-                (acquired) => Effect.sync(() => acquired.session.dispose()).pipe(Effect.ignore),
-                { interruptible: true },
-              )
-              yield* Effect.tryPromise({
-                try: () => created.session.prompt(threadRoutePrompt(input)),
-                catch: (cause) => routerError('Routing decision failed.', cause),
-              })
-              if (captured === undefined) {
-                return yield* routerError('Routing decision returned no thread_route call.')
-              }
-              return captured
-            }),
+      decide: Effect.fn('PiPlatformThreadRouter.decide')(function* (input: ThreadRouteDecideInput) {
+        const utility = config.current().models.utility
+        const operation = Effect.gen(function* () {
+          yield* refreshSharedModelRuntime(models, (failure) =>
+            routerError(failure.detail, failure.cause),
           )
-          const completed = yield* operation.pipe(Effect.timeoutOption(operationTimeout))
-          if (Option.isNone(completed)) {
-            return yield* routerError('Routing decision timed out.')
-          }
-          return completed.value
-        }).pipe(Effect.withLogSpan('thread.route.decide')),
+          const model = models.getModel(utility.provider, utility.modelId)
+          const auth = yield* Effect.tryPromise({
+            try: () => models.getAuth(utility.provider),
+            catch: (cause) => routerError('Failed to resolve model authentication.', cause),
+          })
+          if (model === undefined || !auth)
+            return yield* routerError(
+              `Model '${utility.provider}/${utility.modelId}' is unavailable.`,
+            )
+          let captured: ThreadRouteDecision | undefined
+          const threadRouteTool = defineEffectTool({
+            name: 'thread_route',
+            description: 'Record the routing decision and stop.',
+            parameters: threadRouteParameters,
+            replay: 'safe',
+            execute: (args) =>
+              Effect.gen(function* () {
+                captured = yield* decodeThreadRouteDecision(args)
+                return {
+                  content: [{ type: 'text', text: 'Routing decision recorded.' }],
+                  control: { terminate: true },
+                }
+              }),
+          })
+          yield* withPiUtility(
+            models,
+            {
+              model: { provider: utility.provider, modelId: utility.modelId },
+              thinkingLevel: utility.thinkingLevel,
+              cwd: options.workingDirectory ?? FRIDAY_HOME,
+              tools: [threadRouteTool],
+            },
+            [threadRouteTool],
+            (conversation) =>
+              piOperation('thread-route', async (context) => {
+                const submission = await conversation.submit(
+                  { type: 'input', content: threadRoutePrompt(input) },
+                  context,
+                )
+                const result = await submission.wait(context)
+                if (result.status !== 'done') throw new Error('Routing run failed.')
+              }),
+          ).pipe(Effect.mapError((cause) => routerError('Routing decision failed.', cause)))
+          if (captured === undefined)
+            return yield* routerError('Routing decision returned no thread_route call.')
+          return captured
+        })
+        const completed = yield* operation.pipe(
+          Effect.timeoutOption(options.operationTimeout ?? '30 seconds'),
+        )
+        if (Option.isNone(completed)) return yield* routerError('Routing decision timed out.')
+        return completed.value
+      }),
     })
   })

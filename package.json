@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @friday/friday build",
-    "check": "pnpm --recursive --if-present check",
+    "check": "pnpm --recursive --workspace-concurrency=1 --if-present check",
     "dev": "pnpm --filter @friday/friday dev",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
@@ -16,7 +16,7 @@
     "mutation:discord-config": "stryker run stryker.discord-config.config.json --inPlace",
     "release:build": "bun scripts/build-release.ts",
     "release:version": "bun scripts/release-version.ts",
-    "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts' --exclude '**/*.live.test.ts' && pnpm --filter @friday/friday test:integration",
+    "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts' --exclude '**/*.live.test.ts' && pnpm --recursive --if-present test:integration",
     "verify": "pnpm format:check && pnpm lint && pnpm check && pnpm test",
     "mutation:cli": "stryker run stryker.cli.config.json --inPlace",
     "mutation:connections": "stryker run stryker.connections.config.json --inPlace",

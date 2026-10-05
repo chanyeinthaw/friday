@@ -1,3 +1,5 @@
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- Malformed inputs and unused invocation APIs are intentional tool boundary fixtures. */
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { assert, it } from '@effect/vitest'
 import { ChannelThread, PlatformMessageId } from '@friday/contracts/conversation'
 import * as Effect from 'effect/Effect'
@@ -18,7 +20,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-post-tool',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/post-tool',
   model: { provider: 'openai', modelId: 'gpt' },
@@ -52,9 +54,6 @@ const neverPost = (): Platforms => ({
   postMessage: () => Effect.die('should not run'),
 })
 
-// SAFETY: The post tool does not read ExtensionContext for these operations.
-const extensionContext = {} as never
-
 const decodePostThread = Schema.decodeSync(ChannelThread)
 const encodePostThread = Schema.encodeSync(ChannelThread)
 
@@ -64,7 +63,6 @@ it('is named post_platform and runs sequentially', () => {
   const tool = makePiPostPlatformTool({
     thread,
     platforms: neverPost(),
-    runPromise: Effect.runPromise,
   })
 
   assert.strictEqual(tool.name, 'post_platform')
@@ -77,15 +75,12 @@ it('posts one message and returns the native id', async () => {
     thread,
     platforms: postStub(requests),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
 
   const result = await tool.execute(
-    'call-1',
-    { target: discordTarget, text: 'hello channel', idempotencyKey: 'key-1' },
-    undefined,
-    undefined,
-    extensionContext,
+    { target: discordTarget, text: 'hello channel', idempotencyKey: 'key-1' } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.strictEqual(requests.length, 1)
@@ -103,15 +98,12 @@ it('returns a posted result without fabricating an id', async () => {
     thread,
     platforms: postStub(requests, null),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
 
   const result = await tool.execute(
-    'call-1',
-    { target: discordTarget, text: 'hello', idempotencyKey: 'key-1' },
-    undefined,
-    undefined,
-    extensionContext,
+    { target: discordTarget, text: 'hello', idempotencyKey: 'key-1' } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.deepStrictEqual(result.details, { messageId: null })
@@ -133,19 +125,16 @@ it('posts to a matching-workspace Slack target on the current connection', async
     thread: slackThread,
     platforms: postStub(requests),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
 
   const result = await tool.execute(
-    'call-1',
     {
       target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
       text: 'hello slack',
       idempotencyKey: 'slack-1',
-    },
-    undefined,
-    undefined,
-    extensionContext,
+    } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
 
   assert.strictEqual(requests.length, 1)
@@ -162,25 +151,22 @@ it('rejects cross-connection targets', async () => {
     thread,
     platforms: neverPost(),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
+  const error = await tool
+    .execute(
       {
         target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
         text: 'hello',
         idempotencyKey: 'key-1',
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /current discord connection/)
 })
 
@@ -189,16 +175,13 @@ it('rejects empty text, missing keys, and over-limit text', async () => {
     thread,
     platforms: neverPost(),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
 
   const emptyError = await tool
     .execute(
-      'call-1',
-      { target: discordTarget, text: '   ', idempotencyKey: 'key-1' },
-      undefined,
-      undefined,
-      extensionContext,
+      { target: discordTarget, text: '   ', idempotencyKey: 'key-1' } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
     .then(
       () => undefined,
@@ -207,11 +190,9 @@ it('rejects empty text, missing keys, and over-limit text', async () => {
   assert.match(String(emptyError), /must not be empty/)
   const keyError = await tool
     .execute(
-      'call-1',
-      { target: discordTarget, text: 'hello', idempotencyKey: '   ' },
-      undefined,
-      undefined,
-      extensionContext,
+      { target: discordTarget, text: 'hello', idempotencyKey: '   ' } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
     .then(
       () => undefined,
@@ -220,15 +201,13 @@ it('rejects empty text, missing keys, and over-limit text', async () => {
   assert.match(String(keyError), /idempotency key/i)
   const limitError = await tool
     .execute(
-      'call-1',
       {
         target: discordTarget,
         text: 'x'.repeat(DiscordMaxPostLength + 1),
         idempotencyKey: 'k',
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
     .then(
       () => undefined,
@@ -252,25 +231,22 @@ it('enforces the Slack single-message limit', async () => {
     thread: slackThread,
     platforms: neverPost(),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
 
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-1',
+  const error = await tool
+    .execute(
       {
         target: { platform: 'slack', workspaceId: 'T123', channelId: 'C456' },
         text: 'x'.repeat(SlackMaxPostLength + 1),
         idempotencyKey: 'key-1',
-      },
-      undefined,
-      undefined,
-      extensionContext,
+      } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), new RegExp(String(SlackMaxPostLength)))
 })
 
@@ -280,12 +256,11 @@ it('replays the prior result for the same key and payload without re-posting', a
     thread,
     platforms: postStub(requests),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
   const input = { target: discordTarget, text: 'hello once', idempotencyKey: 'retry-1' }
 
-  const first = await tool.execute('call-1', input, undefined, undefined, extensionContext)
-  const second = await tool.execute('call-2', input, undefined, undefined, extensionContext)
+  const first = await tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
+  const second = await tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
 
   assert.strictEqual(requests.length, 1)
   assert.deepStrictEqual(second.details, first.details)
@@ -297,28 +272,23 @@ it('rejects the same key with a different payload', async () => {
     thread,
     platforms: postStub(requests),
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
 
   await tool.execute(
-    'call-1',
-    { target: discordTarget, text: 'first', idempotencyKey: 'spent-1' },
-    undefined,
-    undefined,
-    extensionContext,
+    { target: discordTarget, text: 'first', idempotencyKey: 'spent-1' } as never,
+    {} as never,
+    BACKGROUND_CONTEXT,
   )
-  let error: unknown
-  try {
-    await tool.execute(
-      'call-2',
-      { target: discordTarget, text: 'second', idempotencyKey: 'spent-1' },
-      undefined,
-      undefined,
-      extensionContext,
+  const error = await tool
+    .execute(
+      { target: discordTarget, text: 'second', idempotencyKey: 'spent-1' } as never,
+      {} as never,
+      BACKGROUND_CONTEXT,
     )
-  } catch (cause) {
-    error = cause
-  }
+    .then(
+      () => undefined,
+      (cause) => cause,
+    )
   assert.match(String(error), /different post payload/)
   assert.strictEqual(requests.length, 1)
 })
@@ -339,13 +309,12 @@ it('deduplicates concurrent posts sharing one key', async () => {
     thread,
     platforms,
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
   const input = { target: discordTarget, text: 'hello race', idempotencyKey: 'race-1' }
 
   const [first, second] = await Promise.all([
-    tool.execute('call-1', input, undefined, undefined, extensionContext),
-    tool.execute('call-2', input, undefined, undefined, extensionContext),
+    tool.execute(input as never, {} as never, BACKGROUND_CONTEXT),
+    tool.execute(input as never, {} as never, BACKGROUND_CONTEXT),
   ])
 
   assert.strictEqual(posts, 1)
@@ -366,18 +335,15 @@ it('retries the same key and payload after a failed post without reusing a recei
     thread,
     platforms,
     idempotency: new PlatformPostIdempotency(),
-    runPromise: Effect.runPromise,
   })
   const input = { target: discordTarget, text: 'hello retry', idempotencyKey: 'retry-after-fail' }
 
-  let error: unknown
-  try {
-    await tool.execute('call-1', input, undefined, undefined, extensionContext)
-  } catch (cause) {
-    error = cause
-  }
+  const error = await tool.execute(input as never, {} as never, BACKGROUND_CONTEXT).then(
+    () => undefined,
+    (cause) => cause,
+  )
   assert.match(String(error), /transport down/)
-  const recovered = await tool.execute('call-2', input, undefined, undefined, extensionContext)
+  const recovered = await tool.execute(input as never, {} as never, BACKGROUND_CONTEXT)
   assert.deepStrictEqual(recovered.details, { messageId: decodeMessageId('posted-1') })
   assert.strictEqual(attempts, 2)
 })
@@ -401,14 +367,12 @@ it('scopes idempotency keys to the current connection', async () => {
     thread,
     platforms: postStub(requests),
     idempotency,
-    runPromise: Effect.runPromise,
-  }).execute('call-1', input, undefined, undefined, extensionContext)
+  }).execute(input as never, {} as never, BACKGROUND_CONTEXT)
   await makePiPostPlatformTool({
     thread: otherThread,
     platforms: postStub(requests),
     idempotency,
-    runPromise: Effect.runPromise,
-  }).execute('call-2', input, undefined, undefined, extensionContext)
+  }).execute(input as never, {} as never, BACKGROUND_CONTEXT)
 
   assert.strictEqual(requests.length, 2)
 })

@@ -27,6 +27,7 @@ import { SqliteMigrationsLive } from './Migrations.ts'
 const database = (filename: string) =>
   SqliteMigrationsLive.pipe(Layer.provideMerge(SqliteClient.layer({ filename })))
 
+const decodeChannelThread = Schema.decodeSync(ChannelThread)
 const decodeHarnessSession = Schema.decodeSync(HarnessSession)
 const decodeIsoDateTime = Schema.decodeSync(IsoDateTime)
 const decodeModelSelection = Schema.decodeSync(ModelSelection)
@@ -39,7 +40,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-1',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/thread-1',
   model: { provider: 'anthropic', modelId: 'claude-sonnet' },
@@ -65,7 +66,7 @@ const agentThread = Schema.decodeSync(AgentThread)({
     threadId: 'thread-1',
     turnId: 'turn-1',
   },
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/agent-thread-1',
   model: { provider: 'anthropic', modelId: 'claude-sonnet' },
@@ -460,6 +461,20 @@ test('interrupts orphaned pending and running Turns after reopening SQLite', asy
     agentMessage: 'Already done.',
     completedAt: '2026-03-21T10:02:00.000Z',
   })
+  const durableThread = decodeChannelThread({
+    ...thread,
+    id: 'durable-recovery-thread',
+    conversationBinding: {
+      ...thread.conversationBinding,
+      conversationId: 'durable-recovery-conversation',
+    },
+    harnessSession: { id: 'durable-session', resumeCursor: { conversationId: 42 } },
+  })
+  const durableTurn = decodeTurn({
+    ...runningTurn,
+    id: 'durable-recovery-turn',
+    threadId: durableThread.id,
+  })
   const recoveredAt = decodeIsoDateTime('2026-03-21T11:00:00.000Z')
   const create = Effect.gen(function* () {
     const persistence = yield* makeSqliteThreadPersistence()
@@ -467,19 +482,27 @@ test('interrupts orphaned pending and running Turns after reopening SQLite', asy
     yield* persistence.createTurn(turn)
     yield* persistence.createTurn(runningTurn)
     yield* persistence.createTurn(completedTurn)
+    yield* persistence.createThread(durableThread)
+    yield* persistence.createTurn(durableTurn)
   }).pipe(Effect.provide(database(filename)), Effect.scoped)
   const recover = Effect.gen(function* () {
     const persistence = yield* makeSqliteThreadPersistence()
     const interrupted = yield* interruptOrphanedTurns(recoveredAt)
     const interruptedAgain = yield* interruptOrphanedTurns(recoveredAt)
     const turns = yield* persistence.listTurns(thread.id)
-    return { interrupted, interruptedAgain, turns }
+    return {
+      interrupted,
+      interruptedAgain,
+      turns,
+      durableTurn: Option.getOrThrow(yield* persistence.getTurn(durableTurn.id)),
+    }
   }).pipe(Effect.provide(database(filename)), Effect.scoped)
 
   await Effect.runPromise(create)
   const result = await Effect.runPromise(recover)
   await rm(directory, { recursive: true, force: true })
 
+  expect(result.durableTurn).toEqual(durableTurn)
   expect(result.interrupted).toBe(2)
   expect(result.interruptedAgain).toBe(0)
   expect(result.turns).toEqual([

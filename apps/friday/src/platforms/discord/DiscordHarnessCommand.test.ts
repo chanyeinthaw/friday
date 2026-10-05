@@ -26,7 +26,7 @@ import {
   harnessReloadFailed,
   harnessReloadRefused,
   harnessReloadSucceeded,
-} from '../../conversation/ThreadRuntime.ts'
+} from '../../conversation/ConversationEvents.ts'
 
 it('extracts the reload subcommand from a normalized gateway interaction', () => {
   // A normalized gateway interaction payload; decode strips adapter-specific fields.
@@ -132,7 +132,7 @@ const persistedParentThread = Schema.decodeSync(ChannelThread)({
   id: 'thread-parent-channel',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/thread-parent-channel',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },

@@ -93,7 +93,7 @@ export const makeSlackThreadBootstrap = Effect.fn('makeSlackThreadBootstrap')(fu
       id: decodeThreadId(yield* crypto.randomUUIDv4),
       audience: 'user',
       parent: null,
-      harness: 'pi',
+      harness: 'pi-durable',
       harnessSession: null,
       workingDirectory,
       model: model ?? {

@@ -4,7 +4,7 @@ import * as Schema from 'effect/Schema'
 import {
   formatHarnessReloadOutcome,
   type HarnessReloadOutcome,
-} from '../../conversation/ThreadRuntime.ts'
+} from '../../conversation/ConversationEvents.ts'
 
 export const HARNESS_COMMAND_NAME = 'harness'
 export const HARNESS_RELOAD_SUBCOMMAND = 'reload'

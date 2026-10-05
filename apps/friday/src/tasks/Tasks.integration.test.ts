@@ -17,7 +17,6 @@ import {
   type Thread,
   type Turn,
 } from '@friday/contracts/conversation'
-import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
@@ -27,8 +26,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { FridayContract } from '../Friday.ts'
-import type { ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
-import { harnessReloadSucceeded } from '../conversation/ThreadRuntime.ts'
+import { harnessReloadSucceeded } from '../conversation/ConversationEvents.ts'
 import type { ThreadPersistenceContract } from '../conversation/ThreadPersistence.ts'
 import { makeTaskModels } from './TaskModels.ts'
 import { quoteShellArgument } from './ShellQuote.ts'
@@ -50,7 +48,7 @@ const parentThread = (workingDirectory: string) =>
     id: 'thread-task-parent',
     audience: 'user',
     parent: null,
-    harness: 'pi',
+    harness: 'pi-durable',
     harnessSession: null,
     workingDirectory,
     model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -95,7 +93,6 @@ const makePersistence = (
   failTurn: () => Effect.void,
 })
 
-const noChannelTurns: ChannelTurnsContract = { accept: () => Effect.void }
 const profilesFor = (parent: ReturnType<typeof parentThread>) => [
   {
     name: decodeProfileName('primary'),
@@ -141,11 +138,9 @@ test('starts a subagent task without waiting for its terminal result', async () 
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday(promptedTurns),
       models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
 
     return yield* tasks.start({
@@ -173,191 +168,6 @@ test('starts a subagent task without waiting for its terminal result', async () 
   expect(promptedTurns[0]?.input.content.text).toBe('Inspect the repository and report the result.')
 })
 
-test('publishes task lifecycle in order and cleans up once for an immediately terminal task', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'friday-task-lifecycle-'))
-  const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(channelWorkspace, 'project')
-  await Promise.all([
-    Bun.write(join(channelWorkspace, '.keep'), ''),
-    Bun.write(join(projectDirectory, '.keep'), ''),
-  ])
-
-  const parent = parentThread(channelWorkspace)
-  const activity: Array<string> = []
-  const identifiers = ['immediate-task', 'immediate-turn']
-  const friday: FridayContract = {
-    openThread: () =>
-      Effect.succeed({
-        prompt: (turn) =>
-          Effect.succeed({
-            turnId: turn.id,
-            awaitTerminal: Effect.succeed({
-              status: 'completed' as const,
-              turnId: turn.id,
-              agentMessage: 'Immediate result.',
-              usage: null,
-            }),
-          }),
-        steer: () => Effect.void,
-        cancel: () => Effect.void,
-        reload: () => Effect.succeed(harnessReloadSucceeded()),
-        onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.never,
-      }),
-    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
-  }
-  const program = Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem
-    const tasks = makeTasks({
-      persistence: makePersistence(parent, []),
-      friday,
-      models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: { accept: () => Effect.die('terminal delivery failed') },
-      conversationTitles: {
-        generated: () => Effect.void,
-        taskStarted: (_parent, taskId) =>
-          Effect.sync(() => activity.push(`started:${String(taskId)}`)),
-        taskFinished: (_parent, taskId) =>
-          Effect.sync(() => activity.push(`finished:${String(taskId)}`)),
-      },
-      fileSystem,
-      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
-      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
-    })
-
-    yield* tasks.start({
-      parentThreadId: parent.id,
-      parentTurnId: decodeTurnId('turn-parent'),
-      task: 'Finish immediately.',
-      workingDirectory: decodeWorkingDirectory(projectDirectory),
-    })
-    yield* Effect.yieldNow
-  }).pipe(Effect.provide(BunFileSystem.layer))
-
-  await Effect.runPromise(program)
-  await rm(root, { recursive: true, force: true })
-
-  expect(activity).toEqual(['started:task-immediate-task', 'finished:task-immediate-task'])
-})
-
-test('finalizes initial task activity when awaitTerminal defects', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'friday-task-terminal-failure-'))
-  const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(channelWorkspace, 'project')
-  await Promise.all([
-    Bun.write(join(channelWorkspace, '.keep'), ''),
-    Bun.write(join(projectDirectory, '.keep'), ''),
-  ])
-
-  const parent = parentThread(channelWorkspace)
-  const activeTasks = new Set<string>()
-  const finishedTasks: Array<string> = []
-  const identifiers = ['terminal-failure-task', 'terminal-failure-turn']
-  const program = Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem
-    const tasks = makeTasks({
-      persistence: makePersistence(parent, []),
-      friday: {
-        openThread: () =>
-          Effect.succeed({
-            prompt: (turn) =>
-              Effect.succeed({
-                turnId: turn.id,
-                awaitTerminal: Effect.die('terminal watcher failed'),
-              }),
-            steer: () => Effect.void,
-            cancel: () => Effect.void,
-            reload: () => Effect.succeed(harnessReloadSucceeded()),
-            onEvent: () => Effect.void,
-            start: Effect.void,
-            drain: Effect.never,
-          }),
-        observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
-      },
-      models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
-      conversationTitles: {
-        generated: () => Effect.void,
-        taskStarted: (_parent, taskId) =>
-          Effect.sync(() => activeTasks.add(String(taskId))).pipe(Effect.asVoid),
-        taskFinished: (_parent, taskId) =>
-          Effect.sync(() => {
-            const id = String(taskId)
-            activeTasks.delete(id)
-            finishedTasks.push(id)
-          }),
-      },
-      fileSystem,
-      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
-      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: (effect) => effect,
-    })
-
-    return yield* tasks.start({
-      parentThreadId: parent.id,
-      parentTurnId: decodeTurnId('turn-parent'),
-      task: 'Fail after starting.',
-      workingDirectory: decodeWorkingDirectory(projectDirectory),
-    })
-  }).pipe(Effect.provide(BunFileSystem.layer))
-
-  const started = await Effect.runPromise(program)
-  await rm(root, { recursive: true, force: true })
-
-  expect(String(started.taskId)).toBe('task-terminal-failure-task')
-  expect(finishedTasks).toEqual(['task-terminal-failure-task'])
-  expect(activeTasks.size).toBe(0)
-})
-
-test('finalizes initial task activity once when watcher installation fails', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'friday-task-watcher-failure-'))
-  const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(channelWorkspace, 'project')
-  await Promise.all([
-    Bun.write(join(channelWorkspace, '.keep'), ''),
-    Bun.write(join(projectDirectory, '.keep'), ''),
-  ])
-
-  const parent = parentThread(channelWorkspace)
-  const activity: Array<string> = []
-  const identifiers = ['watcher-failure-task', 'watcher-failure-turn']
-  const program = Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem
-    const tasks = makeTasks({
-      persistence: makePersistence(parent, []),
-      friday: makeFriday([]),
-      models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
-      conversationTitles: {
-        generated: () => Effect.void,
-        taskStarted: () => Effect.sync(() => activity.push('started')),
-        taskFinished: () => Effect.sync(() => activity.push('finished')),
-      },
-      fileSystem,
-      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
-      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.die('watcher installation failed'),
-    })
-
-    return yield* Effect.exit(
-      tasks.start({
-        parentThreadId: parent.id,
-        parentTurnId: decodeTurnId('turn-parent'),
-        task: 'Fail watcher installation.',
-        workingDirectory: decodeWorkingDirectory(projectDirectory),
-      }),
-    )
-  }).pipe(Effect.provide(BunFileSystem.layer))
-
-  const exit = await Effect.runPromise(program)
-  await rm(root, { recursive: true, force: true })
-
-  expect(exit._tag).toBe('Failure')
-  expect(activity).toEqual(['started', 'finished'])
-})
-
 test('applies the selected subagent profile model and thinking level', async () => {
   const root = await mkdtemp(join(tmpdir(), 'friday-task-profile-'))
   const channelWorkspace = join(root, 'channel')
@@ -383,11 +193,9 @@ test('applies the selected subagent profile model and thinking level', async () 
           thinkingLevel: 'high',
         },
       ]),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('profile-task'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
     return yield* tasks.start({
       parentThreadId: parent.id,
@@ -422,11 +230,9 @@ test('starts a bootstrap task in the channel workspace with the bootstrap role',
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday(promptedTurns),
       models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
 
     return yield* tasks.bootstrap({
@@ -467,11 +273,9 @@ test('carries a requested durable branch into the bootstrap instruction', async 
       persistence: makePersistence(parent, createdThreads),
       friday: makeFriday(promptedTurns),
       models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
 
     return yield* tasks.bootstrap({
@@ -507,11 +311,9 @@ test('quotes shell-metacharacter durable branches as one argument', async () => 
         persistence: makePersistence(parent, []),
         friday: makeFriday(promptedTurns),
         models: makeTaskModels(() => profilesFor(parent)),
-        channelTurns: noChannelTurns,
         fileSystem,
         randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
         now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-        fork: () => Effect.void,
       })
 
       return yield* tasks.bootstrap({
@@ -539,152 +341,6 @@ test('quotes shell-metacharacter durable branches as one argument', async () => 
   }
 })
 
-test('delivers a completed task back to the parent channel Thread', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'friday-task-test-'))
-  const channelWorkspace = join(root, 'channel')
-  const projectDirectory = join(channelWorkspace, 'project')
-  await Promise.all([
-    Bun.write(join(channelWorkspace, '.keep'), ''),
-    Bun.write(join(projectDirectory, '.keep'), ''),
-  ])
-  const parent = parentThread(channelWorkspace)
-  const terminal = yieldableDeferred()
-  const closed: Array<string> = []
-  const delivered: Array<{ readonly source: string; readonly text: string }> = []
-  const friday: FridayContract = {
-    openThread: () =>
-      Effect.succeed({
-        prompt: (turn) =>
-          Effect.succeed({
-            turnId: turn.id,
-            awaitTerminal: Deferred.await(terminal.deferred),
-          }),
-        steer: () => Effect.void,
-        cancel: () => Effect.void,
-        reload: () => Effect.succeed(harnessReloadSucceeded()),
-        onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.never,
-      }),
-    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
-  }
-  const program = Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem
-    const tasks = makeTasks({
-      persistence: {
-        ...makePersistence(parent, []),
-        closeThread: ({ threadId }) => Effect.sync(() => closed.push(threadId)),
-      },
-      friday,
-      models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: {
-        accept: ({ message }) =>
-          Effect.sync(() => delivered.push({ source: message.source, text: message.content.text })),
-      },
-      fileSystem,
-      randomUUID: Effect.sync(() => terminal.identifiers.shift() ?? 'unexpected-id'),
-      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
-    })
-    const started = yield* tasks.start({
-      parentThreadId: parent.id,
-      parentTurnId: decodeTurnId('turn-parent'),
-      task: 'Complete the delegated work.',
-      workingDirectory: decodeWorkingDirectory(projectDirectory),
-    })
-    yield* Deferred.succeed(terminal.deferred, {
-      status: 'completed' as const,
-      turnId: decodeTurnId('turn-terminal'),
-      agentMessage: 'Delegated result.',
-      usage: null,
-    })
-    yield* Effect.yieldNow
-    return started
-  }).pipe(Effect.provide(BunFileSystem.layer))
-
-  const started = await Effect.runPromise(program)
-  await rm(root, { recursive: true, force: true })
-
-  expect(String(started.taskId)).toBe('task-task-completion')
-  expect(closed).toEqual(['task-task-completion'])
-  expect(delivered).toEqual([
-    {
-      source: 'agent',
-      text: "Background work for the earlier request completed.\n\nUse the following findings as your own working context. Do not mention the background task unless the user explicitly asks about Friday's internals:\n\nDelegated result.",
-    },
-  ])
-})
-
-const yieldableDeferred = () => {
-  const runtime = Effect.runSync(
-    Deferred.make<{
-      readonly status: 'completed'
-      readonly turnId: ReturnType<typeof decodeTurnId>
-      readonly agentMessage: string
-      readonly usage: null
-    }>(),
-  )
-  return { deferred: runtime, identifiers: ['task-completion', 'turn-completion'] }
-}
-
-test('delivers a bootstrap result back to the channel for a separate normal task', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'friday-bootstrap-test-'))
-  const channelWorkspace = join(root, 'channel')
-  await Bun.write(join(channelWorkspace, '.keep'), '')
-  const parent = parentThread(channelWorkspace)
-  const terminal = yieldableDeferred()
-  const delivered: Array<string> = []
-  const friday: FridayContract = {
-    openThread: () =>
-      Effect.succeed({
-        prompt: (turn) =>
-          Effect.succeed({ turnId: turn.id, awaitTerminal: Deferred.await(terminal.deferred) }),
-        steer: () => Effect.void,
-        cancel: () => Effect.void,
-        reload: () => Effect.succeed(harnessReloadSucceeded()),
-        onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.never,
-      }),
-    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
-  }
-  const program = Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem
-    const tasks = makeTasks({
-      persistence: makePersistence(parent, []),
-      friday,
-      models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: {
-        accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
-      },
-      fileSystem,
-      randomUUID: Effect.sync(() => terminal.identifiers.shift() ?? 'unexpected-id'),
-      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
-    })
-    const started = yield* tasks.bootstrap({
-      parentThreadId: parent.id,
-      parentTurnId: decodeTurnId('turn-parent'),
-      task: 'Prepare the repository.',
-    })
-    yield* Deferred.succeed(terminal.deferred, {
-      status: 'completed' as const,
-      turnId: decodeTurnId('turn-terminal'),
-      agentMessage: `Working directory ready: ${join(root, 'project')}`,
-      usage: null,
-    })
-    yield* Effect.yieldNow
-    return started
-  }).pipe(Effect.provide(BunFileSystem.layer))
-
-  await Effect.runPromise(program)
-  await rm(root, { recursive: true, force: true })
-
-  expect(delivered).toEqual([
-    `Background work for the earlier request completed.\n\nUse the following findings as your own working context. Do not mention the background task unless the user explicitly asks about Friday's internals:\n\nWorking directory ready: ${join(root, 'project')}`,
-  ])
-})
-
 test('lists tasks by the latest Turn status', async () => {
   const parent = parentThread('/tmp/channel')
   const thread = decodeAgentThread({
@@ -693,7 +349,7 @@ test('lists tasks by the latest Turn status', async () => {
     parent: { threadId: parent.id, turnId: 'turn-parent' },
     role: 'subagent',
     subagentProfile: 'primary',
-    harness: 'pi',
+    harness: 'pi-durable',
     harnessSession: null,
     workingDirectory: '/tmp/project',
     model: parent.model,
@@ -710,11 +366,9 @@ test('lists tasks by the latest Turn status', async () => {
     persistence: taskPersistence(parent, thread, first, latest),
     friday: makeFriday([]),
     models: makeTaskModels(() => profilesFor(parent)),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const terminal = await Effect.runPromise(
@@ -753,7 +407,6 @@ test('steers an active task and continues an idle task with a new Turn', async (
         cancel: () => Effect.void,
         reload: () => Effect.succeed(harnessReloadSucceeded()),
         onEvent: () => Effect.void,
-        start: Effect.void,
         drain: Effect.never,
       }),
     observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
@@ -764,11 +417,9 @@ test('steers an active task and continues an idle task with a new Turn', async (
     persistence: { ...persistence, getLatestTurn: () => Effect.succeedSome(latest) },
     friday,
     models: makeTaskModels(() => profilesFor(parent)),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('continuation'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   await Effect.runPromise(
@@ -793,7 +444,7 @@ test('steers an active task and continues an idle task with a new Turn', async (
   expect(prompted[0]?.input.content.text).toBe('Continue.')
 })
 
-test('does not prompt a continuation when metadata reads fail', async () => {
+test('does not prompt a continuation when current turn reads fail', async () => {
   const parent = parentThread('/tmp/channel')
   const thread = taskThread(parent)
   const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
@@ -802,7 +453,7 @@ test('does not prompt a continuation when metadata reads fail', async () => {
   const tasks = makeTasks({
     persistence: {
       ...base,
-      getFirstTurn: () => Effect.die('metadata read failed'),
+      getLatestTurn: () => Effect.die('turn read failed'),
     },
     friday: {
       openThread: () =>
@@ -813,17 +464,14 @@ test('does not prompt a continuation when metadata reads fail', async () => {
           cancel: () => Effect.void,
           reload: () => Effect.succeed(harnessReloadSucceeded()),
           onEvent: () => Effect.void,
-          start: Effect.void,
           drain: Effect.never,
         }),
       observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     },
     models: makeTaskModels(() => profilesFor(parent)),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('continuation-metadata-failure'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const exit = await Effect.runPromise(
@@ -840,224 +488,12 @@ test('does not prompt a continuation when metadata reads fail', async () => {
   expect(prompted).toBe(false)
 })
 
-test('marks an idle task active while its continuation runs', async () => {
-  const parent = parentThread('/tmp/channel')
-  const thread = taskThread(parent)
-  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
-  const terminal = yieldableDeferred()
-  const activity: Array<string> = []
-  const delivered: Array<string> = []
-  const friday: FridayContract = {
-    openThread: () =>
-      Effect.succeed({
-        prompt: (turn) =>
-          Effect.succeed({ turnId: turn.id, awaitTerminal: Deferred.await(terminal.deferred) }),
-        steer: () => Effect.void,
-        cancel: () => Effect.void,
-        reload: () => Effect.succeed(harnessReloadSucceeded()),
-        onEvent: () => Effect.void,
-        start: Effect.void,
-        drain: Effect.never,
-      }),
-    observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
-  }
-  const program = Effect.gen(function* () {
-    const tasks = makeTasks({
-      persistence: taskPersistence(parent, thread, completed, completed),
-      friday,
-      models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: {
-        accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
-      },
-      conversationTitles: {
-        generated: () => Effect.void,
-        taskStarted: (_parent, taskId) =>
-          Effect.sync(() => activity.push(`started:${String(taskId)}`)),
-        taskFinished: (_parent, taskId) =>
-          Effect.sync(() => activity.push(`finished:${String(taskId)}`)),
-      },
-      fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
-      randomUUID: Effect.succeed('continuation-activity'),
-      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
-    })
-
-    yield* tasks.steer({
-      parentThreadId: parent.id,
-      taskId: decodeTaskId(thread.id),
-      message: 'Continue.',
-    })
-    expect(activity).toEqual([`started:${thread.id}`])
-
-    yield* Deferred.succeed(terminal.deferred, {
-      status: 'completed' as const,
-      turnId: decodeTurnId('turn-continuation-terminal'),
-      agentMessage: 'Continuation result.',
-      usage: null,
-    })
-    yield* Effect.yieldNow
-  })
-
-  await Effect.runPromise(program)
-  expect(activity).toEqual([`started:${thread.id}`, `finished:${thread.id}`])
-  expect(delivered).toHaveLength(1)
-})
-
-test('finalizes continuation task activity once when watcher installation fails', async () => {
-  const parent = parentThread('/tmp/channel')
-  const thread = taskThread(parent)
-  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
-  const activity: Array<string> = []
-  const tasks = makeTasks({
-    persistence: taskPersistence(parent, thread, completed, completed),
-    friday: makeFriday([]),
-    models: makeTaskModels(() => profilesFor(parent)),
-    channelTurns: noChannelTurns,
-    conversationTitles: {
-      generated: () => Effect.void,
-      taskStarted: () => Effect.sync(() => activity.push('started')),
-      taskFinished: () => Effect.sync(() => activity.push('finished')),
-    },
-    fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
-    randomUUID: Effect.succeed('continuation-watcher-failure'),
-    now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-    fork: () => Effect.die('watcher installation failed'),
-  })
-
-  const exit = await Effect.runPromise(
-    Effect.exit(
-      tasks.steer({
-        parentThreadId: parent.id,
-        taskId: decodeTaskId(thread.id),
-        message: 'Continue and fail watcher installation.',
-      }),
-    ),
-  )
-
-  expect(exit._tag).toBe('Failure')
-  expect(activity).toEqual(['started', 'finished'])
-})
-
-test('keeps task activity active across overlapping continuation finalizers', async () => {
-  const parent = parentThread('/tmp/channel')
-  const thread = taskThread(parent)
-  const completed = taskTurn(thread, 'turn-completed', 1, 'completed', 'Original task')
-  let latest = completed
-  const activity: Array<string> = []
-
-  const program = Effect.gen(function* () {
-    type CompletedTerminal = {
-      readonly status: 'completed'
-      readonly turnId: ReturnType<typeof decodeTurnId>
-      readonly agentMessage: string
-      readonly usage: null
-    }
-    const firstTerminal = yield* Deferred.make<CompletedTerminal>()
-    const secondTerminal = yield* Deferred.make<CompletedTerminal>()
-    const firstDeliveryStarted = yield* Deferred.make<void>()
-    const releaseFirstDelivery = yield* Deferred.make<void>()
-    const secondDelivered = yield* Deferred.make<void>()
-    const terminals: Array<Deferred.Deferred<CompletedTerminal>> = [firstTerminal, secondTerminal]
-    let deliveryCount = 0
-    const friday: FridayContract = {
-      openThread: () =>
-        Effect.succeed({
-          prompt: (turn) => {
-            const terminal = terminals.shift()
-            return terminal === undefined
-              ? Effect.die('unexpected continuation')
-              : Effect.succeed({ turnId: turn.id, awaitTerminal: Deferred.await(terminal) })
-          },
-          steer: () => Effect.void,
-          cancel: () => Effect.void,
-          reload: () => Effect.succeed(harnessReloadSucceeded()),
-          onEvent: () => Effect.void,
-          start: Effect.void,
-          drain: Effect.never,
-        }),
-      observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
-    }
-    const persistence = taskPersistence(parent, thread, completed, completed)
-    const identifiers = ['continuation-one', 'continuation-two']
-    const tasks = makeTasks({
-      persistence: { ...persistence, getLatestTurn: () => Effect.succeedSome(latest) },
-      friday,
-      models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: {
-        accept: () => {
-          deliveryCount += 1
-          return deliveryCount === 1
-            ? Deferred.succeed(firstDeliveryStarted, undefined).pipe(
-                Effect.andThen(Deferred.await(releaseFirstDelivery)),
-              )
-            : Deferred.succeed(secondDelivered, undefined).pipe(Effect.asVoid)
-        },
-      },
-      conversationTitles: {
-        generated: () => Effect.void,
-        taskStarted: (_parent, taskId) =>
-          Effect.sync(() => activity.push(`started:${String(taskId)}`)),
-        taskFinished: (_parent, taskId) =>
-          Effect.sync(() => activity.push(`finished:${String(taskId)}`)),
-      },
-      fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
-      randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
-      now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: (effect) => effect.pipe(Effect.forkChild, Effect.asVoid),
-    })
-
-    yield* tasks.steer({
-      parentThreadId: parent.id,
-      taskId: decodeTaskId(thread.id),
-      message: 'First continuation.',
-    })
-    const firstResult: CompletedTerminal = {
-      status: 'completed',
-      turnId: decodeTurnId('turn-first-terminal'),
-      agentMessage: 'First result.',
-      usage: null,
-    }
-    yield* Deferred.succeed(firstTerminal, firstResult)
-    yield* Deferred.await(firstDeliveryStarted)
-
-    latest = taskTurn(thread, 'turn-first-terminal', 2, 'completed', 'First continuation.')
-    yield* tasks.steer({
-      parentThreadId: parent.id,
-      taskId: decodeTaskId(thread.id),
-      message: 'Second continuation.',
-    })
-    assertActivity(activity, [`started:${thread.id}`])
-
-    yield* Deferred.succeed(releaseFirstDelivery, undefined)
-    yield* Effect.yieldNow
-    assertActivity(activity, [`started:${thread.id}`])
-
-    const secondResult: CompletedTerminal = {
-      status: 'completed',
-      turnId: decodeTurnId('turn-second-terminal'),
-      agentMessage: 'Second result.',
-      usage: null,
-    }
-    yield* Deferred.succeed(secondTerminal, secondResult)
-    yield* Deferred.await(secondDelivered)
-    yield* Effect.yieldNow
-  })
-
-  await Effect.runPromise(program)
-  expect(activity).toEqual([`started:${thread.id}`, `finished:${thread.id}`])
-})
-
-const assertActivity = (actual: ReadonlyArray<string>, expected: ReadonlyArray<string>) => {
-  expect(actual).toEqual(expected)
-}
-
 test('cancels only an active owned task', async () => {
   const parent = parentThread('/tmp/channel')
   const thread = taskThread(parent)
   const active = taskTurn(thread, 'turn-active', 1, 'running', 'Original task')
   const cancelled: Array<string> = []
   const delivered: Array<string> = []
-  const finishedActivity: Array<string> = []
   const tasks = makeTasks({
     persistence: taskPersistence(parent, thread, active, active),
     friday: {
@@ -1068,24 +504,14 @@ test('cancels only an active owned task', async () => {
           cancel: (turnId) => Effect.sync(() => cancelled.push(turnId)),
           reload: () => Effect.succeed(harnessReloadSucceeded()),
           onEvent: () => Effect.void,
-          start: Effect.void,
           drain: Effect.never,
         }),
       observeRuntime: () => Effect.succeed({ runtimePresent: false, activeTurns: 0 }),
     },
     models: makeTaskModels(() => profilesFor(parent)),
-    channelTurns: {
-      accept: ({ message }) => Effect.sync(() => delivered.push(message.content.text)),
-    },
-    conversationTitles: {
-      generated: () => Effect.void,
-      taskStarted: () => Effect.void,
-      taskFinished: (_parent, taskId) => Effect.sync(() => finishedActivity.push(String(taskId))),
-    },
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   await Effect.runPromise(
@@ -1096,7 +522,6 @@ test('cancels only an active owned task', async () => {
     }),
   )
   expect(cancelled).toEqual([active.id])
-  expect(finishedActivity).toEqual([thread.id])
   expect(delivered).toEqual([])
 })
 
@@ -1129,11 +554,9 @@ test('rejects task operations from another channel', async () => {
     },
     friday: makeFriday([]),
     models: makeTaskModels(() => profilesFor(owner)),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const error = await Effect.runPromise(
@@ -1158,11 +581,9 @@ test('rejects cancellation for a terminal task', async () => {
     persistence: taskPersistence(parent, thread, completed, completed),
     friday: makeFriday([]),
     models: makeTaskModels(() => profilesFor(parent)),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const error = await Effect.runPromise(
@@ -1204,7 +625,6 @@ test('rejects unmanaged directory conflicts without attempting worktree isolatio
       persistence,
       friday: makeFriday([]),
       models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
       fileSystem,
       isManagedWorktree: () => Effect.succeed(false),
       createIsolatedWorktree: () =>
@@ -1214,7 +634,6 @@ test('rejects unmanaged directory conflicts without attempting worktree isolatio
         }),
       randomUUID: Effect.sync(randomUUID),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
     return yield* Effect.flip(
       tasks.start({
@@ -1273,7 +692,6 @@ test('isolates conflicts only after managed worktree ownership is confirmed', as
       persistence,
       friday: makeFriday([]),
       models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
       fileSystem,
       isManagedWorktree: (path) =>
         Effect.sync(() => {
@@ -1295,7 +713,6 @@ test('isolates conflicts only after managed worktree ownership is confirmed', as
         }),
       randomUUID: Effect.sync(() => identifiers.shift() ?? 'unexpected-id'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
     return yield* tasks.start({
       parentThreadId: parent.id,
@@ -1347,11 +764,9 @@ test('allows concurrent read-only tasks sharing one canonical working directory'
       persistence,
       friday: makeFriday([]),
       models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.sync(randomUUID),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
     return yield* tasks.start({
       parentThreadId: parent.id,
@@ -1383,11 +798,9 @@ test('rejects an unconfigured task model', async () => {
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
       models: makeTaskModels(() => []),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
 
     return yield* Effect.flip(
@@ -1414,7 +827,7 @@ const taskThread = (parent: ReturnType<typeof parentThread>): AgentThreadType =>
     parent: { threadId: parent.id, turnId: 'turn-parent' },
     role: 'subagent',
     subagentProfile: 'primary',
-    harness: 'pi',
+    harness: 'pi-durable',
     harnessSession: null,
     workingDirectory: '/tmp/project',
     model: parent.model,
@@ -1492,11 +905,9 @@ test('rejects directories outside the channel workspace for a normal task', asyn
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
       models: makeTaskModels(() => []),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
     const request = {
       parentThreadId: parent.id,
@@ -1527,11 +938,9 @@ test('allows a normal non-repository task at the channel workspace root', async 
       persistence: makePersistence(parent, []),
       friday: makeFriday([]),
       models: makeTaskModels(() => profilesFor(parent)),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
     const workingDirectory = decodeWorkingDirectory(channelWorkspace)
     const request = {
@@ -1589,11 +998,9 @@ test('switches an active task to a configured profile while keeping its identity
         thinkingLevel: 'low',
       },
     ]),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const result = await Effect.runPromise(
@@ -1640,11 +1047,9 @@ test('rejects switching to a profile name that is not configured', async () => {
         thinkingLevel: 'low',
       },
     ]),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const error = await Effect.runPromise(
@@ -1678,11 +1083,9 @@ test('rejects switching a terminal task', async () => {
     },
     friday: makeFriday([]),
     models: makeTaskModels(() => profilesFor(parent)),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const error = await Effect.runPromise(
@@ -1732,11 +1135,9 @@ test('rejects switching a task from another channel', async () => {
     },
     friday: makeFriday([]),
     models: makeTaskModels(() => profilesFor(owner)),
-    channelTurns: noChannelTurns,
     fileSystem: Effect.runSync(FileSystem.FileSystem.pipe(Effect.provide(BunFileSystem.layer))),
     randomUUID: Effect.succeed('unused'),
     now: Effect.succeed(decodeIsoDateTime('2026-03-21T11:00:00.000Z')),
-    fork: () => Effect.void,
   })
 
   const error = await Effect.runPromise(

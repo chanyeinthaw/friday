@@ -16,7 +16,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { relative } from 'node:path'
 
-import type { ThreadRuntimeObservation } from '../conversation/ThreadRuntimePool.ts'
+import type { PiRuntimeObservation } from '../harness/pi/PiDurableError.ts'
 import { isActiveTaskStatus } from './TaskPolicy.ts'
 
 export type TaskInspectPositionKind = 'activity' | 'lifecycle'
@@ -355,7 +355,7 @@ interface OutlineInput {
   readonly thread: AgentThread
   readonly parent: ChannelThread
   readonly latestTurn: Turn
-  readonly runtime: ThreadRuntimeObservation
+  readonly runtime: PiRuntimeObservation
 }
 
 export const buildTaskOutline = (input: OutlineInput): TaskOutline => {

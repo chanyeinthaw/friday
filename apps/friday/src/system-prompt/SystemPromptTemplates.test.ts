@@ -20,7 +20,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-system-prompt',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/channel-thread',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },

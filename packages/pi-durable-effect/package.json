@@ -1,0 +1,29 @@
+{
+  "name": "@friday/pi-durable-effect",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sqlite": "./src/SqliteStorage.ts",
+    "./resources": "./src/Resources.ts"
+  },
+  "scripts": {
+    "check": "effect-tsgo patch --typescript && tsc --noEmit",
+    "test:integration": "bun test $(find ./src -name '*.integration.test.ts' -print)"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-durable": "1.0.2",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/sql-sqlite-bun": "4.0.0-rc.109",
+    "@effect/tsgo": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@types/bun": "1.3.14",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

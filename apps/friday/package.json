@@ -11,17 +11,19 @@
     "check": "effect-tsgo patch --typescript && tsc --noEmit",
     "dev": "NODE_ENV=development bun run ./src/main.ts",
     "test": "vitest run",
-    "test:integration": "bun test $(find ./src -name '*.integration.test.ts' -print)",
-    "test:live:pi": "bun test ./src/harness/pi/PiThreadRuntime.live.test.ts"
+    "test:integration": "bun test $(find ./src -name '*.integration.test.ts' -print)"
   },
   "dependencies": {
     "@chat-adapter/discord": "4.40.0",
     "@chat-adapter/slack": "4.40.0",
-    "@earendil-works/pi-ai": "0.86.0",
-    "@earendil-works/pi-coding-agent": "0.86.0",
+    "@earendil-works/chord": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-durable": "1.0.2",
     "@effect/platform-bun": "4.0.0-rc.109",
     "@effect/sql-sqlite-bun": "4.0.0-rc.109",
     "@friday/contracts": "workspace:*",
+    "@friday/pi-durable-effect": "workspace:*",
     "chat": "4.40.0",
     "effect": "catalog:"
   },

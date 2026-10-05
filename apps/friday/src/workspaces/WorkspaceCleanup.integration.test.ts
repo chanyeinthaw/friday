@@ -129,7 +129,7 @@ test('allows only one active proposal when separate SQLite clients propose concu
     id: 'thread-concurrent',
     audience: 'user',
     parent: null,
-    harness: 'pi',
+    harness: 'pi-durable',
     harnessSession: null,
     workingDirectory: workspace,
     model: { provider: 'anthropic', modelId: 'claude-sonnet' },

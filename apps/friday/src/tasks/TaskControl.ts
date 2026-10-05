@@ -13,7 +13,6 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
-import type { TaskCompletion } from './TaskCompletion.ts'
 import type { MakeTasksOptions } from './TaskDependencies.ts'
 import { taskError } from './TaskError.ts'
 import { requireChannelThread, requireOwnedTask } from './TaskOperations.ts'
@@ -24,7 +23,7 @@ const decodeSteeringActivity = Schema.decodeUnknownEffect(SteeringActivity)
 const decodeTurn = Schema.decodeUnknownEffect(Turn)
 const decodeTurnId = Schema.decodeUnknownEffect(TurnId)
 
-export const makeTaskControl = (options: MakeTasksOptions, completion: TaskCompletion) => {
+export const makeTaskControl = (options: MakeTasksOptions) => {
   const makeContinuationTurn = Effect.fn('Tasks.makeContinuationTurn')(function* (
     thread: AgentThread,
     request: SteerTaskRequest,
@@ -134,10 +133,7 @@ export const makeTaskControl = (options: MakeTasksOptions, completion: TaskCompl
         )
     }
     const continuation = yield* makeContinuationTurn(thread, request, turn)
-    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
-    const first = yield* options.persistence.getFirstTurn(thread.id)
-    const originalTask = Option.isSome(first) ? first.value.input.content.text : undefined
-    const handle = yield* coordinator
+    yield* coordinator
       .prompt(continuation)
       .pipe(
         Effect.mapError((cause) =>
@@ -148,14 +144,6 @@ export const makeTaskControl = (options: MakeTasksOptions, completion: TaskCompl
           ),
         ),
       )
-    return yield* completion.watch({
-      parent,
-      taskId: request.taskId,
-      threadId: thread.id,
-      task: originalTask,
-      awaitTerminal: handle.awaitTerminal,
-      failureMessage: 'Task continuation delivery failed',
-    })
   })
 
   const cancel = Effect.fn('Tasks.cancel')(function* (request: CancelTaskRequest) {
@@ -191,22 +179,17 @@ export const makeTaskControl = (options: MakeTasksOptions, completion: TaskCompl
           ),
         ),
       )
-    const parent = yield* requireChannelThread(options.persistence, request.parentThreadId)
-    return yield* completion.cancel(
-      parent,
-      request.taskId,
-      coordinator
-        .cancel(turn.id)
-        .pipe(
-          Effect.mapError((cause) =>
-            taskError(
-              'start-failed',
-              `Failed to cancel task '${request.taskId}': ${String(cause)}`,
-              'cancel',
-            ),
+    yield* coordinator
+      .cancel(turn.id)
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            'start-failed',
+            `Failed to cancel task '${request.taskId}': ${String(cause)}`,
+            'cancel',
           ),
         ),
-    )
+      )
   })
 
   const setModel = Effect.fn('Tasks.setModel')(function* (request: SetTaskModelRequest) {
@@ -254,8 +237,7 @@ export const makeTaskControl = (options: MakeTasksOptions, completion: TaskCompl
         thinkingLevel: profile.thinkingLevel,
       } satisfies SetTaskModelResult
     }
-    // A running Turn finishes on its current model. The runtime pool recycles
-    // the idle harness session before the next execution uses this profile.
+    // A running Pi run keeps its model; the next acquisition configures the idle conversation with this profile.
     yield* options.persistence.setThreadModel({
       threadId: thread.id,
       model: profile.model,

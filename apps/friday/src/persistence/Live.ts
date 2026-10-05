@@ -14,7 +14,7 @@ import { makeSqliteThreadPersistence } from './SqliteThreadPersistence.ts'
 
 export const FRIDAY_DATABASE_PATH = join(FRIDAY_HOME, 'friday.sqlite')
 
-const FridayHomeLive = Layer.effectDiscard(
+export const FridayHomeLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem
     yield* fileSystem.makeDirectory(FRIDAY_HOME, { recursive: true })

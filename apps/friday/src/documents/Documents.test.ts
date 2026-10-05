@@ -296,7 +296,7 @@ describe('document prompt', () => {
     id: 'thread-documents',
     audience: 'user',
     parent: null,
-    harness: 'pi',
+    harness: 'pi-durable',
     harnessSession: null,
     workingDirectory: '/tmp/friday/channel-thread',
     model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },

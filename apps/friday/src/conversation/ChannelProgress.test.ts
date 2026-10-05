@@ -30,7 +30,7 @@ const thread = decodeChannelThread({
   id: 'thread-progress',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/progress',
   model: { provider: 'openai', modelId: 'gpt' },
@@ -359,7 +359,7 @@ it.effect('publishes directly when working messages are unsupported', () =>
   ),
 )
 
-it.effect('ignores stale finalization after a newer turn starts', () =>
+it.effect('publishes recovered completion while a newer turn stays active', () =>
   Effect.scoped(
     Effect.gen(function* () {
       const events: Array<string> = []
@@ -369,7 +369,7 @@ it.effect('ignores stale finalization after a newer turn starts', () =>
       yield* progress.accept(thread, userMessage('Second.'), nextTurnId)
       yield* progress.finalize(thread, turnId, 'Stale done.')
 
-      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'ack'])
+      assert.deepStrictEqual(events, ['ack', 'working:Thinking...', 'ack', 'publish:Stale done.'])
 
       yield* progress.finalize(thread, nextTurnId, 'Current done.')
 
@@ -377,6 +377,7 @@ it.effect('ignores stale finalization after a newer turn starts', () =>
         'ack',
         'working:Thinking...',
         'ack',
+        'publish:Stale done.',
         'finalize:Current done.',
       ])
     }),

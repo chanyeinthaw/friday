@@ -21,7 +21,6 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import type { FridayContract } from '../Friday.ts'
-import type { ChannelTurnsContract } from '../conversation/ChannelTurns.ts'
 import type { ThreadPersistenceContract } from '../conversation/ThreadPersistence.ts'
 import { makeTaskModels } from './TaskModels.ts'
 import {
@@ -48,7 +47,7 @@ const parent = decodeChannelThread({
   id: 'thread-inspect-parent',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/workspace/channel',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -84,7 +83,7 @@ const taskThread = (overrides: TaskThreadOverrides = {}): AgentThreadType =>
     parent: { threadId: parent.id, turnId: 'turn-parent' },
     role: 'subagent',
     subagentProfile: 'primary',
-    harness: 'pi',
+    harness: 'pi-durable',
     harnessSession: overrides.harnessSession === undefined ? null : overrides.harnessSession,
     workingDirectory: overrides.workingDirectory ?? '/workspace/channel/project',
     model: parent.model,
@@ -233,10 +232,6 @@ const readOnlyFriday = (runtime: {
   observeRuntime: () => Effect.succeed(runtime),
 })
 
-const noChannelTurns: ChannelTurnsContract = {
-  accept: () => Effect.die('inspect must be read-only'),
-}
-
 const inspectWith = (
   thread: AgentThreadType,
   turns: Array<Turn>,
@@ -251,11 +246,9 @@ const inspectWith = (
       persistence: stubPersistence(thread, turns),
       friday: readOnlyFriday(runtime),
       models: makeTaskModels(() => []),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.die('inspect must be read-only'),
     })
   }).pipe(Effect.provide(NodeFileSystem.layer))
 
@@ -522,7 +515,7 @@ it.effect('pairs tool calls and reports active, successful, and failed results s
   }),
 )
 
-it.effect('uses live pool observation rather than persisted session metadata', () =>
+it.effect('uses Pi-durable observation rather than persisted session metadata', () =>
   Effect.gen(function* () {
     const activeThread = taskThread({ harnessSession: null })
     const activeTurn = baseTurn(activeThread, 'turn-active', 1, 'running', 'Raw task prompt')
@@ -607,11 +600,9 @@ it.effect('isolates tasks by channel without leaking existence', () =>
       persistence,
       friday: readOnlyFriday({ runtimePresent: false, activeTurns: 0 }),
       models: makeTaskModels(() => []),
-      channelTurns: noChannelTurns,
       fileSystem,
       randomUUID: Effect.succeed('unused'),
       now: Effect.succeed(decodeIsoDateTime('2026-03-21T10:00:00.000Z')),
-      fork: () => Effect.void,
     })
 
     const foreign = yield* Effect.flip(

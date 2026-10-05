@@ -7,6 +7,8 @@ Closure revision: `55e6e69` (`main`)
 Audience: Friday maintainers
 Status: closed; see [outcomes and decisions](08-outcomes-and-decisions.md)
 
+This audit records the September architecture. The current execution and recovery model is documented in [Pi-durable integration](../pi-durable.md).
+
 ## Executive conclusion
 
 Friday has a sound architectural core. The code uses typed domain contracts, Effect services,

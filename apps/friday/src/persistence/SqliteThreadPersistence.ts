@@ -83,6 +83,10 @@ export const interruptOrphanedTurns = Effect.fn('interruptOrphanedTurns')(functi
             ${completedAt}
           )
         WHERE status IN ('pending', 'running')
+          AND NOT EXISTS (
+            SELECT 1 FROM threads t WHERE t.thread_id = turns.thread_id
+              AND json_extract(t.payload_json, '$.harnessSession.resumeCursor.conversationId') IS NOT NULL
+          )
         RETURNING payload_json AS payload
       `.pipe(Effect.flatMap(decodePersistedTurnRows)),
     )

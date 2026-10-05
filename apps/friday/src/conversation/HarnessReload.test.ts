@@ -15,7 +15,7 @@ import {
   harnessReloadRefused,
   harnessReloadSucceeded,
   type HarnessReloadOutcome,
-} from './ThreadRuntime.ts'
+} from './ConversationEvents.ts'
 
 const lookup = {
   platform: 'discord' as const,
@@ -27,7 +27,7 @@ const thread = Schema.decodeSync(ChannelThread)({
   id: 'thread-harness-reload',
   audience: 'user',
   parent: null,
-  harness: 'pi',
+  harness: 'pi-durable',
   harnessSession: null,
   workingDirectory: '/tmp/friday/thread-harness-reload',
   model: { provider: 'opencode-go', modelId: 'deepseek-v4-flash' },
@@ -86,7 +86,7 @@ describe('reloadConversationHarness', () => {
     }),
   )
 
-  it.effect('propagates the pool refusal outcomes unchanged', () =>
+  it.effect('propagates Pi-durable refusal outcomes unchanged', () =>
     Effect.gen(function* () {
       const busy: HarnessReloadOutcome = harnessReloadRefused(
         'busy',
