@@ -16,6 +16,7 @@ import { makeOptChatHarness } from '../../optchat/OptChatHarness.ts'
 import { makeOptChatTools } from '../../optchat/OptChatTools.ts'
 import { optChatInstructions } from '../../optchat/OptChatPrompt.ts'
 import type { OptChatMemory } from '../../optchat/OptChatMemory.ts'
+import { withOptChatCache } from '../../optchat/OptChatCache.ts'
 import * as Schedule from 'effect/Schedule'
 import type { Context as PiContext } from '@earendil-works/chord'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
@@ -292,6 +293,7 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
       if (current.audience === 'user') {
         base = yield* options.templates.renderChannelAgent({
           thread: current,
+          optChat: binding !== undefined,
           availableAgentModels: options.availableAgentModels(),
           identityText: yield* options.identityText(),
           rootUsers: yield* options.rootUsers(current),
@@ -397,6 +399,9 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
     const update = Effect.fn('PiDurable.updateProjection')(function* (
       view: typeof subscription.value,
     ) {
+      const binding = optChatFor(thread)
+      if (binding !== undefined && optChat !== undefined)
+        yield* optChat.syncObserved(conversation, binding.id)
       const live = yield* piOperation('projection', (context) =>
         harness.snapshot(LiveDoc, conversation.id, context),
       )
@@ -635,7 +640,7 @@ export const makePiDurable = Effect.fn('PiDurable.open')(function* (options: PiD
   yield* toolRegistry.provide('friday-completion', { tools: [], tasks: [completeTurn] })
 
   harness = yield* openHarness(options.storage, {
-    models: options.models,
+    models: withOptChatCache(options.models),
     registry,
     env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? '.' }),
     onReport: (cause) => Effect.runSync(Effect.logError('pi.durable.report', cause)),

@@ -21,6 +21,7 @@ export class SystemPromptTemplateError extends Schema.Error<SystemPromptTemplate
 }) {}
 
 export interface ChannelAgentSystemPromptContext {
+  readonly optChat?: boolean
   readonly thread: ChannelThread
   readonly availableAgentModels: ReadonlyArray<SubagentProfile>
   /** Trusted operator text inserted literally into the channel prompt. */
@@ -132,6 +133,12 @@ export const makeSystemPromptTemplates = (templates: {
         identity: context.identityText ?? DefaultIdentityText,
         rootUsers: renderRootUsersSection(context.rootUsers ?? []),
         fridayCliPath: FRIDAY_CLI_PATH,
+        executionPolicy: context.optChat
+          ? "You are the channel's primary conversational agent. Do the user's tasks yourself with your tools. Use background tasks only when the user asks for them."
+          : "You are the channel's primary conversational agent. Answer directly when the conversation and your existing knowledge are enough. Start background work when the request requires tools, investigation, file access, external interaction, waiting, or sustained execution.",
+        followUpPolicy: context.optChat
+          ? 'Do follow-up work yourself. Start a new task only when the user asks for background work.'
+          : 'Start a new task for follow-up work instead of doing that work yourself.',
       })
     },
     renderBootstrapAgent: (currentWorkingDirectory) =>

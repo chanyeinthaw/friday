@@ -2,6 +2,8 @@
 import { test, expect } from 'bun:test'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as Effect from 'effect/Effect'
+import * as Deferred from 'effect/Deferred'
+import * as Fiber from 'effect/Fiber'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { makeOptChatMemory } from './OptChatMemory.ts'
 import { PiDurableError } from '../harness/pi/PiDurableError.ts'
@@ -97,4 +99,41 @@ test('successful sibling summaries survive a failed merge job', () =>
       yield* memory.pump('chan')
       expect((yield* sql`SELECT * FROM optchat_nodes WHERE count = 2`).length).toBe(1)
     }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+  ))
+
+test('appends and refills leaf jobs while an older merge is still running', () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mergeStarted = yield* Deferred.make<void>()
+        const releaseMerge = yield* Deferred.make<void>()
+        const newLeafStarted = yield* Deferred.make<void>()
+        const memory = yield* makeOptChatMemory((input) =>
+          Effect.gen(function* () {
+            if (input.merge) {
+              yield* Deferred.succeed(mergeStarted, undefined)
+              yield* Deferred.await(releaseMerge)
+            }
+            if (input.source.startsWith('user: 3:'))
+              yield* Deferred.succeed(newLeafStarted, undefined)
+            return `user: ${'Tokyo '.repeat(47)}`
+          }),
+        )
+        const message = (id: number) => ({
+          sourceKey: String(id),
+          kind: 'user' as const,
+          text: `${id}: ${'Keep Tokyo. '.repeat(70)}`,
+          date: '2026-10-05T00:00:00Z',
+        })
+        yield* memory.append('chan', [message(0), message(1), message(2)])
+        const pump = yield* memory.pump('chan').pipe(Effect.forkChild)
+        yield* Deferred.await(mergeStarted)
+        yield* memory.append('chan', [message(3)]).pipe(Effect.timeout('2 seconds'))
+        yield* Deferred.await(newLeafStarted).pipe(Effect.timeout('2 seconds'))
+        yield* Deferred.succeed(releaseMerge, undefined)
+        yield* Fiber.join(pump)
+        expect(yield* memory.zoom('chan', 3, 1)).toContain('3: Keep Tokyo.')
+        expect(yield* memory.settle('chan')).toContain('3+1|')
+      }),
+    ).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
   ))

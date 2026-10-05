@@ -5,6 +5,7 @@ import { createToolRegistry, openHarness, piOperation } from '@friday/pi-durable
 import * as Effect from 'effect/Effect'
 import { compactPrompt } from './OptChatPrompt.ts'
 import { bytes, summaryBytes } from './OptChatTree.ts'
+import { splitOptChatView, withOptChatCache } from './OptChatCache.ts'
 import type { AppConfig } from '../config/AppConfig.ts'
 import { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import { refreshSharedModelRuntime } from '../harness/pi/PiModelRefresh.ts'
@@ -36,7 +37,7 @@ export const makeOptChatCompressor = (
           systemPrompt: () => Effect.succeed(compactPrompt),
         })
         const harness = yield* openHarness(new MemoryStorage(), {
-          models,
+          models: withOptChatCache(models),
           registry: registry.registry,
           settings: { compaction: { enabled: false } },
         })
@@ -49,11 +50,16 @@ export const makeOptChatCompressor = (
         const scalePrefix =
           'user: Keep one endless chat per configured channel and owner. Friday replies in-channel, preserves every message, starts each turn with a summary tree view, and zooms to exact history before acting. work: Pi-durable owns scheduling, tools and restart recovery. echo: SQLite integrity checks passed. tool: Updated configuration without deleting history. talk: Existing channels retain normal routing; tasks report to the originating memory. user: Preserve paths, decisions, reasons and unresolved work.'
         const scale = scalePrefix + ' '.repeat(Math.max(0, summaryBytes - bytes(scalePrefix)))
-        let prompt = [
-          input.context,
-          `For scale, this line is exactly ${summaryBytes} bytes:\n${scale}`,
-          `${input.merge ? 'Merge these two lines' : 'Compress this message'} into one line, in at most ${summaryBytes} bytes:\n${input.source}`,
-        ].join('\n\n')
+        let prompt: import('@earendil-works/pi-ai').UserMessage['content'] = [
+          ...splitOptChatView(input.context).map((text) => ({ type: 'text' as const, text })),
+          {
+            type: 'text',
+            text: [
+              `For scale, this line is exactly ${summaryBytes} bytes:\n${scale}`,
+              `${input.merge ? 'Merge these two lines' : 'Compress this message'} into one line, in at most ${summaryBytes} bytes:\n${input.source}`,
+            ].join('\n\n'),
+          },
+        ]
         const attempts: string[] = []
         for (let attempt = 0; attempt < 5; attempt++) {
           const answer = yield* piOperation('optchat-compress', async (context) => {

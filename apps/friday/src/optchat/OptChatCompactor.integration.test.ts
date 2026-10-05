@@ -10,26 +10,39 @@ import { makeOptChatCompressor } from './OptChatCompactor.ts'
 import { bytes } from './OptChatTree.ts'
 
 const decodeUtility = Schema.decodeUnknownSync(AppConfig.fields.models.fields.utility)
-const decodePrompt = Schema.decodeUnknownSync(Schema.String)
+const decodeBlocks = Schema.decodeUnknownSync(
+  Schema.Array(Schema.Struct({ type: Schema.Literal('text'), text: Schema.String })),
+)
 test('the compactor corrects byte overflow in the same conversation with no tools', () =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const faux = fauxProvider({ tokensPerSecond: Infinity })
+      const faux = fauxProvider({
+        tokensPerSecond: Infinity,
+        models: [{ id: 'primary' }, { id: 'utility-only' }],
+      })
       const models = createModels()
       models.setProvider(faux.provider)
-      const utility = decodeUtility({ provider: 'faux', modelId: 'faux-1', thinkingLevel: 'off' })
+      const utility = decodeUtility({
+        provider: 'faux',
+        modelId: 'utility-only',
+        thinkingLevel: 'medium',
+      })
       let sawPreviousAttempt = false
       faux.setResponses([
-        async (context) => {
+        async (context, options, _state, model) => {
+          expect(model.id).toBe('utility-only')
+          expect(options?.reasoning).toBe('medium')
           expect(getCurrentSystemPrompt(context.messages)).toContain(
             'Record faithfully: never answer,',
           )
           const user = context.messages.find((message) => message.role === 'user')
-          const prompt = decodePrompt(user?.content)
+          const blocks = decodeBlocks(user?.content)
+          expect(blocks).toHaveLength(2)
+          expect(blocks[0]?.text).toBe('<chat>\nuser: Earlier decision.\n</chat>')
+          const prompt = blocks[1]?.text ?? ''
           const scale =
             prompt.split('For scale, this line is exactly 512 bytes:\n')[1]?.split('\n')[0] ?? ''
           expect(bytes(scale)).toBe(512)
-          expect(prompt).toContain('<chat>\nuser: Earlier decision.\n</chat>')
           return fauxAssistantMessage('東京'.repeat(100))
         },
         async (context) => {
