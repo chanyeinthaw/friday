@@ -2,6 +2,11 @@ import {
   OptChatConfigurationError,
   type OptChatConfigurationContract,
 } from './config/OptChatConfiguration.ts'
+import {
+  OptChatImportError,
+  formatImportOutcome,
+  type PiImportOutcome,
+} from './optchat/OptChatPiImport.ts'
 import * as Console from 'effect/Console'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
@@ -266,6 +271,11 @@ export type FridayCliOperations<
   ) => Effect.Effect<RootUserRemoveOutcome, RootUserError>
   readonly listRootUsers: () => Effect.Effect<ReadonlyArray<RootUser>, RootUserError>
   readonly optChatConfiguration?: OptChatConfigurationContract
+  readonly importOptChatSession?: (input: {
+    readonly id: string
+    readonly path: string
+    readonly dryRun: boolean
+  }) => Effect.Effect<PiImportOutcome, OptChatImportError>
   readonly getIdentityText: () => Effect.Effect<IdentityText, IdentityConfigurationError>
   readonly setIdentityText: (
     text: IdentityText,
@@ -479,6 +489,7 @@ const cliActionGroups = {
   'config-optchat-list': 'optchat',
   'config-optchat-add': 'optchat',
   'config-optchat-disable': 'optchat',
+  'config-optchat-import': 'optchat',
   'config-identity-get': 'configuration',
   'config-identity-set': 'configuration',
   'config-profile-list': 'configuration',
@@ -592,6 +603,7 @@ export const runFridayCli = <
   void,
   | FridayCliError
   | OptChatConfigurationError
+  | OptChatImportError
   | ConfigReloadRejectedError
   | E
   | WorktreeError
@@ -637,6 +649,19 @@ export const runFridayCli = <
     const runOptChatAction = Effect.fn('Cli.runOptChatAction')(function* (
       selected: Extract<FridayCliAction, { type: `config-optchat-${string}` }>,
     ) {
+      if (selected.type === 'config-optchat-import') {
+        const importer = options.importOptChatSession
+        if (importer === undefined) {
+          return yield* new OptChatImportError({ detail: 'OptChat import is unavailable.' })
+        }
+        const outcome = yield* importer({
+          id: selected.id,
+          path: selected.path,
+          dryRun: selected.dryRun,
+        })
+        yield* Console.log(selected.json ? JSON.stringify(outcome) : formatImportOutcome(outcome))
+        return
+      }
       const configuration = options.optChatConfiguration
       if (configuration === undefined)
         return yield* new OptChatConfigurationError({

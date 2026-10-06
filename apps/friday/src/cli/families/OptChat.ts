@@ -45,5 +45,36 @@ export const optChatConfigCommand: CliBranchSpec = {
           ? Effect.succeed({ type: 'config-optchat-disable' as const, id: tokens[0] })
           : Effect.fail(invalid(all)),
     },
+    {
+      name: 'import',
+      summary: 'Import a Pi session JSONL transcript into an enabled OptChat memory.',
+      arguments: ['<memory-id> <path> [--dry-run] [--json]'],
+      parse: Effect.fn('Cli.parseOptChatImport')(function* (tokens, all) {
+        if (tokens.length < 2) return yield* invalid(all)
+        const [id, path, ...flags] = tokens
+        if (
+          id === undefined ||
+          path === undefined ||
+          id.trim() === '' ||
+          path.trim() === '' ||
+          id.startsWith('-') ||
+          path.startsWith('-')
+        ) {
+          return yield* invalid(all)
+        }
+        const seen = new Set<string>()
+        let dryRun = false
+        let json = false
+        for (const flag of flags) {
+          if ((flag !== '--dry-run' && flag !== '--json') || seen.has(flag)) {
+            return yield* invalid(all)
+          }
+          seen.add(flag)
+          if (flag === '--dry-run') dryRun = true
+          else json = true
+        }
+        return { type: 'config-optchat-import' as const, id, path, dryRun, json }
+      }),
+    },
   ],
 }

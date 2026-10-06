@@ -51,6 +51,14 @@ import { startDiscord } from './platforms/discord/DiscordLive.ts'
 import { startSlack } from './platforms/slack/SlackLive.ts'
 import { SlackConnections, SlackConnectionsLive } from './config/SlackConnections.ts'
 import { FridaySqliteLive, ThreadPersistenceLive } from './persistence/Live.ts'
+import { makeOptChatMemory } from './optchat/OptChatMemory.ts'
+import {
+  OptChatImportError,
+  importMappedInputs,
+  isOptChatImportError,
+  mapPiSessionContent,
+  requireEnabledBinding,
+} from './optchat/OptChatPiImport.ts'
 import { PiDurable } from './harness/pi/PiDurable.ts'
 import { interruptOrphanedTurns } from './persistence/SqliteThreadPersistence.ts'
 import { WorkspaceCleanup, WorkspaceCleanupLive } from './workspaces/WorkspaceCleanup.ts'
@@ -388,6 +396,37 @@ const application = Effect.scoped(
             ),
           ),
       },
+      importOptChatSession: ({ id, path, dryRun }) =>
+        Effect.gen(function* () {
+          const configuration = yield* OptChatConfiguration
+          const bindings = yield* configuration.list()
+          yield* requireEnabledBinding(bindings, id)
+          const fileSystem = yield* FileSystem.FileSystem
+          const content = yield* fileSystem.readFileString(path).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OptChatImportError({
+                  detail: `Could not read session file '${path}'.`,
+                  cause,
+                }),
+            ),
+          )
+          const mapped = yield* mapPiSessionContent(content)
+          // Import performs no summarization; a compressor must never run here.
+          const memory = yield* makeOptChatMemory(() =>
+            Effect.die('OptChat Pi import must not summarize'),
+          )
+          return yield* importMappedInputs(memory, id, mapped.sessionId, mapped.inputs, dryRun)
+        }).pipe(
+          Effect.provide(OptChatConfigurationLive.pipe(Layer.provide(FridaySqliteLive))),
+          Effect.provide(FridaySqliteLive),
+          Effect.provide(BunFileSystem.layer),
+          Effect.mapError((cause) =>
+            isOptChatImportError(cause)
+              ? cause
+              : new OptChatImportError({ detail: 'OptChat import failed.', cause }),
+          ),
+        ),
       getIdentityText: () =>
         IdentityConfiguration.pipe(
           Effect.flatMap((identity) => identity.get()),

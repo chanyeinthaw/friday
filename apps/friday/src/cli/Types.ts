@@ -47,6 +47,13 @@ export type FridayCliAction =
   | { readonly type: 'config-optchat-list' }
   | { readonly type: 'config-optchat-add'; readonly binding: OptChatBinding }
   | { readonly type: 'config-optchat-disable'; readonly id: string }
+  | {
+      readonly type: 'config-optchat-import'
+      readonly id: string
+      readonly path: string
+      readonly dryRun: boolean
+      readonly json: boolean
+    }
   | { readonly type: 'help'; readonly topic: ReadonlyArray<string> }
   | { readonly type: 'start' }
   | { readonly type: 'version' }
