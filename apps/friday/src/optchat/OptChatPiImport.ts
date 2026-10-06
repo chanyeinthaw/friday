@@ -69,7 +69,13 @@ const ContextEditSchema = Schema.Struct({
   replacement: Schema.Unknown,
 })
 const OtherEntrySchema = Schema.Struct({
-  type: Schema.String,
+  type: Schema.String.pipe(
+    Schema.check(
+      Schema.makeFilter(
+        (type) => (type !== 'message' && type !== 'context_edit') || 'Expected a metadata entry',
+      ),
+    ),
+  ),
   id: TrimmedString,
   parentId: Schema.NullOr(Schema.String),
   timestamp: Schema.String,
@@ -85,8 +91,40 @@ const AnyMessage = Schema.Struct({
 const decodeAnyMessage = Schema.decodeUnknownEffect(AnyMessage)
 const EditReplacement = Schema.Union([Schema.Null, Schema.Struct({ content: Schema.Unknown })])
 const decodeReplacement = Schema.decodeUnknownEffect(EditReplacement)
-const SourceKeyRow = Schema.Struct({ sourceKey: Schema.String })
-const decodeSourceKeyRows = Schema.decodeUnknownEffect(Schema.Array(SourceKeyRow))
+const ImportedRow = Schema.Struct({
+  sourceKey: Schema.String,
+  text: Schema.String,
+  kind: Schema.String,
+  date: Schema.String,
+})
+const decodeImportedRows = Schema.decodeUnknownEffect(Schema.Array(ImportedRow))
+const TextBlock = Schema.Struct({ type: Schema.Literal('text'), text: Schema.String })
+const ImageBlock = Schema.Struct({
+  type: Schema.Literal('image'),
+  mimeType: Schema.String,
+  data: Schema.String,
+})
+const TextContent = Schema.Union([
+  Schema.String,
+  Schema.Array(Schema.Union([TextBlock, ImageBlock])),
+])
+const ResultContent = Schema.Array(Schema.Union([TextBlock, ImageBlock]))
+const AssistantContent = Schema.Array(
+  Schema.Union([
+    TextBlock,
+    Schema.Struct({ type: Schema.Literal('thinking'), thinking: Schema.String }),
+    Schema.Struct({
+      type: Schema.Literal('toolCall'),
+      id: Schema.String,
+      name: Schema.String,
+      arguments: Schema.Record(Schema.String, Schema.Unknown),
+    }),
+  ]),
+)
+const decodeTextContent = Schema.decodeUnknownEffect(TextContent)
+const decodeResultContent = Schema.decodeUnknownEffect(ResultContent)
+const decodeAssistantContent = Schema.decodeUnknownEffect(AssistantContent)
+const decodeTimestamp = Schema.decodeUnknownEffect(Schema.Finite)
 
 type ParsedEntry = typeof SessionEntrySchema.Type
 
@@ -143,6 +181,17 @@ export const parsePiSessionFile = Effect.fn('OptChatPiImport.parse')(function* (
     }
     entries.push(entry)
   }
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    if (seen.has(entry.id)) return yield* invalid(`Duplicate entry ID ${entry.id}.`)
+    if (entry.parentId !== null && !seen.has(entry.parentId)) {
+      return yield* invalid(`Entry ${entry.id} has a missing or forward parent ${entry.parentId}.`)
+    }
+    if (entry.type === 'context_edit' && 'targetId' in entry && !seen.has(entry.targetId)) {
+      return yield* invalid(`Context edit ${entry.id} targets a missing or future entry.`)
+    }
+    seen.add(entry.id)
+  }
   return { header, entries }
 })
 
@@ -159,53 +208,78 @@ export const selectActiveBranch = (entries: readonly ParsedEntry[]): ParsedEntry
     path.push(current)
     current = current.parentId === null ? undefined : byId.get(current.parentId)
   }
-  return path.reverse()
+  return path.toReversed()
 }
 
 const formatDate = Effect.fn('OptChatPiImport.date')(function* (
-  timestamp: unknown,
+  timestamp: (typeof AnyMessage.Type)['timestamp'],
   entryId: string,
 ) {
-  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
-    return yield* invalid(`Invalid timestamp for entry ${entryId}.`)
-  }
-  const made = DateTime.make(timestamp)
+  const value = yield* decodeTimestamp(timestamp).pipe(
+    Effect.mapError((cause) => invalid(`Invalid timestamp for entry ${entryId}.`, cause)),
+  )
+  const made = DateTime.make(value)
   if (Option.isNone(made)) return yield* invalid(`Invalid timestamp for entry ${entryId}.`)
   return DateTime.formatIso(made.value)
 })
 
-const userText = (content: unknown): string | undefined => {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return undefined
-  const parts: Array<string> = []
-  for (const part of content) {
-    if (typeof part !== 'object' || part === null) continue
-    const record = part as Record<string, unknown>
-    if (record['type'] === 'text' && typeof record['text'] === 'string') {
-      parts.push(record['text'])
-    } else if (record['type'] === 'image' && typeof record['mimeType'] === 'string') {
-      parts.push(`[image:${record['mimeType']}]`)
-    }
-  }
-  return parts.join('\n')
-}
+const textFromBlocks = (content: typeof ResultContent.Type): string =>
+  content.map((part) => (part.type === 'text' ? part.text : `[image:${part.mimeType}]`)).join('\n')
 
-const toolResultText = (content: unknown): string | undefined => {
-  if (!Array.isArray(content)) return undefined
-  const parts: Array<string> = []
-  for (const part of content) {
-    if (typeof part !== 'object' || part === null) return undefined
-    const record = part as Record<string, unknown>
-    if (record['type'] === 'text' && typeof record['text'] === 'string') {
-      parts.push(record['text'])
-    } else if (record['type'] === 'image' && typeof record['mimeType'] === 'string') {
-      parts.push(`[image:${record['mimeType']}]`)
-    } else {
-      return undefined
-    }
+const mapMessage = Effect.fn('OptChatPiImport.message')(function* (
+  sessionId: string,
+  entry: typeof MessageEntrySchema.Type,
+  edit: typeof EditReplacement.Type | undefined,
+) {
+  const raw = yield* decodeAnyMessage(entry.message).pipe(
+    Effect.mapError((cause) => invalid(`Invalid message for entry ${entry.id}.`, cause)),
+  )
+  if (!['user', 'assistant', 'toolResult'].includes(raw.role)) return []
+  if (edit === null) return []
+  const content = edit === undefined ? raw.content : edit.content
+  const date = yield* formatDate(raw.timestamp, entry.id)
+  const baseKey = `pi-import:${sessionId}:${entry.id}:0`
+  if (raw.role === 'user') {
+    const decoded = yield* decodeTextContent(content).pipe(
+      Effect.mapError((cause) => invalid(`Invalid user content for entry ${entry.id}.`, cause)),
+    )
+    const text = typeof decoded === 'string' ? decoded : textFromBlocks(decoded)
+    const envelope = decodeEnvelope(text)
+    return [
+      {
+        sourceKey: baseKey,
+        kind: text.startsWith('Background work for the earlier request ') ? 'work' : 'user',
+        text: Option.isSome(envelope) ? envelope.value.trigger.content : text,
+        date,
+      },
+    ] satisfies MemoryInput[]
   }
-  return parts.join('\n')
-}
+  // Pi normalizes string context edits to text blocks for assistant/tool messages.
+  const normalized =
+    edit !== undefined && typeof content === 'string' ? [{ type: 'text', text: content }] : content
+  if (raw.role === 'toolResult') {
+    const decoded = yield* decodeResultContent(normalized).pipe(
+      Effect.mapError((cause) => invalid(`Invalid tool result for entry ${entry.id}.`, cause)),
+    )
+    return [
+      { sourceKey: baseKey, kind: 'echo', text: capResult(textFromBlocks(decoded)), date },
+    ] satisfies MemoryInput[]
+  }
+  const decoded = yield* decodeAssistantContent(normalized).pipe(
+    Effect.mapError((cause) => invalid(`Invalid assistant content for entry ${entry.id}.`, cause)),
+  )
+  return decoded.flatMap((part, partIndex): MemoryInput[] => {
+    if (part.type === 'thinking') return []
+    return [
+      {
+        sourceKey: `${baseKey}:${partIndex}`,
+        kind: part.type === 'text' ? 'talk' : 'tool',
+        text: part.type === 'text' ? part.text : `${part.name} ${JSON.stringify(part.arguments)}`,
+        date,
+      },
+    ]
+  })
+})
 
 // Maps one validated branch to memory inputs, reusing the OptChat projection:
 // plain user text with envelope unwrapping, tool calls and results, reasoning
@@ -233,78 +307,7 @@ export const mapBranchToInputs = Effect.fn('OptChatPiImport.map')(function* (
     if (!('message' in entry)) {
       return yield* invalid(`Invalid message for entry ${entry.id}.`)
     }
-    const raw = yield* decodeAnyMessage(entry.message).pipe(
-      Effect.mapError((cause) => invalid(`Invalid message for entry ${entry.id}.`, cause)),
-    )
-    if (
-      raw.role !== 'user' &&
-      raw.role !== 'assistant' &&
-      raw.role !== 'toolResult' &&
-      raw.role !== 'system'
-    )
-      continue
-    if (raw.role === 'system') continue
-    const edit = edits.get(entry.id)
-    if (edit === null) continue
-    let content: unknown = raw.content
-    if (edit !== undefined) {
-      content =
-        (raw.role === 'assistant' || raw.role === 'toolResult') && typeof edit.content === 'string'
-          ? [{ type: 'text', text: edit.content }]
-          : edit.content
-    }
-    const date = yield* formatDate(raw.timestamp, entry.id)
-    const baseKey = `pi-import:${sessionId}:${entry.id}:0`
-    if (raw.role === 'user') {
-      const text = userText(content)
-      if (text === undefined) {
-        return yield* invalid(`Invalid user content for entry ${entry.id}.`)
-      }
-      const envelope = decodeEnvelope(text)
-      const userContent = envelope._tag === 'Some' ? envelope.value.trigger.content : text
-      inputs.push({
-        sourceKey: baseKey,
-        kind: text.startsWith('Background work for the earlier request ') ? 'work' : 'user',
-        text: userContent,
-        date,
-      })
-      continue
-    }
-    if (raw.role === 'toolResult') {
-      const text = toolResultText(content)
-      if (text === undefined) {
-        return yield* invalid(`Invalid tool result for entry ${entry.id}.`)
-      }
-      inputs.push({ sourceKey: baseKey, kind: 'echo', text: capResult(text), date })
-      continue
-    }
-    if (!Array.isArray(content)) {
-      return yield* invalid(`Invalid assistant content for entry ${entry.id}.`)
-    }
-    content.forEach((part, partIndex) => {
-      if (typeof part !== 'object' || part === null) return
-      const record = part as Record<string, unknown>
-      if (record['type'] === 'thinking') return
-      if (record['type'] === 'text' && typeof record['text'] === 'string') {
-        inputs.push({
-          sourceKey: `${baseKey}:${partIndex}`,
-          kind: 'talk',
-          text: record['text'],
-          date,
-        })
-      } else if (
-        record['type'] === 'toolCall' &&
-        typeof record['name'] === 'string' &&
-        'arguments' in record
-      ) {
-        inputs.push({
-          sourceKey: `${baseKey}:${partIndex}`,
-          kind: 'tool',
-          text: `${record['name']} ${JSON.stringify(record['arguments'])}`,
-          date,
-        })
-      }
-    })
+    inputs.push(...(yield* mapMessage(sessionId, entry, edits.get(entry.id))))
   }
   return inputs
 })
@@ -332,12 +335,28 @@ export const importMappedInputs = Effect.fn('OptChatPiImport.store')(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const rows =
-    yield* sql`SELECT source_key AS sourceKey FROM optchat_messages WHERE memory_id = ${memoryId} AND source_key LIKE ${`pi-import:${sessionId}:%`}`.pipe(
+    yield* sql`SELECT source_key AS sourceKey, text, kind, date FROM optchat_messages WHERE memory_id = ${memoryId}`.pipe(
       Effect.mapError((cause) => invalid('Could not check existing imports.', cause)),
     )
-  const decoded = yield* decodeSourceKeyRows(rows).pipe(
+  const decoded = yield* decodeImportedRows(rows).pipe(
     Effect.mapError((cause) => invalid('Could not decode existing imports.', cause)),
   )
+  const incoming = new Map(inputs.map((input) => [input.sourceKey, input]))
+  const prefix = `pi-import:${sessionId}:`
+  for (const row of decoded) {
+    if (!row.sourceKey.startsWith(prefix)) continue
+    const input = incoming.get(row.sourceKey)
+    if (
+      input === undefined ||
+      input.text !== row.text ||
+      input.kind !== row.kind ||
+      input.date !== row.date
+    ) {
+      return yield* invalid(
+        `Session ${sessionId} conflicts with previously imported entry ${row.sourceKey}. Import into a separate memory; existing history is immutable.`,
+      )
+    }
+  }
   const existing = new Set(decoded.map((row) => row.sourceKey))
   const fresh = inputs.filter((input) => !existing.has(input.sourceKey))
   if (!dryRun && fresh.length > 0) {

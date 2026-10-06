@@ -38,7 +38,7 @@ friday config optchat import chan-main /path/to/session.jsonl --dry-run
 friday config optchat import chan-main /path/to/session.jsonl
 ```
 
-The memory ID must have an enabled binding. The import reads the file without modifying it, follows only the active session branch, and appends the mapped messages in one transaction. Repeating an import adds nothing twice: source keys combine the session ID, entry ID, and message indexes, so a grown session appends only its new entries. Add `--json` for machine-readable counts.
+The memory ID must have an enabled binding. The import reads the file without modifying it, follows only the active session branch, and appends the mapped messages in one transaction. Repeating an import adds nothing twice: source keys combine the session ID, entry ID, and message indexes, so a grown session appends only its new entries. Reimporting a session with edits, omissions, or a changed branch that removes previously imported entries fails before appending anything. Existing memory is immutable; import conflicting history into a separate memory. Add `--json` for machine-readable counts.
 
 ## Disable and re-enable a binding
 

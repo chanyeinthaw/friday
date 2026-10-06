@@ -1,3 +1,4 @@
+/* oxlint-disable anti-slop/no-unknown-parameters -- Fixtures deliberately represent valid and malformed external JSON payloads. */
 import { assert, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -18,14 +19,13 @@ import {
 
 const isFridayCliError = Schema.is(FridayCliError)
 const line = (value: unknown): string => JSON.stringify(value)
-const session = (id: string, extra?: Record<string, unknown>): string =>
+const session = (id: string): string =>
   line({
     type: 'session',
     version: 3,
     id,
     timestamp: '2026-10-01T00:00:00.000Z',
     cwd: '/work',
-    ...extra,
   })
 const messageEntry = (
   id: string,
@@ -149,12 +149,10 @@ it.effect('rejects malformed optchat import commands', () =>
   }),
 )
 
-it.effect('documents the import command in help', () =>
-  Effect.gen(function* () {
-    assert.match(renderCliHelp([]), /config optchat import <memory-id> <path>/)
-    assert.match(renderCliHelp(['config', 'optchat']), /Import a Pi session JSONL transcript/)
-  }),
-)
+it('documents the import command in help', () => {
+  assert.match(renderCliHelp([]), /config optchat import <memory-id> <path>/)
+  assert.match(renderCliHelp(['config', 'optchat']), /Import a Pi session JSONL transcript/)
+})
 
 it.effect('maps user, assistant, tool, and tool results while excluding reasoning', () =>
   Effect.gen(function* () {
@@ -192,14 +190,12 @@ it.effect('maps user, assistant, tool, and tool results while excluding reasonin
       [
         ['pi-import:sess-1:a1:0', 'user', 'Hello world'],
         ['pi-import:sess-1:a2:0:1', 'talk', 'Hi there'],
-        ['pi-import:sess-1:a2:0:2', 'tool', 'read {\"path\":\"a.txt\"}'],
+        ['pi-import:sess-1:a2:0:2', 'tool', 'read {"path":"a.txt"}'],
         ['pi-import:sess-1:a3:0', 'echo', 'file contents'],
         ['pi-import:sess-1:a5:0', 'user', 'see this\n[image:image/png]'],
       ],
     )
-    assert(
-      mapped.inputs.every((input) => typeof input.date === 'string' && input.date.includes('2026')),
-    )
+    assert(mapped.inputs.every((input) => input.date.includes('2026')))
   }),
 )
 
@@ -469,4 +465,40 @@ it.effect('dispatches the import command through the CLI runner', () =>
     })
     assert.strictEqual((yield* TestConsole.logLines).at(-1), JSON.stringify(outcome))
   }).pipe(Effect.provide(TestConsole.layer)),
+)
+
+it.effect('rejects malformed branch links and duplicate IDs', () =>
+  Effect.gen(function* () {
+    const cases = [
+      [messageEntry('a', 'missing', userMessage('orphan'))],
+      [messageEntry('a', 'b', userMessage('cycle')), messageEntry('b', 'a', userMessage('cycle'))],
+      [
+        messageEntry('a', null, userMessage('first')),
+        messageEntry('a', null, userMessage('duplicate')),
+      ],
+    ]
+    for (const entries of cases) {
+      const error = yield* mapPiSessionContent([session('broken'), ...entries].join('\n')).pipe(
+        Effect.flip,
+      )
+      assert(isOptChatImportError(error))
+    }
+  }),
+)
+
+it.effect('rejects malformed supported message blocks', () =>
+  Effect.gen(function* () {
+    const messages = [
+      userMessage([{ type: 'text', text: 42 }]),
+      assistantMessage([{ type: 'text', text: 42 }]),
+      assistantMessage([{ type: 'toolCall', id: 't', name: 'read', arguments: null }]),
+      toolResultMessage([{ type: 'image', mimeType: 'image/png' }]),
+    ]
+    for (const message of messages) {
+      const error = yield* mapPiSessionContent(
+        [session('bad-block'), messageEntry('a', null, message)].join('\n'),
+      ).pipe(Effect.flip)
+      assert(isOptChatImportError(error))
+    }
+  }),
 )

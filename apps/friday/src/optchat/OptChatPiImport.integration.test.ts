@@ -1,3 +1,4 @@
+/* oxlint-disable anti-slop/no-unknown-parameters -- Fixtures deliberately represent external JSON payloads. */
 /* oxlint-disable effect-local/no-manual-effect-runtime-in-tests, effecttsgo/strict-effect-provide -- Bun is the SQLite integration test boundary. */
 import { test, expect } from 'bun:test'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
@@ -232,6 +233,45 @@ test('existing message ids do not shift after import', () =>
       expect(yield* memory.zoom('chan-stable', 0, 1)).toBe(firstBefore)
       expect(yield* memory.zoom('chan-stable', 1, 1)).toBe(secondBefore)
       expect(yield* memory.zoom('chan-stable', 2, 1)).toContain('first')
+    }).pipe(
+      Effect.provide(OptChatConfigurationLive),
+      Effect.provide(SqliteClient.layer({ filename: ':memory:' })),
+    ),
+  ))
+
+test('rejects edited or omitted entries on reimport without changing memory', () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { memory } = yield* setupBinding('conflict')
+      const original = [header('edited'), userEntry('a', null, 'original', ts(0))]
+      const first = yield* mapPiSessionContent(original.join('\n'))
+      yield* importMappedInputs(memory, 'conflict', first.sessionId, first.inputs, false)
+      for (const replacement of [{ content: 'corrected' }, null]) {
+        const next = yield* mapPiSessionContent(
+          [
+            ...original,
+            line({
+              type: 'context_edit',
+              id: 'edit',
+              parentId: 'a',
+              targetId: 'a',
+              timestamp: '2026-10-05T00:01:00.000Z',
+              replacement,
+            }),
+          ].join('\n'),
+        )
+        for (const dryRun of [true, false]) {
+          const error = yield* importMappedInputs(
+            memory,
+            'conflict',
+            next.sessionId,
+            next.inputs,
+            dryRun,
+          ).pipe(Effect.flip)
+          expect(error.detail).toContain('conflicts')
+        }
+        expect(yield* memory.zoom('conflict', 0, 1)).toContain('original')
+      }
     }).pipe(
       Effect.provide(OptChatConfigurationLive),
       Effect.provide(SqliteClient.layer({ filename: ':memory:' })),
