@@ -1,9 +1,9 @@
 /* oxlint-disable effecttsgo/async-function -- Promise callbacks adapt the Pi utility SDK; application workflows use Effect. */
 import type { Models } from '@earendil-works/pi-ai'
-import { AssistantEntry, MemoryStorage } from '@earendil-works/pi-durable'
+import { AssistantEntry, GenerationTask, hook, MemoryStorage } from '@earendil-works/pi-durable'
 import { createToolRegistry, openHarness, piOperation } from '@friday/pi-durable-effect'
 import * as Effect from 'effect/Effect'
-import { compactPrompt } from './OptChatPrompt.ts'
+import type { OptChatPrefix } from './OptChatPrefix.ts'
 import { bytes, summaryBytes } from './OptChatTree.ts'
 import { splitOptChatView, withOptChatCache } from './OptChatCache.ts'
 import type { AppConfig } from '../config/AppConfig.ts'
@@ -14,6 +14,7 @@ export interface CompressInput {
   readonly context: string
   readonly source: string
   readonly merge: boolean
+  readonly prefix?: OptChatPrefix | undefined
 }
 export type Compress = (input: CompressInput) => Effect.Effect<string, PiDurableError>
 
@@ -25,6 +26,12 @@ export const makeOptChatCompressor = (
 ): Compress =>
   Effect.fn('OptChat.compress')(function* (input) {
     if (bytes(input.source) <= summaryBytes) return input.source
+    const prefix = input.prefix
+    if (prefix === undefined)
+      return yield* new PiDurableError({
+        operation: 'optchat-compress',
+        detail: 'The channel request prefix has not been recorded yet.',
+      })
     yield* refreshSharedModelRuntime(
       models,
       (failure) => new PiDurableError({ operation: 'optchat-compress', ...failure }),
@@ -34,7 +41,22 @@ export const makeOptChatCompressor = (
         const registry = createToolRegistry()
         const agent = yield* registry.provide('optchat-compressor', {
           tools: [],
-          systemPrompt: () => Effect.succeed(compactPrompt),
+          systemPrompt: () => Effect.succeed(prefix.systemPrompt),
+          hooks: [
+            hook(GenerationTask, {
+              beforeRequest: (request) => ({
+                messages: [
+                  {
+                    role: 'system',
+                    content: prefix.systemPrompt,
+                    toolsAdded: [...prefix.tools],
+                    timestamp: 0,
+                  },
+                  ...request.messages.filter((message) => message.role !== 'system'),
+                ],
+              }),
+            }),
+          ],
         })
         const harness = yield* openHarness(new MemoryStorage(), {
           models: withOptChatCache(models),
@@ -47,17 +69,17 @@ export const makeOptChatCompressor = (
             agent: { ...agent, model, thinkingLevel: model.thinkingLevel, cwd },
           }),
         )
-        const scalePrefix =
-          'user: Keep one endless chat per configured channel and owner. Friday replies in-channel, preserves every message, starts each turn with a summary tree view, and zooms to exact history before acting. work: Pi-durable owns scheduling, tools and restart recovery. echo: SQLite integrity checks passed. tool: Updated configuration without deleting history. talk: Existing channels retain normal routing; tasks report to the originating memory. user: Preserve paths, decisions, reasons and unresolved work.'
-        const scale = scalePrefix + ' '.repeat(Math.max(0, summaryBytes - bytes(scalePrefix)))
+        const ruler = '-'.repeat(summaryBytes)
         let prompt: import('@earendil-works/pi-ai').UserMessage['content'] = [
           ...splitOptChatView(input.context).map((text) => ({ type: 'text' as const, text })),
           {
             type: 'text',
             text: [
-              `For scale, this line is exactly ${summaryBytes} bytes:\n${scale}`,
-              `${input.merge ? 'Merge these two lines' : 'Compress this message'} into one line, in at most ${summaryBytes} bytes:\n${input.source}`,
-            ].join('\n\n'),
+              `Compaction: ${input.merge ? 'merge these adjacent lines' : 'compress this message'} into one line of at most ${summaryBytes} bytes (about 70 words), the length of this ruler:`,
+              ruler,
+              '<chat> is context for <input>; never add facts absent from <input>.',
+              `<input>\n${input.source}\n</input>`,
+            ].join('\n'),
           },
         ]
         const attempts: string[] = []
@@ -95,7 +117,7 @@ export const makeOptChatCompressor = (
           const cut = new TextDecoder()
             .decode(new TextEncoder().encode(answer).slice(0, summaryBytes))
             .replace(/\uFFFD$/, '')
-          prompt = `That line is ${bytes(answer)} bytes; the limit is ${summaryBytes}. It must end where it is cut here:\n${cut}| ← LIMIT`
+          prompt = `Too long: your line is ${bytes(answer)} bytes, over the ${summaryBytes}-byte limit. Write the whole line again for the same <input>, cutting just enough of the least valuable items to fit before this cut:\n${cut}| ← LIMIT`
         }
         return attempts.reduce((shortest, current) =>
           bytes(current) < bytes(shortest) ? current : shortest,

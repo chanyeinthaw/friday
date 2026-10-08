@@ -8,6 +8,7 @@ export interface MemoryNode extends MemoryPart {
 }
 export const summaryBytes = 512
 export const viewBytes = 128_000
+export const compactViewBytes = 32_000
 export const bytes = (text: string): number => new TextEncoder().encode(text).length
 export const nodeKey = (part: MemoryPart): string => `${part.id}+${part.count}`
 export const validRange = (id: number, count: number, total: number): boolean =>
@@ -27,8 +28,10 @@ export const fitView = (
 ): MemoryPart[] => {
   const view = [...parts]
   const sizeOf = (part: MemoryPart) =>
-    bytes(nodes.get(nodeKey(part))?.text ?? '(not summarized yet: zoom it)')
-  let size = view.reduce((sum, part) => sum + sizeOf(part), 0)
+    bytes(
+      `${nodeKey(part)}|${(nodes.get(nodeKey(part))?.text ?? '(not summarized yet: zoom it)').replaceAll('\n', ' ')}\n`,
+    )
+  let size = bytes('<chat>\n</chat>') + view.reduce((sum, part) => sum + sizeOf(part), 0)
   while (size > budget) {
     let best = -1
     let due = -1
@@ -44,7 +47,8 @@ export const fitView = (
       )
         continue
       const parent = { id: left.id, count: left.count * 2 }
-      const urgency = (total - left.id) / (left.count * 4)
+      // Age is measured from the pair's end; using its start churns old prefixes.
+      const urgency = (total - (right.id + right.count - 1)) / left.count
       if (nodes.has(nodeKey(parent)) && urgency > due) {
         best = index
         due = urgency
@@ -59,6 +63,21 @@ export const fitView = (
     view.splice(best, 2, parent)
   }
   return view
+}
+
+/** Keep appending until the upper limit, then finish one batch down to half that limit. */
+export const batchView = (
+  parts: readonly MemoryPart[],
+  total: number,
+  nodes: ReadonlyMap<string, MemoryNode>,
+  pending = false,
+  limit = viewBytes,
+) => {
+  const sizeOf = (view: readonly MemoryPart[]) => bytes(renderView(view, nodes))
+  const active = pending || sizeOf(parts) > limit
+  const target = Math.floor(limit / 2)
+  const view = active ? fitView(parts, total, nodes, target) : [...parts]
+  return { parts: view, pending: active && sizeOf(view) > target }
 }
 
 export const renderView = (
