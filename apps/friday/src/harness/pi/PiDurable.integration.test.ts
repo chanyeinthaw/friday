@@ -23,11 +23,13 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Schedule from 'effect/Schedule'
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { makeOptChatMemory } from '../../optchat/OptChatMemory.ts'
+import { prefixCodec } from '../../optchat/OptChatPrefix.ts'
 import { PiDurableError } from './PiDurableError.ts'
 import { PlatformOperationError } from '../../platforms/PlatformRegistry.ts'
 import { RootUser } from '../../config/RootUsers.ts'
@@ -45,6 +47,7 @@ const makeSession = Schema.decodeUnknownSync(HarnessSession)
 const makeThread = Schema.decodeUnknownSync(ChannelThread)
 const makeTurn = Schema.decodeUnknownSync(Turn)
 const makeSteering = Schema.decodeUnknownSync(SteeringActivity)
+const decodeOptChatPrefix = Schema.decodeUnknownEffect(prefixCodec)
 
 const threadAt = (directory: string) =>
   makeThread({
@@ -771,6 +774,20 @@ test('OptChat starts each turn from its own view and preserves in-run tool histo
       expect(JSON.stringify(requests[1])).toContain('1+1|talk: Tokyo selected.')
       expect(requests[2]?.some((message) => message.role === 'toolResult')).toBe(true)
       expect(getCurrentTools(requests[1] ?? []).map((tool) => tool.name)).toContain('zoom')
+      const sql = yield* SqlClient.SqlClient
+      const rows = yield* sql<{
+        prefix: string
+      }>`SELECT prefix FROM optchat_prefixes WHERE memory_id = 'chan'`
+      const saved = rows[0]
+      expect(saved).toBeDefined()
+      if (saved !== undefined) {
+        const prefix = yield* decodeOptChatPrefix(saved.prefix)
+        expect(prefix.systemPrompt).toBe(getCurrentSystemPrompt(requests[2] ?? []))
+        expect(prefix.systemPrompt).toContain('# Compactions')
+        expect(JSON.stringify(prefix.tools)).toBe(
+          JSON.stringify(getCurrentTools(requests[2] ?? [])),
+        )
+      }
       expect(yield* memory.zoom('chan', 0, 1)).toBe('0+0|user: Choose Tokyo.')
     }),
   ))

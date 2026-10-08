@@ -7,6 +7,116 @@ import * as Fiber from 'effect/Fiber'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { makeOptChatMemory } from './OptChatMemory.ts'
 import { PiDurableError } from '../harness/pi/PiDurableError.ts'
+import { bytes } from './OptChatTree.ts'
+import type { OptChatPrefix } from './OptChatPrefix.ts'
+
+test('compactions recover the exact per-memory request prefix after service recreation', () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: Array<OptChatPrefix | undefined> = []
+      const compress = (input: { prefix?: OptChatPrefix | undefined }) =>
+        Effect.sync(() => {
+          seen.push(input.prefix)
+          return 'user: Keep Tokyo.'
+        })
+      const memory = yield* makeOptChatMemory(compress)
+      const chan = {
+        systemPrompt: 'Chan channel policy.',
+        tools: [
+          {
+            name: 'zoom',
+            description: 'Open memory.',
+            parameters: { type: 'object', properties: { id: { type: 'integer' } } },
+            constrainedSampling: false as const,
+          },
+        ],
+      }
+      const other = { systemPrompt: 'Another owner policy.', tools: [] }
+      yield* memory.setPrefix('chan', chan)
+      yield* memory.setPrefix('other', other)
+      const message = {
+        sourceKey: '1',
+        kind: 'user' as const,
+        text: 'Tokyo. '.repeat(100),
+        date: '2026-10-08T00:00:00Z',
+      }
+      yield* memory.append('chan', [message])
+      yield* memory.append('other', [message])
+      const reopened = yield* makeOptChatMemory(compress)
+      yield* reopened.pump('chan')
+      yield* reopened.pump('other')
+      expect(seen).toEqual([chan, other])
+    }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+  ))
+
+test('preserves append-only main and compactor views after service recreation', () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const compress = () => Effect.succeed('user: ' + 'x'.repeat(194))
+      const memory = yield* makeOptChatMemory(compress, 1000)
+      const messages = Array.from({ length: 6 }, (_, id) => ({
+        sourceKey: String(id),
+        kind: 'user' as const,
+        text: 'x'.repeat(600),
+        date: '2026-10-08T00:00:00Z',
+      }))
+      yield* memory.append('chan', messages.slice(0, 4))
+      yield* memory.pump('chan')
+      const initial = yield* memory.settle('chan')
+      expect(initial).toContain('0+1|')
+      expect(initial).toContain('3+1|')
+      const sql = yield* SqlClient.SqlClient
+      const compactBefore =
+        yield* sql`SELECT compact_parts FROM optchat_cache_views WHERE memory_id = 'chan'`
+      const reopened = yield* makeOptChatMemory(compress, 1000)
+      expect(yield* reopened.settle('chan')).toBe(initial)
+      expect(
+        yield* sql`SELECT compact_parts FROM optchat_cache_views WHERE memory_id = 'chan'`,
+      ).toEqual(compactBefore)
+      yield* reopened.append('chan', messages.slice(4, 5))
+      yield* reopened.pump('chan')
+      const fitted = yield* reopened.settle('chan')
+      expect(bytes(fitted)).toBeLessThanOrEqual(500)
+      expect(fitted).toContain('0+4|')
+      expect(fitted).toContain('4+1|')
+      yield* reopened.append('chan', messages.slice(5))
+      yield* reopened.pump('chan')
+      expect((yield* reopened.settle('chan')).startsWith(fitted.slice(0, -7))).toBe(true)
+    }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+  ))
+
+test('resumes a persisted batch below the upper limit after failed parent compression', () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      let failMerge = true
+      const compress = (input: { merge: boolean }) =>
+        input.merge && failMerge
+          ? Effect.fail(new PiDurableError({ operation: 'test', detail: 'offline' }))
+          : Effect.succeed('user: ' + 'x'.repeat(194))
+      const memory = yield* makeOptChatMemory(compress, 1000)
+      yield* memory.append(
+        'chan',
+        Array.from({ length: 5 }, (_, id) => ({
+          sourceKey: String(id),
+          kind: 'user' as const,
+          text: 'x'.repeat(600),
+          date: '2026-10-08T00:00:00Z',
+        })),
+      )
+      expect((yield* Effect.exit(memory.pump('chan')))._tag).toBe('Failure')
+      const sql = yield* SqlClient.SqlClient
+      expect(yield* sql`SELECT pending FROM optchat_cache_views WHERE memory_id = 'chan'`).toEqual([
+        { pending: 1 },
+      ])
+      failMerge = false
+      const reopened = yield* makeOptChatMemory(compress, 1000)
+      yield* reopened.pump('chan')
+      expect(bytes(yield* reopened.settle('chan'))).toBeLessThanOrEqual(500)
+      expect(yield* sql`SELECT pending FROM optchat_cache_views WHERE memory_id = 'chan'`).toEqual([
+        { pending: 0 },
+      ])
+    }).pipe(Effect.provide(SqliteClient.layer({ filename: ':memory:' }))),
+  ))
 
 test('memory survives service recreation, deduplicates sources, and isolates owners', () =>
   Effect.runPromise(

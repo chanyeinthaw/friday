@@ -1,7 +1,42 @@
 import { describe, expect, it } from 'vitest'
-import { fitView, nodeKey, renderView, type MemoryNode } from './OptChatTree.ts'
+import { batchView, bytes, fitView, nodeKey, renderView, type MemoryNode } from './OptChatTree.ts'
 
 describe('OptChat view', () => {
+  it('merges the recent pair at T=10 rather than rewriting the old prefix', () => {
+    const parts = [
+      { id: 0, count: 4 },
+      { id: 4, count: 4 },
+      { id: 8, count: 1 },
+      { id: 9, count: 1 },
+    ]
+    const nodes = new Map(
+      [...parts, { id: 0, count: 8 }, { id: 8, count: 2 }].map((part) => [
+        nodeKey(part),
+        { ...part, text: 'x'.repeat(20) },
+      ]),
+    )
+    expect(fitView(parts, 10, nodes, 95)).toEqual([
+      { id: 0, count: 4 },
+      { id: 4, count: 4 },
+      { id: 8, count: 2 },
+    ])
+  })
+  it('keeps the prefix until the upper limit and finishes a deferred batch', () => {
+    const parts = Array.from({ length: 4 }, (_, id) => ({ id, count: 1 }))
+    const nodes = new Map(parts.map((part) => [nodeKey(part), { ...part, text: 'x'.repeat(40) }]))
+    expect(batchView(parts, 4, nodes, false, 200)).toEqual({ parts, pending: false })
+    const appended = [...parts, { id: 4, count: 1 }]
+    nodes.set('4+1', { id: 4, count: 1, text: 'x'.repeat(40) })
+    const deferred = batchView(appended, 5, nodes, false, 200)
+    expect(deferred.pending).toBe(true)
+    expect(deferred.parts).toEqual(appended)
+    nodes.set('0+2', { id: 0, count: 2, text: 'pair' })
+    nodes.set('2+2', { id: 2, count: 2, text: 'pair' })
+    const finished = batchView(deferred.parts, 5, nodes, deferred.pending, 200)
+    expect(finished.pending).toBe(false)
+    expect(bytes(renderView(finished.parts, nodes))).toBeLessThanOrEqual(100)
+    expect(batchView(finished.parts, 5, nodes, false, 200).parts).toEqual(finished.parts)
+  })
   it('merges the oldest due siblings and preserves coverage without splitting', () => {
     const nodes = new Map<string, MemoryNode>()
     for (let id = 0; id < 8; id++)

@@ -224,6 +224,10 @@ export const makeOptChatHarness = (memory: OptChatMemory, getHarness: () => Harn
       beforeRequest: (request, api, context) =>
         runPiEffect(
           Effect.gen(function* () {
+            yield* memory.setPrefix(memoryId, {
+              systemPrompt: getCurrentSystemPrompt(request.messages),
+              tools: getCurrentTools(request.messages),
+            })
             const harness = getHarness()
             const conversation = yield* piOperation('optchat-conversation', () =>
               harness.conversation(api.conversationId, context),

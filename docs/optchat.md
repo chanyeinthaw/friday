@@ -29,6 +29,17 @@ Each OptChat binding connects one native channel and one owner to a permanent me
 
 One binding owns each channel. Owner and channel identities are immutable. Repeating `add` with the same arguments re-enables an existing binding.
 
+## Import Pi session history
+
+To load an earlier Pi session JSONL transcript into a memory, run the import when the channel is idle:
+
+```sh
+friday config optchat import chan-main /path/to/session.jsonl --dry-run
+friday config optchat import chan-main /path/to/session.jsonl
+```
+
+The memory ID must have an enabled binding. The import reads the file without modifying it, follows only the active session branch, and appends the mapped messages in one transaction. Repeating an import adds nothing twice: source keys combine the session ID, entry ID, and message indexes, so a grown session appends only its new entries. Reimporting a session with edits, omissions, or a changed branch that removes previously imported entries fails before appending anything. Existing memory is immutable; import conflicting history into a separate memory. Add `--json` for machine-readable counts.
+
 ## Disable and re-enable a binding
 
 When the channel is idle, disable the binding:

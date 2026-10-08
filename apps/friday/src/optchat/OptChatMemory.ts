@@ -7,7 +7,8 @@ import * as PartitionedSemaphore from 'effect/PartitionedSemaphore'
 import { PiDurableError } from '../harness/pi/PiDurableError.ts'
 import {
   bytes,
-  fitView,
+  batchView,
+  compactViewBytes,
   nodeKey,
   renderView,
   validRange,
@@ -15,6 +16,11 @@ import {
   type MemoryPart,
 } from './OptChatTree.ts'
 import type { Compress } from './OptChatCompactor.ts'
+import { OptChatPrefix, prefixCodec } from './OptChatPrefix.ts'
+
+const decodePrefix = Schema.decodeUnknownEffect(prefixCodec)
+const parsePrefix = Schema.decodeUnknownEffect(OptChatPrefix)
+const encodePrefix = Schema.encodeEffect(prefixCodec)
 
 const isPiDurableError = Schema.is(PiDurableError)
 const memoryError = (cause: unknown) =>
@@ -37,6 +43,10 @@ const decodeParts = Schema.decodeUnknownEffect(partCodec)
 const encodeParts = Schema.encodeEffect(partCodec)
 export interface MemoryInput extends Omit<MemoryMessage, 'id'> {}
 export interface OptChatMemory {
+  readonly setPrefix: (
+    memoryId: string,
+    prefix: OptChatPrefix,
+  ) => Effect.Effect<void, PiDurableError>
   readonly append: (
     memoryId: string,
     messages: readonly MemoryInput[],
@@ -63,6 +73,16 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
   yield* sql`CREATE TABLE IF NOT EXISTS optchat_nodes (memory_id TEXT NOT NULL, id INTEGER NOT NULL, count INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY(memory_id, id, count))`
   yield* sql`CREATE TABLE IF NOT EXISTS optchat_progress (memory_id TEXT PRIMARY KEY, complete_total INTEGER NOT NULL)`
   yield* sql`CREATE TABLE IF NOT EXISTS optchat_views (memory_id TEXT PRIMARY KEY, parts TEXT NOT NULL)`
+  yield* sql`CREATE TABLE IF NOT EXISTS optchat_cache_views (memory_id TEXT PRIMARY KEY, pending INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0, compact_parts TEXT NOT NULL DEFAULT '[]', compact_pending INTEGER NOT NULL DEFAULT 0, compact_revision INTEGER NOT NULL DEFAULT -1)`
+  yield* sql`CREATE TABLE IF NOT EXISTS optchat_prefixes (memory_id TEXT PRIMARY KEY, prefix TEXT NOT NULL)`
+  const setPrefix = Effect.fn('OptChat.setPrefix')(
+    function* (memoryId: string, prefix: OptChatPrefix) {
+      const value = yield* parsePrefix(prefix)
+      const encoded = yield* encodePrefix(value)
+      yield* sql`INSERT INTO optchat_prefixes (memory_id, prefix) VALUES (${memoryId}, ${encoded}) ON CONFLICT(memory_id) DO UPDATE SET prefix = excluded.prefix WHERE prefix != excluded.prefix`
+    },
+    (effect) => effect.pipe(Effect.mapError(memoryError)),
+  )
   const load = Effect.fn('OptChat.load')(
     function* (memoryId: string) {
       const messages = yield* decodeMessages(
@@ -76,16 +96,36 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
         parts: string
       }>`SELECT parts FROM optchat_views WHERE memory_id = ${memoryId}`
       const parts = views[0] === undefined ? [] : yield* decodeParts(views[0].parts)
-      return { messages, nodes, parts }
+      const cacheRows = yield* sql<{
+        pending: number
+        revision: number
+        compact_parts: string
+        compact_pending: number
+        compact_revision: number
+      }>`SELECT * FROM optchat_cache_views WHERE memory_id = ${memoryId}`
+      const cache = cacheRows[0]
+      return {
+        messages,
+        nodes,
+        parts,
+        pending: cache?.pending === 1,
+        revision: cache?.revision ?? 0,
+        compactParts: cache === undefined ? [] : yield* decodeParts(cache.compact_parts),
+        compactPending: cache?.compact_pending === 1,
+        compactRevision: cache?.compact_revision ?? -1,
+      }
     },
     (effect) => effect.pipe(Effect.mapError(memoryError)),
   )
   const saveView = Effect.fn('OptChat.saveView')(function* (
     memoryId: string,
     parts: readonly MemoryPart[],
+    pending: boolean,
+    merged: boolean,
   ) {
     const encoded = yield* encodeParts(parts)
     yield* sql`INSERT INTO optchat_views (memory_id, parts) VALUES (${memoryId}, ${encoded}) ON CONFLICT(memory_id) DO UPDATE SET parts = excluded.parts`
+    yield* sql`INSERT INTO optchat_cache_views (memory_id, pending, revision) VALUES (${memoryId}, ${Number(pending)}, ${Number(merged)}) ON CONFLICT(memory_id) DO UPDATE SET pending = excluded.pending, revision = revision + excluded.revision`
   })
   const append = Effect.fn('OptChat.append')(
     function* (memoryId: string, incoming: readonly MemoryInput[]) {
@@ -96,14 +136,20 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
             const keys = new Set(state.messages.map((message) => message.sourceKey))
             let total = state.messages.length
             let parts = state.parts
+            let pending = state.pending
+            let merged = false
             for (const message of incoming) {
               if (keys.has(message.sourceKey)) continue
               const id = total++
               yield* sql`INSERT INTO optchat_messages (memory_id, id, source_key, kind, text, date) VALUES (${memoryId}, ${id}, ${message.sourceKey}, ${message.kind}, ${message.text}, ${message.date})`
               keys.add(message.sourceKey)
-              parts = fitView([...parts, { id, count: 1 }], total, state.nodes, budget)
+              const appended = [...parts, { id, count: 1 }]
+              const batch = batchView(appended, total, state.nodes, pending, budget)
+              merged ||= batch.parts.length < appended.length
+              parts = batch.parts
+              pending = batch.pending
             }
-            yield* saveView(memoryId, parts)
+            yield* saveView(memoryId, parts, pending, merged)
           }),
         ),
       )
@@ -111,11 +157,38 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
     (effect) => effect.pipe(Effect.mapError(memoryError)),
   )
 
+  const prepareCompactView = Effect.fn('OptChat.prepareCompactView')(function* (
+    memoryId: string,
+    state: Effect.Success<ReturnType<typeof load>>,
+    first: number,
+  ) {
+    // The compactor has its own persisted sawtooth, reset only when the main view merges.
+    const reset = state.compactRevision !== state.revision
+    let compactParts = reset ? [] : state.compactParts
+    const covered = compactParts.at(-1)
+    const next = covered === undefined ? 0 : covered.id + covered.count
+    compactParts = [
+      ...compactParts,
+      ...state.parts.filter((part) => part.id >= next && part.id + part.count <= first),
+    ]
+    const compact = batchView(
+      compactParts,
+      state.messages.length,
+      state.nodes,
+      reset || state.compactPending,
+      compactViewBytes,
+    )
+    const encoded = yield* encodeParts(compact.parts)
+    yield* sql`INSERT INTO optchat_cache_views (memory_id, compact_parts, compact_pending, compact_revision) VALUES (${memoryId}, ${encoded}, ${Number(compact.pending)}, ${state.revision}) ON CONFLICT(memory_id) DO UPDATE SET compact_parts = excluded.compact_parts, compact_pending = excluded.compact_pending, compact_revision = excluded.compact_revision`
+    return compact.parts
+  })
+
   const readyJobs = Effect.fn('OptChat.readyJobs')(
     function* (memoryId: string, blocked: ReadonlySet<string>, capacity: number) {
       const state = yield* load(memoryId)
       const total = state.messages.length
       const first = state.parts.find((part) => !state.nodes.has(nodeKey(part)))?.id ?? total
+      const compactParts = yield* prepareCompactView(memoryId, state, first)
       const ready: Array<{ part: MemoryPart; source: string; context: string; merge: boolean }> = []
       for (let count = 1; count <= total && ready.length < capacity; count *= 2) {
         for (let id = 0; id + count <= total && ready.length < capacity; id += count) {
@@ -136,20 +209,25 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
               ? `${message.kind}: ${message.text}`
               : `${left?.text.replaceAll('\n', ' ')}\n${right?.text.replaceAll('\n', ' ')}`
           const end = count === 1 ? id : id + count
-          const context = `<chat>\n${state.parts
-            .filter((item) => item.id + item.count <= end)
-            .map((item) => state.nodes.get(nodeKey(item))?.text.replaceAll('\n', ' ') ?? '')
-            .join('\n')}\n</chat>`
+          const context = renderView(
+            compactParts.filter((item) => item.id + item.count <= end),
+            state.nodes,
+          )
           ready.push({ part, source, context, merge: count > 1 })
         }
       }
       return ready
     },
-    (effect) => effect.pipe(Effect.mapError(memoryError)),
+    (effect, memoryId) =>
+      locks.withPermit(memoryId)(sql.withTransaction(effect)).pipe(Effect.mapError(memoryError)),
   )
   const buildNode = Effect.fn('OptChat.buildNode')(
     function* (memoryId: string, job: Effect.Success<ReturnType<typeof readyJobs>>[number]) {
-      const text = bytes(job.source) <= 512 ? job.source : yield* compress(job)
+      const prefixes = yield* sql<{
+        prefix: string
+      }>`SELECT prefix FROM optchat_prefixes WHERE memory_id = ${memoryId}`
+      const prefix = prefixes[0] === undefined ? undefined : yield* decodePrefix(prefixes[0].prefix)
+      const text = bytes(job.source) <= 512 ? job.source : yield* compress({ ...job, prefix })
       const node = { ...job.part, text } satisfies MemoryNode
       // Persist and refit each successful node even if a sibling job fails.
       yield* locks.withPermit(memoryId)(
@@ -157,9 +235,18 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
           Effect.gen(function* () {
             yield* sql`INSERT OR IGNORE INTO optchat_nodes (memory_id, id, count, text) VALUES (${memoryId}, ${node.id}, ${node.count}, ${node.text})`
             const current = yield* load(memoryId)
+            const batch = batchView(
+              current.parts,
+              current.messages.length,
+              current.nodes,
+              current.pending,
+              budget,
+            )
             yield* saveView(
               memoryId,
-              fitView(current.parts, current.messages.length, current.nodes, budget),
+              batch.parts,
+              batch.pending,
+              batch.parts.length < current.parts.length,
             )
           }),
         ),
@@ -247,6 +334,7 @@ export const makeOptChatMemory = Effect.fn('OptChat.makeMemory')(function* (
     )
   })
   return {
+    setPrefix,
     append,
     settle,
     pump,
