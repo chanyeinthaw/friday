@@ -205,7 +205,7 @@ export {
   type CliRemovedSpec,
 } from './cli/Command.ts'
 
-export const FRIDAY_VERSION = '0.0.0-nightly.50'
+export const FRIDAY_VERSION = '0.0.0-nightly.51'
 
 export type FridayCliOperations<
   E,
