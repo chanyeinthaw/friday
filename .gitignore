@@ -9,3 +9,8 @@ coverage/
 *.db-shm
 *.db-wal
 .DS_Store
+
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+apps/wednesday/src/client/styles.generated.css
