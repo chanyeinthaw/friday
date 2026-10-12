@@ -1,0 +1,43 @@
+import { Effect, ManagedRuntime, Stream } from 'effect'
+import { Atom, AtomRegistry } from 'effect/reactivity'
+import { Browser, browserLayer } from './Browser.ts'
+import { initialModel, update } from './App.ts'
+import { Message } from './Messages.ts'
+
+// The registry owns shared chat state; HTTP replies and SSE use the same reducer.
+export const registry = AtomRegistry.make()
+export const readyAtom = Atom.make(false).pipe(Atom.keepAlive)
+export const stateAtom = Atom.make(initialModel).pipe(Atom.keepAlive)
+const runtime = ManagedRuntime.make(browserLayer)
+export const dispatch = (message: Message) => {
+  const next = update(registry.get(stateAtom), message)
+  registry.set(stateAtom, next.model)
+  for (const command of next.commands ?? []) {
+    const generation = next.model.generation
+    void runtime.runPromise(
+      command.pipe(
+        Effect.map((result) => {
+          if (registry.get(stateAtom).generation === generation) dispatch(result)
+        }),
+      ),
+    )
+  }
+}
+export const start = () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const browser = yield* Browser
+      yield* browser.sessionChanges.pipe(
+        Stream.changesWith((a, b) => a.userId === b.userId),
+        Stream.tap((session) =>
+          Effect.sync(() => {
+            registry.set(readyAtom, true)
+            dispatch(Message.SessionChanged(session))
+          }),
+        ),
+        Stream.switchMap((session) => (session.userId ? browser.connect() : Stream.empty)),
+        Stream.runForEach((event) => Effect.sync(() => dispatch(Message.Received({ event })))),
+      )
+    }),
+  )
+export const dispose = () => runtime.dispose()

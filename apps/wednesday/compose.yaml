@@ -1,0 +1,28 @@
+name: wednesday-development
+services:
+  wednesday:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - ${WEDNESDAY_ENV_FILE:-/home/chanyeinthaw/.config/wednesday/development.env}
+    environment:
+      WEDNESDAY_HOST: 0.0.0.0
+      WEDNESDAY_PORT: '3002'
+      WEDNESDAY_DATABASE: /data/wednesday.sqlite
+      WEDNESDAY_ORIGIN: ${WEDNESDAY_PUBLIC_ORIGIN:-https://silicon.tailcd7ccb.ts.net:8446}
+    ports:
+      - 127.0.0.1:3002:3002
+    volumes:
+      - data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', '--silent', 'http://127.0.0.1:3002/health']
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  data:

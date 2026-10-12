@@ -8,13 +8,16 @@ allowBuilds:
   koffi: false
   msgpackr-extract: false
   protobufjs: false
+  browser-tabs-lock: false
+  core-js: false
+  '@parcel/watcher': false
 
 catalog:
   '@effect/tsgo': 0.36.4
-  '@effect/vitest': 4.0.0-rc.109
-  effect: 4.0.0-rc.109
+  '@effect/vitest': 4.0.3
+  effect: 4.0.3
   typescript: 7.0.2
-  vitest: 4.1.10
+  vitest: 5.0.3
 
 minimumReleaseAgeExclude:
   - '@earendil-works/chord@1.0.2'
@@ -26,6 +29,9 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-protocol@1.0.2'
   - '@earendil-works/pi-telemetry@1.0.2'
   - '@earendil-works/pi-tui@1.0.2'
+  - effect@4.0.3
+  - foldkit@0.168.0
+  - '@foldkit/ui@0.168.0'
 
 patchedDependencies:
   '@chat-adapter/discord@4.40.0': patches/@chat-adapter__discord@4.40.0.patch
