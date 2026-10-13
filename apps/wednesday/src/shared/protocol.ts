@@ -2,6 +2,8 @@ import { Schema } from 'effect'
 
 export const Thinking = Schema.Literals(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 export type Thinking = typeof Thinking.Type
+export const ApiFormat = Schema.Literals(['chat-completions', 'responses', 'anthropic'])
+export type ApiFormat = typeof ApiFormat.Type
 export const RequestFields = Schema.Record(Schema.String, Schema.Json)
 export const ModelMapping = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -29,6 +31,7 @@ export const DeviceAuthorization = Schema.Struct({
 })
 export type DeviceAuthorization = typeof DeviceAuthorization.Type
 export const Settings = Schema.Struct({
+  apiFormat: Schema.optionalKey(ApiFormat),
   provider: Schema.optionalKey(Schema.Literals(['api', 'chatgpt'])),
   baseUrl: Schema.NonEmptyString,
   modelId: Schema.String,
@@ -42,10 +45,18 @@ export const ChatMessage = Schema.Struct({
   id: Schema.Int,
   requestId: Schema.optionalKey(Schema.String),
   kind: Schema.Literals(['user', 'talk', 'tool', 'echo']),
+  streamId: Schema.optionalKey(Schema.String),
   text: Schema.String,
   date: Schema.String,
 })
 export interface ChatMessage extends Schema.Schema.Type<typeof ChatMessage> {}
+export const StreamingMessage = Schema.Struct({
+  id: Schema.String,
+  turnId: Schema.String,
+  text: Schema.String,
+  date: Schema.String,
+})
+export interface StreamingMessage extends Schema.Schema.Type<typeof StreamingMessage> {}
 export const PendingMessage = Schema.Struct({
   requestId: Schema.String,
   text: Schema.String,
@@ -61,8 +72,13 @@ export const ClientCommand = Schema.TaggedUnion({
   CancelChatGpt: { attemptId: Schema.String },
   DisconnectChatGpt: {},
   Load: { afterId: Schema.optionalKey(Schema.Int) },
+  LoadOlder: { beforeId: Schema.Int },
   SaveSettings: { settings: Settings, apiKey: Schema.String },
-  DiscoverModels: { baseUrl: Schema.NonEmptyString, apiKey: Schema.String },
+  DiscoverModels: {
+    baseUrl: Schema.NonEmptyString,
+    apiKey: Schema.String,
+    apiFormat: Schema.optionalKey(ApiFormat),
+  },
   Send: { requestId: Schema.NonEmptyString, text: Schema.NonEmptyString },
   Steer: {
     requestId: Schema.NonEmptyString,
@@ -82,15 +98,19 @@ export const ServerEvent = Schema.TaggedUnion({
   Snapshot: {
     settings: Schema.NullOr(Settings),
     hasApiKey: Schema.Boolean,
+    hasOlder: Schema.optionalKey(Schema.Boolean),
+    streaming: Schema.optionalKey(Schema.NullOr(StreamingMessage)),
     messages: Schema.Array(ChatMessage),
     busy: Schema.Boolean,
     turnId: Schema.NullOr(Schema.String),
     pending: Schema.optionalKey(Schema.Array(PendingMessage)),
   },
+  History: { messages: Schema.Array(ChatMessage), hasOlder: Schema.Boolean },
   Models: { models: Schema.Array(ModelMapping) },
   Saved: {},
   Accepted: { requestId: Schema.String, mode: Schema.Literals(['send', 'steer']) },
-  Message: { message: ChatMessage },
+  Message: { message: ChatMessage, completesStreaming: Schema.optionalKey(Schema.Boolean) },
+  Streaming: { message: Schema.NullOr(StreamingMessage) },
   Status: {
     busy: Schema.Boolean,
     turnId: Schema.NullOr(Schema.String),

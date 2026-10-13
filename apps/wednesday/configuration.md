@@ -20,9 +20,11 @@ Provider API keys are encrypted with AES-256-GCM before they enter SQLite. Serve
 
 ## Model requests
 
-Model discovery calls the configured base URL's `/models` endpoint. Inference uses `/chat/completions` through Fold's OpenAI-compatible adapter. Responses-only endpoints are not supported by this version.
+The API key tab selects OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages. OpenAI formats discover models at the configured base URL's `/models` endpoint and use bearer authentication. Anthropic discovers models at `/v1/models`, follows pagination, and uses `x-api-key` authentication. Enter a versioned base URL such as `https://api.anthropic.com/v1`; the adapter owns the version prefix.
 
-The model list does not define a standard capability format. Wednesday supplies editable starting limits and recognizes common OpenAI reasoning model IDs. Unknown model IDs start with only an `off` mapping. The context and output limits are configuration values, not discovered capabilities.
+Chat and memory use the selected format through Fold. Responses requests use `/responses` with inline history and response storage disabled. Anthropic uses `/v1/messages`. Existing settings without a format continue using Chat Completions. Switching formats clears the draft model list so discovery supplies compatible mappings; saved settings stay active until replacement settings are complete.
+
+The model list does not define a standard capability format. Wednesday supplies editable starting limits and recognizes common OpenAI and Claude reasoning model IDs. Responses uses nested reasoning effort; Claude uses thinking budgets or adaptive thinking and output effort. Unknown model IDs start with only an `off` mapping. The context and output limits are configuration values, not discovered capabilities.
 
 Each model has extra request fields and a request-field object for every supported thinking level. The selected level's fields override the model's extra fields. Wednesday sets an output-token limit unless the mapping supplies `max_tokens` or `max_completion_tokens`. The model, messages, tools, and streaming controls remain application-owned.
 
@@ -38,9 +40,9 @@ Memory jobs are queued atomically with each appended message and processed in th
 
 The main view grows to 128,000 UTF-8 bytes, then batches toward 64,000. A separate persisted compaction view grows to 32,000 bytes and batches toward 16,000. It contains only built summaries and ends before a source message, or at the end of a merge's source range. View updates preserve Friday's binary addressing and age-based merge order.
 
-The Provider settings include a separate Memory model. When older settings have no memory-model choice, Wednesday prefers a recognizable lightweight variant from the saved model list; an explicit empty choice uses the chat model. Compactions use the memory model's off mapping, a 512-byte ruler, measured byte feedback, and up to five attempts. The shortest nonempty response is retained.
+The Provider settings include a separate Memory model. When older settings have no memory-model choice, Wednesday prefers a recognizable lightweight variant from the saved model list; an explicit empty choice uses the chat model. Compactions use the memory model's selected thinking mapping, a 512-byte ruler, measured byte feedback, and up to five attempts. The shortest nonempty response is retained.
 
-Each turn starts a fresh Fold session. Only the frozen view and current turn enter its model requests. Text longer than 30,000 Unicode characters is preserved as adjacent message pages; tool echoes retain their first and last 15,000 characters. The browser receives complete messages. Text and reasoning deltas are not sent to the browser, and reasoning is not added to the durable log or memory. SQLite commits use synchronous FULL.
+Each turn starts a fresh Fold session. Only the frozen view and current turn enter its model requests. Text longer than 30,000 Unicode characters is preserved as adjacent message pages; tool echoes retain their first and last 15,000 characters. The chat model adapter observes text deltas and broadcasts completed Markdown prefixes over SSE. Unfinished paragraphs, tables, lists, and code fences remain hidden until their block ends. The active prefix lives in memory and appears in reconnect snapshots. A completed Fold message replaces its streamed bubble. Reasoning is not sent to the browser or added to the durable log or memory. SQLite commits use synchronous FULL.
 
 Active turns, pending steering, busy state, Stop state, and request receipts live in memory. Restarting the server loses them. Saved messages, settings, and OptChat memory remain available. Migration 3 removes the old submission table and adds request IDs to saved messages.
 
@@ -50,10 +52,12 @@ Commands use authenticated Effect HttpApi endpoints. Each tab opens its own SSE 
 
 Each SSE stream has an authorization lease. The browser renews that lease every 20 seconds with a valid Clerk token from the SDK cache, which refreshes tokens as needed. The server allows 15 seconds beyond token expiry before closing an unrenewed connection and sends a heartbeat every 10 seconds. Renewal must authenticate as the stream's owner.
 
+Initial snapshots contain at most 250 visible user and assistant messages. The authenticated history endpoint returns earlier pages by message ID, with an indicator for remaining history. Prepending a page preserves the reader's scroll position.
+
 A turn continues when a browser disconnects. On reconnect, the browser sends the largest saved message ID it has received. The snapshot includes only later messages, plus current settings and runtime state. The browser merges those messages into its existing timeline and reconciles pending bubbles by request ID. It follows new messages only when the reader is already at the bottom.
 
 ## Current scope
 
 Wednesday starts with fresh history. Friday's existing application and data remain separate. This version has no history import, shared conversations, organizations, subagents, coding tools, or production Clerk configuration. The development deployment runs through Docker Compose on silicon and Tailscale HTTPS port 8446.
 
-Frontend assets embedded in the executable use Effect HTTP compression with Brotli quality 5 or gzip. Hashed assets have immutable cache headers; HTML uses `no-cache`. Reconnecting displays a rounded status pill and preserves the timeline and draft. Sending resumes after the snapshot has synchronized.
+The build splits browser assets before embedding them in the executable. Highlighting and Mermaid load only when needed. Embedded assets use Effect HTTP compression with Brotli quality 5 or gzip. Hashed assets have immutable cache headers; HTML uses `no-cache`. Reconnecting displays a rounded status pill and preserves the timeline and draft. Sending resumes after the snapshot has synchronized.

@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 @import './scroll-fade.css';
 @source './';
-@source '../../../../node_modules/.pnpm/streamdown*/node_modules/streamdown/dist/*.js';
+@import './markdown/styles.css';
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

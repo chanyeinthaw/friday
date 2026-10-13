@@ -41,6 +41,8 @@ import {
 import { ChatGpt } from './ChatGpt.ts'
 import { defaultMemoryModelId } from '../shared/modelDefaults.ts'
 import { makeMemory, instructions } from './OptChat.ts'
+import { completedMarkdown } from './Paragraphs.ts'
+import { observeText } from './StreamingModel.ts'
 import { WednesdayError, failure } from './errors.ts'
 
 export interface OwnedEvent {
@@ -76,6 +78,7 @@ export const chatLayer = Layer.effect(
       readonly dispatched: PendingMessage[]
       session?: FoldSession
       fiber?: Fiber.Fiber<void, never>
+      streaming?: { id: string; turnId: string; text: string; date: string }
       accepting: boolean
     }
     const active = new Map<string, Turn>()
@@ -159,6 +162,33 @@ export const chatLayer = Layer.effect(
         saved.settings.provider === 'chatgpt'
           ? chatGpt.model(userId, mapping, saved.settings.thinking)
           : configuredModel(saved.settings, key, mapping, saved.settings.thinking)
+      const parts = new Map<string, string>()
+      let responseCount = 0
+      const streamedModel = {
+        ...model,
+        make: model.make.pipe(
+          Effect.map((implementation) =>
+            observeText(implementation, (part) => {
+              parts.set(part.id, (parts.get(part.id) ?? '') + part.delta)
+              if (!part.delta.includes('\n')) return Effect.void
+              const text = completedMarkdown([...parts.values()].join('\n\n'))
+              if (!text || text === turn.streaming?.text) return Effect.void
+              return locks.withPermit(userId)(
+                Effect.gen(function* () {
+                  if (active.get(userId) !== turn) return
+                  turn.streaming = {
+                    id: `${submission.requestId}-${responseCount}`,
+                    turnId: submission.requestId,
+                    text,
+                    date: turn.streaming?.date ?? new Date().toISOString(),
+                  }
+                  yield* publish(userId, { _tag: 'Streaming', message: turn.streaming })
+                }),
+              )
+            }),
+          ),
+        ),
+      } satisfies typeof model
       const memory = yield* getMemory(userId, saved)
       const view = yield* memory.settle()
       const firstSeq = yield* storage.logSequence(userId)
@@ -198,8 +228,26 @@ export const chatLayer = Layer.effect(
                 const index = turn.pending.findIndex((item) => item.requestId === consumedRequestId)
                 if (index >= 0) turn.pending.splice(index, 1)
               }
-              for (const message of result.messages)
-                yield* publish(userId, { _tag: 'Message', message })
+              const streamId = turn.streaming?.id
+              const firstTalk = result.messages.findIndex((message) => message.kind === 'talk')
+              if (input._tag === 'assistant-message') {
+                responseCount++
+                parts.clear()
+                delete turn.streaming
+              }
+              for (const [index, message] of result.messages.entries())
+                yield* publish(userId, {
+                  _tag: 'Message',
+                  message:
+                    streamId && index === firstTalk
+                      ? Object.assign({}, message, { streamId })
+                      : message,
+                  completesStreaming:
+                    input._tag === 'assistant-message' &&
+                    index === (firstTalk >= 0 ? firstTalk : 0),
+                })
+              if (input._tag === 'assistant-message' && !result.messages.length)
+                yield* publish(userId, { _tag: 'Streaming', message: null })
               yield* publish(userId, status(userId))
               yield* PubSub.publish(logEvents, result.entry)
               return result.entry
@@ -233,7 +281,7 @@ export const chatLayer = Layer.effect(
         )
       const agent = defineAgent({
         name: 'Wednesday',
-        model,
+        model: streamedModel,
         systemPrompt: instructions,
         autoCompact: { enabled: false },
         tools: [
@@ -401,19 +449,29 @@ export const chatLayer = Layer.effect(
       const previous = yield* storage.settings(userId)
       if (
         previous?.settings.provider === 'chatgpt' &&
+        !command.apiFormat &&
         command.baseUrl === previous.settings.baseUrl
       )
         return [{ _tag: 'Models' as const, models: yield* chatGpt.models(userId) }]
       const baseUrl = yield* normalizeBaseUrl(command.baseUrl)
-      if (!command.apiKey && previous?.settings.baseUrl !== baseUrl)
+      if (
+        !command.apiKey &&
+        (previous?.settings.baseUrl !== baseUrl || previous?.settings.provider === 'chatgpt')
+      )
         return yield* failure('Enter an API key for this API URL.')
       const encrypted = command.apiKey
         ? yield* credentials.encrypt(command.apiKey)
         : previous?.encryptedKey
       if (!encrypted) return yield* failure('Enter an API key.')
-      const discovered = yield* discoverModels(baseUrl, yield* credentials.decrypt(encrypted))
+      const discovered = yield* discoverModels(
+        baseUrl,
+        yield* credentials.decrypt(encrypted),
+        command.apiFormat,
+      )
       const models = discovered.map((model) =>
-        previous?.settings.baseUrl === baseUrl
+        previous?.settings.baseUrl === baseUrl &&
+        (previous.settings.apiFormat ?? 'chat-completions') ===
+          (command.apiFormat ?? 'chat-completions')
           ? (previous.settings.models.find((saved) => saved.id === model.id) ?? model)
           : model,
       )
@@ -423,15 +481,18 @@ export const chatLayer = Layer.effect(
     const snapshot = Effect.fn('Chat.snapshot')(function* (userId: string, afterId = -1) {
       const saved = yield* storage.settings(userId)
       const turn = active.get(userId)
-      return {
+      const page = afterId < 0 ? yield* storage.history(userId) : null
+      const result = {
         _tag: 'Snapshot' as const,
         settings: saved?.settings ?? null,
         hasApiKey: !!saved?.encryptedKey,
-        messages: yield* storage.messages(userId, afterId),
+        messages: page ? page.messages : yield* storage.messages(userId, afterId),
         busy: !!turn,
         turnId: turn?.initial.requestId ?? null,
         pending: turn?.pending.slice() ?? [],
+        streaming: turn?.streaming ?? null,
       }
+      return page ? { ...result, hasOlder: page.hasOlder } : result
     })
     const submit = Effect.fn('Chat.submit')(function* (
       userId: string,
@@ -577,6 +638,10 @@ export const chatLayer = Layer.effect(
               yield* publish(userId, next)
               return [next]
             }
+            case 'LoadOlder':
+              return [
+                { _tag: 'History' as const, ...(yield* storage.history(userId, command.beforeId)) },
+              ]
             case 'Load':
               return [yield* snapshot(userId, command.afterId)]
             case 'SaveSettings':

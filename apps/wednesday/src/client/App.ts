@@ -9,6 +9,7 @@ import {
 } from './ProviderFields.ts'
 import {
   ChatMessage,
+  StreamingMessage,
   PendingMessage,
   ModelMapping,
   DeviceAuthorization,
@@ -16,6 +17,7 @@ import {
   Thinking,
   ClientCommand,
   Settings,
+  ApiFormat,
 } from '../shared/protocol.ts'
 import { defaultMemoryModelId } from '../shared/modelDefaults.ts'
 import { Browser } from './Browser.ts'
@@ -28,6 +30,7 @@ const ThinkingEditor = Schema.Struct({
 
 export const Model = Schema.Struct({
   provider: Schema.Literals(['api', 'chatgpt']),
+  apiFormat: ApiFormat,
   deviceAuthorization: Schema.NullOr(DeviceAuthorization),
   deviceLoading: Schema.Boolean,
   deviceError: Schema.String,
@@ -36,6 +39,8 @@ export const Model = Schema.Struct({
   pendingSettings: Schema.NullOr(Settings),
   saving: Schema.Boolean,
   fetching: Schema.Boolean,
+  loadingHistory: Schema.Boolean,
+  hasOlder: Schema.Boolean,
   saveKind: Schema.Literals(['connection', 'selection']),
   settingsTab: Schema.Literals(['connection', 'models']),
   settingsDirty: Schema.Boolean,
@@ -51,6 +56,7 @@ export const Model = Schema.Struct({
   error: Schema.String,
   notice: Schema.String,
   messages: Schema.Array(ChatMessage),
+  streaming: Schema.NullOr(StreamingMessage),
   pendingMessages: Schema.Array(PendingMessage),
 
   baseUrl: Schema.String,
@@ -75,6 +81,7 @@ const decodeFieldKind = Schema.decodeUnknownOption(FieldKind)
 
 export const initialModel: Model = {
   provider: 'api',
+  apiFormat: 'chat-completions',
   deviceAuthorization: null,
   deviceLoading: false,
   deviceError: '',
@@ -83,6 +90,8 @@ export const initialModel: Model = {
   pendingSettings: null,
   saving: false,
   fetching: false,
+  loadingHistory: false,
+  hasOlder: false,
   saveKind: 'connection',
   settingsTab: 'connection',
   settingsDirty: false,
@@ -98,6 +107,7 @@ export const initialModel: Model = {
   error: '',
   notice: '',
   messages: [],
+  streaming: null,
   pendingMessages: [],
 
   baseUrl: '',
@@ -255,6 +265,7 @@ const settingsDraft = (model: Model, settings: Settings): Model => {
   const next = {
     ...model,
     provider: settings.provider ?? 'api',
+    apiFormat: settings.apiFormat ?? 'chat-completions',
     baseUrl: settings.baseUrl,
     modelId: settings.modelId,
     memoryModelId: settings.memoryModelId ?? defaultMemoryModelId(settings.models),
@@ -268,6 +279,7 @@ const settingsDraft = (model: Model, settings: Settings): Model => {
 const saveSettings = (model: Model): UpdateResult => {
   const settings: Settings = {
     provider: model.provider,
+    apiFormat: model.apiFormat,
     baseUrl: model.baseUrl,
     modelId: model.modelId,
     thinking: model.thinking,
@@ -356,7 +368,9 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
       const next: Model = {
         ...model,
         connection: 'ready',
+        hasOlder: event.hasOlder ?? model.hasOlder,
         messages,
+        streaming: event.streaming ?? null,
         pendingMessages: reconcilePending(model, event.pending ?? [], messages),
         activeSettings: event.settings,
         busy: event.busy,
@@ -388,8 +402,20 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
         ),
       },
     }),
+    History: (event) => ({
+      model: {
+        ...model,
+        messages: mergeMessages(model.messages, event.messages),
+        hasOlder: event.hasOlder,
+        loadingHistory: false,
+      },
+    }),
     Models: (event) => {
-      const sameProvider = !model.activeSettings || model.baseUrl === model.activeSettings.baseUrl
+      const sameProvider =
+        !model.activeSettings ||
+        (model.baseUrl === model.activeSettings.baseUrl &&
+          model.provider === (model.activeSettings.provider ?? 'api') &&
+          model.apiFormat === (model.activeSettings.apiFormat ?? 'chat-completions'))
       const models =
         model.provider === 'chatgpt'
           ? event.models.map((discovered) => {
@@ -455,6 +481,7 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
         ),
       },
     }),
+    Streaming: (event) => ({ model: { ...model, streaming: event.message } }),
     Message: (event) => ({
       model: {
         ...model,
@@ -462,12 +489,14 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
           (item) => item.requestId !== event.message.requestId,
         ),
         messages: mergeMessages(model.messages, [event.message]),
+        streaming: event.completesStreaming ? null : model.streaming,
       },
     }),
     Status: (event) => ({
       model: {
         ...model,
         busy: event.busy,
+        streaming: event.busy ? model.streaming : null,
         turnId: event.turnId,
         pendingMessages: reconcilePending(model, event.pending),
       },
@@ -482,6 +511,7 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
         saving: false,
         fetching: false,
         pendingSettings: null,
+        loadingHistory: false,
       },
     }),
   })
@@ -498,6 +528,7 @@ const reduce = (model: Model, message: Message): UpdateResult =>
       model: {
         ...model,
         deviceLoading: false,
+        loadingHistory: false,
         deviceError:
           model.deviceAuthorization || model.deviceLoading ? message.message : model.deviceError,
         error: message.message,
@@ -527,6 +558,7 @@ const reduce = (model: Model, message: Message): UpdateResult =>
         model: {
           ...model,
           provider: message.provider,
+          apiFormat: 'chat-completions',
           baseUrl:
             message.provider === 'api'
               ? 'https://api.openai.com/v1'
@@ -541,6 +573,37 @@ const reduce = (model: Model, message: Message): UpdateResult =>
           editingId: '',
           editingOriginalId: '',
           settingsDirty: true,
+        },
+      }
+    },
+    SelectedApiFormat: (message) => {
+      if (message.format === model.apiFormat) return { model }
+      const defaultUrl =
+        !model.baseUrl ||
+        ['https://api.openai.com/v1', 'https://api.anthropic.com/v1'].includes(model.baseUrl)
+      const baseUrl = defaultUrl
+        ? message.format === 'anthropic'
+          ? 'https://api.anthropic.com/v1'
+          : 'https://api.openai.com/v1'
+        : model.baseUrl
+      return {
+        model: {
+          ...model,
+          apiFormat: message.format,
+          baseUrl,
+          apiKey: baseUrl === model.baseUrl ? model.apiKey : '',
+          hasApiKey: baseUrl === model.baseUrl ? model.hasApiKey : false,
+          models: [],
+          modelId: '',
+          memoryModelId: '',
+          thinking: 'off',
+          memoryThinking: 'off',
+          editingId: '',
+          editingOriginalId: '',
+          editingFields: [],
+          editingLevels: [],
+          error: '',
+          notice: '',
         },
       }
     },
@@ -674,10 +737,28 @@ const reduce = (model: Model, message: Message): UpdateResult =>
       const mapping = model.models.find((item) => item.id === model.editingOriginalId)
       return { model: mapping ? mappingEditor(model, mapping) : model }
     },
-    Discover: () => ({
-      model: { ...model, error: '', notice: '', fetching: true },
-      commands: [send({ _tag: 'DiscoverModels', baseUrl: model.baseUrl, apiKey: model.apiKey })],
-    }),
+    LoadOlder: () =>
+      model.hasOlder && !model.loadingHistory && model.connection === 'ready' && model.messages[0]
+        ? {
+            model: { ...model, loadingHistory: true },
+            commands: [send({ _tag: 'LoadOlder', beforeId: model.messages[0].id })],
+          }
+        : { model },
+    Discover: () => {
+      const command: Extract<ClientCommand, { _tag: 'DiscoverModels' }> =
+        model.provider === 'api'
+          ? {
+              _tag: 'DiscoverModels',
+              baseUrl: model.baseUrl,
+              apiKey: model.apiKey,
+              apiFormat: model.apiFormat,
+            }
+          : { _tag: 'DiscoverModels', baseUrl: model.baseUrl, apiKey: model.apiKey }
+      return {
+        model: { ...model, error: '', notice: '', fetching: true },
+        commands: [send(command)],
+      }
+    },
     Save: () =>
       model.saving || model.busy
         ? { model }
@@ -856,6 +937,7 @@ export const update = (model: Model, message: Message): UpdateResult => {
       return result.model === model
         ? result
         : { ...result, model: { ...result.model, settingsRevision: model.settingsRevision + 1 } }
+    case 'SelectedApiFormat':
     case 'ChangedUrl':
     case 'ChangedKey':
     case 'SelectedModel':

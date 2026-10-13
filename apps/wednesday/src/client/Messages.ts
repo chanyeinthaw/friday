@@ -1,5 +1,5 @@
 import { Data, Schema } from 'effect'
-import { ServerEvent, ModelMapping, Thinking } from '../shared/protocol.ts'
+import { ServerEvent, ModelMapping, Thinking, ApiFormat } from '../shared/protocol.ts'
 
 const MessageSchema = Schema.TaggedUnion({
   SessionChanged: { userId: Schema.String },
@@ -7,6 +7,7 @@ const MessageSchema = Schema.TaggedUnion({
   Failed: { message: Schema.String },
   Completed: {},
   SelectedProvider: { provider: Schema.Literals(['api', 'chatgpt']) },
+  SelectedApiFormat: { format: ApiFormat },
   StartChatGpt: {},
   PollChatGpt: {},
   CancelChatGpt: {},
@@ -34,6 +35,7 @@ const MessageSchema = Schema.TaggedUnion({
   ResetSettings: {},
   CancelMapping: {},
   Reconnect: {},
+  LoadOlder: {},
   Discover: {},
   Save: {},
   AutoSave: { revision: Schema.Int },
