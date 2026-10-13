@@ -8,7 +8,6 @@ import {
   PartitionedSemaphore,
   PubSub,
   Queue,
-  Schema,
   Scope,
   Semaphore,
   Stream,
@@ -16,7 +15,6 @@ import {
 import { Prompt } from 'effect/ai'
 import {
   defineAgent,
-  defineTool,
   eventLogSource,
   startSession,
   EventLogUnavailableError,
@@ -42,6 +40,8 @@ import { ChatGpt } from './ChatGpt.ts'
 import { defaultMemoryModelId } from '../shared/modelDefaults.ts'
 import { makeMemory, instructions } from './OptChat.ts'
 import { completedMarkdown } from './Paragraphs.ts'
+import { cachePrompt } from './CachePrompt.ts'
+import { optChatTools } from './OptChatTools.ts'
 import { observeText } from './StreamingModel.ts'
 import { WednesdayError, failure } from './errors.ts'
 
@@ -121,6 +121,7 @@ export const chatLayer = Layer.effect(
                   key,
                   mapping,
                   saved.settings.memoryThinking ?? 'off',
+                  userId,
                 )
           const memory = yield* makeMemory(storage, userId, model)
           const wakeups = yield* Queue.sliding<void>(1)
@@ -161,7 +162,7 @@ export const chatLayer = Layer.effect(
       const model =
         saved.settings.provider === 'chatgpt'
           ? chatGpt.model(userId, mapping, saved.settings.thinking)
-          : configuredModel(saved.settings, key, mapping, saved.settings.thinking)
+          : configuredModel(saved.settings, key, mapping, saved.settings.thinking, userId)
       const parts = new Map<string, string>()
       let responseCount = 0
       const streamedModel = {
@@ -284,25 +285,7 @@ export const chatLayer = Layer.effect(
         model: streamedModel,
         systemPrompt: instructions,
         autoCompact: { enabled: false },
-        tools: [
-          defineTool({
-            name: 'zoom',
-            description:
-              'Open an aligned summary range into its children, or retrieve one original message.',
-            parameters: Schema.Struct({ id: Schema.Int, n: Schema.Int }),
-            success: Schema.String,
-            failure: WednesdayError,
-            handler: ({ id, n }) => memory.zoom(id, n),
-          }),
-          defineTool({
-            name: 'date',
-            description: 'Return the timestamp of an original message.',
-            parameters: Schema.Struct({ id: Schema.Int }),
-            success: Schema.String,
-            failure: WednesdayError,
-            handler: ({ id }) => memory.date(id),
-          }),
-        ],
+        tools: optChatTools(memory),
         hooks: {
           preRequest: [
             {
@@ -325,8 +308,7 @@ export const chatLayer = Layer.effect(
                     _tag: 'changed' as const,
                     prompt: Prompt.make([
                       { role: 'system', content: instructions },
-                      { role: 'user', content: view },
-                      ...input.prompt.content.slice(requestStart),
+                      ...cachePrompt(view, input.prompt.content.slice(requestStart)).content,
                     ]),
                   }
                 }),

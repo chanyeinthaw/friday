@@ -21,6 +21,14 @@
   --color-border: var(--border);
   --color-input: var(--border);
   --color-ring: oklch(0.708 0 0);
+  --color-sidebar: var(--background);
+  --color-sidebar-foreground: var(--foreground);
+  --color-sidebar-primary: var(--primary);
+  --color-sidebar-primary-foreground: var(--primary-foreground);
+  --color-sidebar-accent: var(--secondary);
+  --color-sidebar-accent-foreground: var(--foreground);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-ring: var(--ring);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -36,6 +44,7 @@
     --secondary: oklch(0.97 0 0);
     --muted-foreground: oklch(0.556 0 0);
     --border: oklch(0.94 0 0);
+    --ring: oklch(0.708 0 0);
     --radius: 1rem;
     font-family:
       ui-sans-serif,
