@@ -164,6 +164,27 @@ export const sqliteStorage = Layer.effect(
         ),
       )
     }, database)
+    const history = Effect.fn('Storage.history')(function* (
+      userId: string,
+      beforeId = Number.MAX_SAFE_INTEGER,
+    ) {
+      const rows = yield* sql<{
+        id: number
+        kind: string
+        text: string
+        date: string
+        requestId: string | null
+      }>`SELECT id, kind, text, date, request_id AS requestId FROM wednesday_messages WHERE user_id = ${userId} AND id < ${beforeId} AND kind IN ('user', 'talk') ORDER BY id DESC LIMIT 251`
+      return {
+        messages: yield* decodeMessages(
+          rows
+            .slice(0, 250)
+            .reverse()
+            .map(({ requestId, ...row }) => (requestId ? { ...row, requestId } : row)),
+        ),
+        hasOlder: rows.length > 250,
+      }
+    }, database)
     const memoryStorage = yield* makeSqliteMemory(sql)
     const logSequence = Effect.fn('Storage.logSequence')(function* (userId: string) {
       const rows = yield* sql<{
@@ -219,6 +240,7 @@ export const sqliteStorage = Layer.effect(
     }, database)
     return Storage.of({
       settings,
+      history,
       saveSettings,
       messages,
       ...memoryStorage,

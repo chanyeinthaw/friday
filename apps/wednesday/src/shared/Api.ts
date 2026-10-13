@@ -7,7 +7,7 @@ import {
   HttpApiSchema,
   HttpApiSecurity,
 } from 'effect/http-api'
-import { Settings, ServerEvent } from './protocol.ts'
+import { Settings, ServerEvent, ApiFormat } from './protocol.ts'
 import { WednesdayError } from '../server/errors.ts'
 
 export class CurrentUser extends Context.Service<
@@ -46,6 +46,13 @@ const ChatApi = HttpApiGroup.make('chat')
       error,
     }),
     HttpApiEndpoint.get('conversation', '/api/chat', { success: Replies, error }),
+    HttpApiEndpoint.get('history', '/api/chat/history', {
+      query: Schema.Struct({
+        beforeId: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+      }),
+      success: Replies,
+      error,
+    }),
     HttpApiEndpoint.get('events', '/api/chat/events', {
       query: Schema.Struct({
         afterId: Schema.optionalKey(
@@ -81,7 +88,11 @@ const ChatApi = HttpApiGroup.make('chat')
       error,
     }),
     HttpApiEndpoint.post('discoverModels', '/api/models', {
-      payload: Schema.Struct({ baseUrl: Schema.NonEmptyString, apiKey: Schema.String }),
+      payload: Schema.Struct({
+        baseUrl: Schema.NonEmptyString,
+        apiKey: Schema.String,
+        apiFormat: Schema.optionalKey(ApiFormat),
+      }),
       success: Replies,
       error,
     }),

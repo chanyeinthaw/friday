@@ -45,6 +45,7 @@ export const chatApiLayer = HttpApiBuilder.group(
       .handle('pollChatGpt', ({ payload }) => handle({ _tag: 'PollChatGpt', ...payload }))
       .handle('cancelChatGpt', ({ payload }) => handle({ _tag: 'CancelChatGpt', ...payload }))
       .handle('disconnectChatGpt', () => handle({ _tag: 'DisconnectChatGpt' }))
+      .handle('history', ({ query }) => handle({ _tag: 'LoadOlder', beforeId: query.beforeId }))
       .handle('conversation', () => handle({ _tag: 'Load' }))
       .handle('send', ({ payload }) => handle({ _tag: 'Send', ...payload }))
       .handle('steer', ({ payload }) => handle({ _tag: 'Steer', ...payload }))

@@ -1,9 +1,10 @@
+import { Schema } from 'effect'
 import { Link, Outlet, useNavigate } from '@tanstack/react-router'
 import { cn } from 'cn'
 import { toast } from 'sonner'
 import { Toaster } from './components/ui/sonner.tsx'
 import { useAtomValue } from '@effect/atom-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   ArrowUp,
@@ -23,7 +24,7 @@ import {
 } from 'lucide-react'
 import { dispatch, readyAtom, stateAtom } from './State.ts'
 import { Message as Action } from './Messages.ts'
-import { Thinking } from '../shared/protocol.ts'
+import { ApiFormat, Thinking } from '../shared/protocol.ts'
 import type { Model } from './App.ts'
 import type { ProviderField } from './ProviderFields.ts'
 import { Button } from './components/ui/button.tsx'
@@ -64,7 +65,7 @@ import { Message, MessageContent, MessageFooter } from './components/ui/message.
 import { Bubble, BubbleContent } from './components/ui/bubble.tsx'
 import { Marker, MarkerContent } from './components/ui/marker.tsx'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover.tsx'
-import { Streamdown } from 'streamdown'
+import ChatMarkdown from './markdown/ChatMarkdown.tsx'
 import {
   Dialog,
   DialogTrigger,
@@ -264,23 +265,61 @@ function SettingsLink() {
   )
 }
 function ChatTimeline({ model }: { model: Model }) {
+  const anchor = useRef<{ element: HTMLElement; viewport: HTMLElement; top: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!anchor.current || model.loadingHistory) return
+    const { element, viewport, top } = anchor.current
+    viewport.scrollTop += element.getBoundingClientRect().top - top
+    anchor.current = null
+  }, [model.messages, model.loadingHistory])
   return (
     <>
+      {model.hasOlder && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            disabled={model.loadingHistory || model.connection !== 'ready'}
+            onClick={(event) => {
+              const viewport = event.currentTarget.closest(
+                '[data-slot="message-scroller-viewport"]',
+              )
+              const element = viewport?.querySelector('[data-history-message]')
+              if (viewport instanceof HTMLElement && element instanceof HTMLElement)
+                anchor.current = { element, viewport, top: element.getBoundingClientRect().top }
+              dispatch(Action.LoadOlder())
+            }}>
+            {model.loadingHistory ? 'Loading…' : 'Load more'}
+          </Button>
+        </div>
+      )}
       {[
         ...model.messages.filter((item) => item.kind === 'user' || item.kind === 'talk'),
         ...model.pendingMessages,
+        ...(model.streaming
+          ? [
+              {
+                ...model.streaming,
+                id: -1,
+                streamId: model.streaming.id,
+                kind: 'talk' as const,
+              },
+            ]
+          : []),
       ]
         .toSorted((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
         .map((item) => {
           const stored = 'id' in item
           const user = !stored || item.kind === 'user'
-          const key = item.requestId
-            ? `request-${item.requestId}`
-            : stored
-              ? `message-${item.id}`
-              : ''
+          const key =
+            stored && item.streamId
+              ? `stream-${item.streamId}`
+              : item.requestId
+                ? `request-${item.requestId}`
+                : stored
+                  ? `message-${item.id}`
+                  : ''
           return (
-            <MessageScrollerItem key={key} messageId={key}>
+            <MessageScrollerItem key={key} messageId={key} data-history-message>
               <Message align={user ? 'end' : 'start'}>
                 <MessageContent>
                   <Bubble variant={user ? 'secondary' : 'ghost'}>
@@ -288,7 +327,7 @@ function ChatTimeline({ model }: { model: Model }) {
                       {user ? (
                         <p className="whitespace-pre-wrap">{item.text}</p>
                       ) : (
-                        <Streamdown>{item.text}</Streamdown>
+                        <ChatMarkdown text={item.text} streaming={stored && item.id < 0} />
                       )}
                     </BubbleContent>
                   </Bubble>
@@ -307,7 +346,7 @@ function ChatTimeline({ model }: { model: Model }) {
                       </Button>
                     </MessageFooter>
                   )}
-                  {stored && !user && (
+                  {stored && item.id >= 0 && !user && (
                     <MessageFooter>
                       <Button
                         variant="ghost"
@@ -809,15 +848,38 @@ function ChatGptSignIn({
     </Dialog>
   )
 }
+const parseApiFormat = Schema.decodeUnknownOption(ApiFormat)
 function ApiProviderSettings({ model }: { model: Model }) {
   return (
     <>
+      <Field label="API format">
+        <Select
+          value={model.apiFormat}
+          disabled={model.busy || model.fetching || model.saving || model.connection !== 'ready'}
+          onValueChange={(value) => {
+            const format = parseApiFormat(value)
+            if (format._tag === 'Some') dispatch(Action.SelectedApiFormat({ format: format.value }))
+          }}>
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="chat-completions">OpenAI Chat Completions</SelectItem>
+            <SelectItem value="responses">OpenAI Responses</SelectItem>
+            <SelectItem value="anthropic">Anthropic Messages</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
       <Field label="API address">
         <Input
           type="url"
           autoComplete="url"
           spellCheck={false}
-          placeholder="https://api.openai.com/v1"
+          placeholder={
+            model.apiFormat === 'anthropic'
+              ? 'https://api.anthropic.com/v1'
+              : 'https://api.openai.com/v1'
+          }
           value={model.baseUrl}
           onChange={(e) => dispatch(Action.ChangedUrl({ value: e.target.value }))}
         />

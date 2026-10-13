@@ -33,6 +33,13 @@ export class Storage extends Context.Service<
       userId: string,
       afterId?: number,
     ) => Effect.Effect<readonly ChatMessage[], WednesdayError>
+    readonly history: (
+      userId: string,
+      beforeId?: number,
+    ) => Effect.Effect<
+      { readonly messages: readonly ChatMessage[]; readonly hasOlder: boolean },
+      WednesdayError
+    >
     readonly memory: (userId: string) => Effect.Effect<MemoryState, WednesdayError>
     readonly saveMemory: (userId: string, state: MemoryState) => Effect.Effect<void, WednesdayError>
     readonly withMemory: <A, E, R>(

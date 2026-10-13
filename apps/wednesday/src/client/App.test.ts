@@ -24,6 +24,55 @@ const receive = (model: Model, event: Parameters<typeof Message.Received>[0]['ev
   update(model, Message.Received({ event })).model
 
 describe('conversation reconciliation', () => {
+  it('preserves older pages on reconnect and deduplicates a repeated history reply', () => {
+    const message = (id: number) => ({
+      id,
+      kind: 'talk' as const,
+      text: `Reply ${id}`,
+      date: '2026-10-13',
+    })
+    const page = { _tag: 'History' as const, messages: [message(0), message(1)], hasOlder: false }
+    const loaded = receive(
+      { ...initialModel, messages: [message(2)], hasOlder: true, loadingHistory: true },
+      page,
+    )
+    expect(loaded.messages.map((item) => item.id)).toEqual([0, 1, 2])
+    expect(loaded.loadingHistory).toBe(false)
+    const resumed = receive(loaded, {
+      _tag: 'Snapshot',
+      settings,
+      hasApiKey: true,
+      busy: false,
+      turnId: null,
+      messages: [message(3)],
+    })
+    expect(resumed.messages.map((item) => item.id)).toEqual([0, 1, 2, 3])
+    expect(resumed.hasOlder).toBe(false)
+    expect(receive(resumed, page).messages).toBe(resumed.messages)
+  })
+  it('restores streamed paragraphs and clears them atomically when the durable response arrives', () => {
+    const streaming = { id: 'turn-0', turnId: 'turn', text: 'First paragraph.', date: '2026-10-13' }
+    const restored = receive(initialModel, {
+      _tag: 'Snapshot',
+      settings,
+      hasApiKey: true,
+      busy: true,
+      turnId: 'turn',
+      messages: [],
+      streaming,
+    })
+    expect(restored.streaming).toEqual(streaming)
+    const completed = receive(restored, {
+      _tag: 'Message',
+      completesStreaming: true,
+      message: { id: 1, kind: 'talk', text: 'First paragraph.\n\nSecond.', date: '2026-10-13' },
+    })
+    expect(completed.streaming).toBeNull()
+    expect(completed.messages).toHaveLength(1)
+    expect(
+      receive(restored, { _tag: 'Status', busy: false, turnId: null, pending: [] }).streaming,
+    ).toBeNull()
+  })
   it('reconciles another tab’s pending steering with durable history', () => {
     const pending = receive(initialModel, {
       _tag: 'Status',
@@ -437,4 +486,80 @@ describe('provider tab switching', () => {
       update(restored.model, Message.AutoSave({ revision: draft.settingsRevision })).commands,
     ).toBeUndefined()
   })
+})
+
+describe('API formats', () => {
+  const connected: Model = {
+    ...initialModel,
+    connection: 'ready',
+    baseUrl: settings.baseUrl,
+    hasApiKey: true,
+    activeSettings: settings,
+    models: settings.models,
+    modelId: 'model',
+  }
+  it('defaults older settings to Chat Completions', () => {
+    const restored = receive(initialModel, { _tag: 'SettingsChanged', settings })
+    expect(restored.apiFormat).toBe('chat-completions')
+  })
+  it('preserves a proxy credential but removes incompatible models when format changes', () => {
+    const changed = update(
+      { ...connected, apiKey: 'new-key' },
+      Message.SelectedApiFormat({ format: 'responses' }),
+    ).model
+    expect(changed.baseUrl).toBe(settings.baseUrl)
+    expect(changed.apiKey).toBe('new-key')
+    expect(changed.hasApiKey).toBe(true)
+    expect(changed.models).toEqual([])
+    expect(changed.modelId).toBe('')
+    const mapping = {
+      ...modelMapping,
+      thinking: { off: {}, low: { reasoning: { effort: 'low' } } },
+    }
+    const discovered = receive(changed, { _tag: 'Models', models: [mapping] })
+    expect(discovered.models).toEqual([mapping])
+    expect(discovered.settingsDirty).toBe(true)
+  })
+  it('clears credentials when switching the default provider host', () => {
+    const changed = update(
+      { ...connected, baseUrl: 'https://api.openai.com/v1', apiKey: 'openai-key' },
+      Message.SelectedApiFormat({ format: 'anthropic' }),
+    ).model
+    expect(changed.baseUrl).toBe('https://api.anthropic.com/v1')
+    expect(changed.apiKey).toBe('')
+    expect(changed.hasApiKey).toBe(false)
+  })
+  it.effect('sends the selected format in discovery and autosave', () =>
+    Effect.gen(function* () {
+      const sent: ClientCommand[] = []
+      const model = { ...connected, apiFormat: 'responses' as const, settingsDirty: true }
+      const browser = Browser.of({
+        send: (command) =>
+          Effect.sync(() => {
+            sent.push(command)
+          }),
+        connect: () => Stream.empty,
+        sessionChanges: Stream.empty,
+        signOut: Effect.void,
+      })
+      for (const action of [
+        Message.Discover(),
+        Message.AutoSave({ revision: model.settingsRevision }),
+      ]) {
+        const result = update(model, action)
+        yield* Effect.forEach(result.commands ?? [], (command) => command).pipe(
+          Effect.provideService(Browser, browser),
+        )
+      }
+      expect(sent).toContainEqual({
+        _tag: 'DiscoverModels',
+        baseUrl: model.baseUrl,
+        apiKey: '',
+        apiFormat: 'responses',
+      })
+      expect(sent.find((command) => command._tag === 'SaveSettings')).toMatchObject({
+        settings: { apiFormat: 'responses' },
+      })
+    }),
+  )
 })

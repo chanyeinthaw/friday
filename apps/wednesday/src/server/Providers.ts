@@ -2,14 +2,22 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { Config, Context, Effect, Layer, Redacted, Schema } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from 'effect/http'
 import { OpenAiClient, OpenAiLanguageModel } from '@humanlayer/effect-ai-openai-compat'
+import {
+  OpenAiClient as ResponsesClient,
+  OpenAiLanguageModel as ResponsesModel,
+} from '@effect/ai-openai'
+import { AnthropicClient, AnthropicLanguageModel } from '@humanlayer/effect-ai-anthropic'
 import { customModel } from '@humanlayer/fold-core'
-import { ModelMapping, type Settings, type Thinking } from '../shared/protocol.ts'
+import { ModelMapping, type Settings, type Thinking, type ApiFormat } from '../shared/protocol.ts'
 import { failure } from './errors.ts'
 
 const protectedFields = new Set([
   'model',
   'messages',
   'input',
+  'system',
+  'instructions',
+  'previous_response_id',
   'tools',
   'tool_choice',
   'stream',
@@ -46,22 +54,55 @@ export const normalizeBaseUrl = (value: string) =>
       failure('Enter an HTTP or HTTPS API base URL without credentials, query, or fragment.'),
   })
 
-export const defaultMapping = (id: string) => {
+const anthropicThinking = (id: string): ModelMapping['thinking'] => {
+  if (/claude-(?:opus|sonnet)-4[.-][6-9]/.test(id))
+    return {
+      off: { thinking: { type: 'disabled' } },
+      low: { thinking: { type: 'adaptive' }, output_config: { effort: 'low' } },
+      medium: { thinking: { type: 'adaptive' }, output_config: { effort: 'medium' } },
+      high: { thinking: { type: 'adaptive' }, output_config: { effort: 'high' } },
+    }
+  if (/claude-(?:(?:opus|sonnet|haiku)-4|3[.-]7-sonnet)/.test(id))
+    return {
+      off: { thinking: { type: 'disabled' } },
+      low: { thinking: { type: 'enabled', budget_tokens: 1024 } },
+      medium: { thinking: { type: 'enabled', budget_tokens: 4096 } },
+      high: { thinking: { type: 'enabled', budget_tokens: 6144 } },
+    }
+  return { off: {} }
+}
+
+// Anthropic's client owns /v1; users enter the same versioned base URL as other formats.
+const anthropicRoot = (url: string) => url.replace(/\/v1\/?$/, '')
+
+export const defaultMapping = (id: string, format: ApiFormat = 'chat-completions') => {
   // /models has no standard capability metadata; these are editable starting points.
   const openaiReasoning = /^(o[134](?:-|$)|gpt-[56](?:[.-]|$))/.test(id)
   return {
     id,
-    contextWindow: 128_000,
+    contextWindow: format === 'anthropic' ? 200_000 : 128_000,
     maxOutputTokens: 8192,
     requestFields: {},
-    thinking: openaiReasoning
-      ? {
-          off: {},
-          low: { reasoning_effort: 'low' },
-          medium: { reasoning_effort: 'medium' },
-          high: { reasoning_effort: 'high' },
-        }
-      : { off: {} },
+    thinking:
+      format === 'anthropic'
+        ? anthropicThinking(id)
+        : openaiReasoning
+          ? {
+              off: {},
+              low:
+                format === 'responses'
+                  ? { reasoning: { effort: 'low' } }
+                  : { reasoning_effort: 'low' },
+              medium:
+                format === 'responses'
+                  ? { reasoning: { effort: 'medium' } }
+                  : { reasoning_effort: 'medium' },
+              high:
+                format === 'responses'
+                  ? { reasoning: { effort: 'high' } }
+                  : { reasoning_effort: 'high' },
+            }
+          : { off: {} },
   } satisfies ModelMapping
 }
 
@@ -113,28 +154,64 @@ export const credentialsLayer = Layer.effect(
 )
 
 export const discoverModels = Effect.fn('Providers.discoverModels')(
-  function* (baseUrl: string, key: Redacted.Redacted<string>) {
+  function* (
+    baseUrl: string,
+    key: Redacted.Redacted<string>,
+    format: ApiFormat = 'chat-completions',
+  ) {
     const url = yield* normalizeBaseUrl(baseUrl)
-    const response = yield* HttpClient.execute(
-      HttpClientRequest.get(`${url}/models`).pipe(HttpClientRequest.bearerToken(key)),
-    )
-    const models = yield* HttpClientResponse.schemaBodyJson(
-      Schema.Struct({
-        data: Schema.Array(
-          Schema.Struct({
-            id: Schema.NonEmptyString,
-            name: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            display_name: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            displayName: Schema.optionalKey(Schema.NullOr(Schema.String)),
-          }),
-        ),
-      }),
-    )(yield* HttpClientResponse.filterStatusOk(response))
-    return [...new Set(models.data.map((item) => item.id))].toSorted().map((id) => {
-      const item = models.data.find((model) => model.id === id)
+    const data: {
+      id: string
+      name?: string | null
+      display_name?: string | null
+      displayName?: string | null
+    }[] = []
+    let after: string | undefined
+    const cursors = new Set<string>()
+    do {
+      const request = HttpClientRequest.get(
+        format === 'anthropic' ? `${anthropicRoot(url)}/v1/models` : `${url}/models`,
+      ).pipe(
+        format === 'anthropic'
+          ? HttpClientRequest.setHeaders({
+              'x-api-key': Redacted.value(key),
+              'anthropic-version': '2023-06-01',
+            })
+          : HttpClientRequest.bearerToken(key),
+      )
+      const response = yield* HttpClient.execute(
+        after ? request.pipe(HttpClientRequest.setUrlParam('after_id', after)) : request,
+      )
+      const page = yield* HttpClientResponse.schemaBodyJson(
+        Schema.Struct({
+          data: Schema.Array(
+            Schema.Struct({
+              id: Schema.NonEmptyString,
+              name: Schema.optionalKey(Schema.NullOr(Schema.String)),
+              display_name: Schema.optionalKey(Schema.NullOr(Schema.String)),
+              displayName: Schema.optionalKey(Schema.NullOr(Schema.String)),
+            }),
+          ),
+          has_more: Schema.optionalKey(Schema.Boolean),
+          last_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        }),
+      )(yield* HttpClientResponse.filterStatusOk(response))
+      data.push(...page.data)
+      after = format === 'anthropic' && page.has_more ? (page.last_id ?? undefined) : undefined
+      if (
+        format === 'anthropic' &&
+        page.has_more &&
+        (!after || cursors.has(after) || cursors.size >= 100)
+      )
+        return yield* failure('The model list returned invalid pagination.')
+      if (after) cursors.add(after)
+    } while (after)
+
+    return [...new Set(data.map((item) => item.id))].toSorted().map((id) => {
+      const item = data.find((model) => model.id === id)
       const displayName =
         item?.display_name?.trim() || item?.displayName?.trim() || item?.name?.trim()
-      const mapping = defaultMapping(id)
+      const mapping = defaultMapping(id, format)
       return displayName ? { ...mapping, displayName } : mapping
     })
   },
@@ -153,6 +230,57 @@ export const configuredModel = (
   thinking: Thinking,
 ) => {
   const fields = { ...mapping.requestFields, ...mapping.thinking[thinking] }
+  const format = settings.apiFormat ?? 'chat-completions'
+  const activeModel = {
+    providerId: 'user-provider',
+    providerKind: 'openai-compatible' as const,
+    modelId: mapping.id,
+    role: null,
+    requestedReasoningLevel: thinking,
+    reasoning: { _tag: 'disabled' as const },
+  }
+  if (format === 'responses')
+    return customModel({
+      activeModel,
+      make: ResponsesModel.make({
+        model: mapping.id,
+        config: {
+          max_output_tokens: mapping.maxOutputTokens,
+          ...fields,
+          store: false,
+          useItemReferences: false,
+          strictJsonSchema: false,
+        },
+      }).pipe(
+        Effect.provide(ResponsesClient.layer({ apiUrl: settings.baseUrl, apiKey: key })),
+        Effect.provide(FetchHttpClient.layer),
+      ),
+    })
+  if (format === 'anthropic')
+    return customModel({
+      activeModel: {
+        providerId: activeModel.providerId,
+        providerKind: 'anthropic',
+        modelId: mapping.id,
+        role: null,
+        requestedReasoningLevel: thinking,
+        thinking: { _tag: 'disabled' },
+      },
+      make: AnthropicLanguageModel.make({
+        model: mapping.id,
+        config: {
+          max_tokens: mapping.maxOutputTokens,
+          ...fields,
+          disableParallelToolCalls: true,
+          strictJsonSchema: false,
+        },
+      }).pipe(
+        Effect.provide(
+          AnthropicClient.layer({ apiUrl: anthropicRoot(settings.baseUrl), apiKey: key }),
+        ),
+        Effect.provide(FetchHttpClient.layer),
+      ),
+    })
   const tokenField = /^(o[134](?:-|$)|gpt-[56](?:[.-]|$))/.test(mapping.id)
     ? 'max_completion_tokens'
     : 'max_tokens'
@@ -161,14 +289,7 @@ export const configuredModel = (
       ? {}
       : { [tokenField]: mapping.maxOutputTokens }
   return customModel({
-    activeModel: {
-      providerId: 'user-provider',
-      providerKind: 'openai-compatible',
-      modelId: mapping.id,
-      role: null,
-      requestedReasoningLevel: thinking,
-      reasoning: { _tag: 'disabled' },
-    },
+    activeModel,
     make: OpenAiLanguageModel.make({
       model: mapping.id,
       config: { ...tokenFields, ...fields, parallel_tool_calls: false, strictJsonSchema: false },

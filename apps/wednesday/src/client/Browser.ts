@@ -99,6 +99,8 @@ export const browserLayer = Layer.effect(
             return yield* api.chat.disconnectChatGpt()
           case 'Load':
             return yield* api.chat.conversation()
+          case 'LoadOlder':
+            return yield* api.chat.history({ query: { beforeId: command.beforeId } })
           case 'Send':
             return yield* api.chat.send({
               payload: { requestId: command.requestId, text: command.text },
@@ -115,7 +117,7 @@ export const browserLayer = Layer.effect(
             })
           case 'DiscoverModels':
             return yield* api.chat.discoverModels({
-              payload: { baseUrl: command.baseUrl, apiKey: command.apiKey },
+              payload: command,
             })
         }
       }).pipe(

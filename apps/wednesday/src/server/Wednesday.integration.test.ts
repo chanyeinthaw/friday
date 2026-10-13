@@ -37,6 +37,24 @@ const parseCodexRequest = Schema.decodeUnknownSync(
     }),
   ),
 )
+const parseResponsesRequest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      input: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
+      tools: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.String }))),
+      instructions: Schema.optionalKey(Schema.String),
+      stream: Schema.Boolean,
+    }),
+  ),
+)
+const parseAnthropicMessages = Schema.decodeUnknownSync(
+  Schema.Array(
+    Schema.Struct({
+      role: Schema.String,
+      content: Schema.Array(Schema.Struct({ type: Schema.String })),
+    }),
+  ),
+)
 const parseSettingsRow = Schema.decodeUnknownSync(Schema.Struct({ payload: Schema.String }))
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const issuer = 'https://wednesday-test.clerk.accounts.dev'
@@ -67,12 +85,17 @@ let provider: ReturnType<typeof Bun.serve>
 let applicationPort = 0
 let deviceApproved = false
 let refreshCount = 0
+const formatRequests: { format: string; body: Record<string, Schema.Json> }[] = []
+const decodeObject = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
+)
 const codexRequests: ReturnType<typeof parseJson>[] = []
 const chatGptAccessToken = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-test' } })).toString('base64url')}.signature`
 let requestCount = 0
 const requests: unknown[] = []
 let memoryResponse: ((raw: string) => Promise<string> | string) | undefined
 const memoryRequests: string[] = []
+let streamingGate: { resume: Promise<void> } | undefined
 let chatGate: ((body: typeof Request.Type) => Promise<void>) | undefined
 let firstRequestResolve: (() => void) | undefined
 let firstResponseResolve: (() => void) | undefined
@@ -152,6 +175,7 @@ class Client {
   send(command: ClientCommand) {
     const path = {
       Load: '/api/chat',
+      LoadOlder: '/api/chat/history',
       Send: '/api/chat/messages',
       Steer: '/api/chat/steering',
       Stop: '/api/chat/stop',
@@ -163,14 +187,16 @@ class Client {
       DisconnectChatGpt: '/api/chatgpt/disconnect',
     }[command._tag]
     const { _tag, ...payload } = command
-    void fetch(`http://127.0.0.1:${applicationPort}${path}`, {
-      method: _tag === 'Load' ? 'GET' : 'POST',
+    const read = _tag === 'Load' || _tag === 'LoadOlder'
+    const query = command._tag === 'LoadOlder' ? `?beforeId=${command.beforeId}` : ''
+    void fetch(`http://127.0.0.1:${applicationPort}${path}${query}`, {
+      method: read ? 'GET' : 'POST',
       headers: {
         Authorization: `Bearer ${token(this.userId, `http://localhost:${applicationPort}`)}`,
         'Content-Type': 'application/json',
         Origin: `http://localhost:${applicationPort}`,
       },
-      body: _tag === 'Load' ? undefined : JSON.stringify(payload),
+      body: read ? undefined : JSON.stringify(payload),
     }).then(async (response) => {
       if (!response.ok) {
         this.receive({ _tag: 'Error', message: await response.text() })
@@ -264,6 +290,13 @@ test('embedded assets negotiate compression and immutable caching', async () => 
   if (!script) throw new Error('Missing frontend script')
   const plain = await fetch(new URL(script, origin), { headers: { 'accept-encoding': 'identity' } })
   const plainBody = await plain.text()
+  expect(plainBody.length).toBeLessThan(3_200_000)
+  const lazyChunk = /import\("(\.\/[^" ]+\.js)"\)/.exec(plainBody)?.[1]
+  expect(lazyChunk).toBeDefined()
+  if (!lazyChunk) throw new Error('Missing lazy frontend chunk')
+  const chunk = await fetch(new URL(lazyChunk, new URL(script, origin)))
+  expect(chunk.status).toBe(200)
+  expect(chunk.headers.get('content-type')).toContain('javascript')
   for (const encoding of ['br', 'gzip']) {
     const compressed = await fetch(new URL(script, origin), {
       headers: { 'accept-encoding': encoding },
@@ -319,11 +352,17 @@ const deviceProvider = async (request: Request) => {
       ],
     })
   }
-  if (path === '/codex/responses') {
-    expect(request.headers.get('ChatGPT-Account-Id')).toBe('account-test')
-    expect(request.headers.get('Authorization')).toBe(`Bearer ${chatGptAccessToken}`)
-    const body = parseCodexRequest(await request.text())
-    codexRequests.push(body)
+  if (path === '/codex/responses' || path === '/v1/responses') {
+    const api = path === '/v1/responses'
+    if (api) expect(request.headers.get('Authorization')).toBe('Bearer test-provider-secret')
+    else {
+      expect(request.headers.get('ChatGPT-Account-Id')).toBe('account-test')
+      expect(request.headers.get('Authorization')).toBe(`Bearer ${chatGptAccessToken}`)
+    }
+    const raw = await request.text()
+    const body = api ? parseResponsesRequest(raw) : parseCodexRequest(raw)
+    if (api) formatRequests.push({ format: 'responses', body: decodeObject(raw) })
+    else codexRequests.push(body)
     const callsDate =
       body.tools?.some((tool) => tool.name === 'date') &&
       !body.input.some((item) => item.type === 'function_call_output')
@@ -377,6 +416,7 @@ const deviceProvider = async (request: Request) => {
       user: null,
       metadata: {},
     }
+    if (!body.stream) return Response.json(response)
     const item = output[0]
     const events = [
       {
@@ -423,10 +463,102 @@ const deviceProvider = async (request: Request) => {
   }
   return undefined
 }
+const anthropicProvider = async (request: Request) => {
+  const url = new URL(request.url)
+  if (url.pathname === '/anthropic/v1/models') {
+    expect(request.headers.get('x-api-key')).toBe('test-provider-secret')
+    expect(request.headers.get('anthropic-version')).toBe('2023-06-01')
+    return Response.json(
+      url.searchParams.has('after_id')
+        ? {
+            data: [{ id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet' }],
+            has_more: false,
+          }
+        : {
+            data: [{ id: 'claude-haiku-4-5', display_name: 'Claude Haiku' }],
+            has_more: true,
+            last_id: 'claude-haiku-4-5',
+          },
+    )
+  }
+  if (url.pathname === '/anthropic/v1/messages') {
+    expect(request.headers.get('x-api-key')).toBe('test-provider-secret')
+    const body = decodeObject(await request.text())
+    formatRequests.push({ format: 'anthropic', body })
+    const messages = parseAnthropicMessages(body.messages)
+    const callsDate =
+      Array.isArray(body.tools) &&
+      body.tools.length > 0 &&
+      !messages.some((message) => message.content.some((part) => part.type === 'tool_result'))
+    const content = callsDate
+      ? [{ type: 'tool_use', id: 'anthropic-date', name: 'date', input: {} }]
+      : [{ type: 'text', text: 'Hello from Anthropic' }]
+    const result = {
+      id: 'msg_anthropic',
+      type: 'message',
+      role: 'assistant',
+      model: body.model,
+      content,
+      stop_reason: callsDate ? 'tool_use' : 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 10,
+        cache_creation: null,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        service_tier: 'standard',
+      },
+    }
+    if (!body.stream) return Response.json(result)
+    const events = [
+      {
+        type: 'message_start',
+        message: {
+          ...result,
+          content: [],
+          stop_reason: null,
+          usage: { ...result.usage, output_tokens: 0 },
+        },
+      },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: callsDate ? { ...content[0], input: {} } : { type: 'text', text: '' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: callsDate
+          ? { type: 'input_json_delta', partial_json: '{}' }
+          : { type: 'text_delta', text: 'Hello from Anthropic' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: result.stop_reason, stop_sequence: null },
+        usage: { ...result.usage, output_tokens: 10 },
+      },
+      { type: 'message_stop' },
+    ]
+    return new Response(
+      events
+        .map(
+          (event) => `event: ${event.type}
+data: ${JSON.stringify(event)}
+
+`,
+        )
+        .join(''),
+      { headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  }
+  return undefined
+}
 beforeAll(async () => {
   temporary = await mkdtemp(join(tmpdir(), 'wednesday-test-'))
   binary = join(temporary, 'wednesday')
-  const build = Bun.spawn(['bun', 'build', './src/main.ts', '--compile', '--outfile', binary], {
+  const build = Bun.spawn(['bun', 'scripts/build.ts', '--outfile', binary], {
     cwd: join(import.meta.dir, '../..'),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -438,13 +570,36 @@ beforeAll(async () => {
     async fetch(request) {
       const deviceResponse = await deviceProvider(request)
       if (deviceResponse) return deviceResponse
-      if (new URL(request.url).pathname === '/v1/models')
-        return Response.json({ data: [{ id: 'test-model' }] })
+      const anthropicResponse = await anthropicProvider(request)
+      if (anthropicResponse) return anthropicResponse
+      const url = new URL(request.url)
+      if (url.pathname === '/v1/models') return Response.json({ data: [{ id: 'test-model' }] })
       const raw = await request.text()
       const body = parseRequest(raw)
       requests.push(parseJson(raw))
       const currentRequest = ++requestCount
       if (chatGate && body.model === 'test-model') await chatGate(body)
+      if (streamingGate && body.model === 'test-model') {
+        const gate = streamingGate
+        streamingGate = undefined
+        const encoder = new TextEncoder()
+        const chunk = (content: string, done = false) =>
+          encoder.encode(
+            `data: ${JSON.stringify({ id: 'streamed_reply', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta: { content }, finish_reason: done ? 'stop' : null }] })}\n\n`,
+          )
+        return new Response(
+          new ReadableStream({
+            async start(controller) {
+              controller.enqueue(chunk('First paragraph.\n\nUnfinished'))
+              await gate.resume
+              controller.enqueue(chunk(' paragraph.\n\n```ts\nconst x = 1\n```', true))
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+              controller.close()
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        )
+      }
       const content =
         body.model === 'memory-model' && memoryResponse
           ? await memoryResponse(raw)
@@ -495,9 +650,9 @@ test('compiled binary embeds frontend and rejects cross-origin HTTP requests', a
   expect(html).toContain('<title>Wednesday</title>')
   const script = html.match(/src="([^"]+\.js)"/)
   expect(script?.[1]).toBeDefined()
-  const asset = await fetch(`http://127.0.0.1:${applicationPort}${script?.[1]}`).then((response) =>
-    response.text(),
-  )
+  const asset = await fetch(
+    new URL(script?.[1] ?? '', `http://127.0.0.1:${applicationPort}/`),
+  ).then((response) => response.text())
   expect(asset.includes('Steer this response')).toBe(true)
   const denied = await fetch(`http://127.0.0.1:${applicationPort}/api/chat`, {
     headers: {
@@ -953,7 +1108,12 @@ test('encrypts ChatGPT tokens, refreshes them, runs OptChat tools over Responses
     history.messages.map((message) => ({ kind: message.kind, text: message.text })),
   ).toContainEqual({ kind: 'talk', text: 'Hello from ChatGPT' })
   expect(
-    history.messages.some((message) => message.kind === 'tool' && message.text.includes('date')),
+    client.observed.some(
+      (event) =>
+        event._tag === 'Message' &&
+        event.message.kind === 'tool' &&
+        event.message.text.includes('date'),
+    ),
   ).toBe(true)
   expect(refreshCount).toBe(1)
   expect(codexRequests.length).toBeGreaterThanOrEqual(2)
@@ -964,3 +1124,148 @@ test('encrypts ChatGPT tokens, refreshes them, runs OptChat tools over Responses
   expect(disconnected.messages).toHaveLength(history.messages.length)
   client.close()
 }, 10000)
+
+test('pages 250 visible messages without overlap and isolates users', async () => {
+  const database = new Database(join(temporary, 'test.sqlite'))
+  const insert = database.prepare(
+    'INSERT INTO wednesday_messages (user_id, id, kind, text, date) VALUES (?, ?, ?, ?, ?)',
+  )
+  database.transaction(() => {
+    for (let index = 0; index < 501; index++) {
+      insert.run(
+        'user_pages',
+        index * 2,
+        index % 2 ? 'talk' : 'user',
+        `Message ${index}`,
+        '2026-10-13',
+      )
+      insert.run('user_pages', index * 2 + 1, 'tool', 'Hidden tool', '2026-10-13')
+    }
+    insert.run('user_other_pages', 0, 'user', 'Private message', '2026-10-13')
+  })()
+  database.close()
+  const client = await connect('user_pages')
+  const initial = client.initial
+  expect(initial?.messages).toHaveLength(250)
+  expect(initial?.messages[0]?.id).toBe(502)
+  expect(initial?.messages.at(-1)?.id).toBe(1000)
+  expect(initial?.hasOlder).toBe(true)
+  client.send({ _tag: 'LoadOlder', beforeId: 502 })
+  const older = await client.wait((event) => event._tag === 'History')
+  expect(older._tag === 'History' && older.messages).toHaveLength(250)
+  expect(older._tag === 'History' && older.messages[0]?.id).toBe(2)
+  expect(older._tag === 'History' && older.messages.at(-1)?.id).toBe(500)
+  client.send({ _tag: 'LoadOlder', beforeId: 2 })
+  const oldest = await client.wait((event) => event._tag === 'History')
+  expect(oldest._tag === 'History' && oldest.messages.map((message) => message.id)).toEqual([0])
+  expect(oldest._tag === 'History' && oldest.hasOlder).toBe(false)
+  const other = await connect('user_other_pages')
+  expect(other.initial?.messages.map((message) => message.text)).toEqual(['Private message'])
+  const resumed = await connect('user_pages', 1000)
+  expect(resumed.initial?.hasOlder).toBeUndefined()
+  expect(resumed.initial?.messages.every((message) => message.id > 1000)).toBe(true)
+  client.close()
+  other.close()
+  resumed.close()
+})
+
+test('streams completed paragraphs, restores them for another tab, and replaces them with durable text', async () => {
+  const client = await connect('user_paragraphs')
+  await save(client)
+  let release = () => {}
+  const resume = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  streamingGate = { resume }
+  client.send({ _tag: 'Send', requestId: 'paragraph_turn', text: 'Write paragraphs.' })
+  const streamed = await client.wait((event) => event._tag === 'Streaming' && !!event.message)
+  expect(streamed._tag === 'Streaming' && streamed.message?.text).toBe('First paragraph.')
+  const other = await connect('user_paragraphs')
+  expect(other.initial?.streaming?.text).toBe('First paragraph.')
+  expect(other.initial?.messages.some((message) => message.kind === 'talk')).toBe(false)
+  release()
+  const completed = await client.wait(
+    (event) => event._tag === 'Message' && event.message.kind === 'talk',
+  )
+  expect(completed._tag === 'Message' && completed.completesStreaming).toBe(true)
+  expect(completed._tag === 'Message' && completed.message.text).toBe(
+    'First paragraph.\n\nUnfinished paragraph.\n\n```ts\nconst x = 1\n```',
+  )
+  await client.wait((event) => event._tag === 'Status' && !event.busy)
+  expect((await client.snapshot()).streaming).toBeNull()
+  await other.wait((event) => event._tag === 'Message' && event.message.kind === 'talk')
+  client.close()
+  other.close()
+})
+
+for (const format of ['responses', 'anthropic'] as const) {
+  test(`discovers and runs OptChat with ${format}, including memory requests`, async () => {
+    const client = await connect(`user_format_${format}`)
+    const baseUrl = `http://127.0.0.1:${provider.port}/${format === 'anthropic' ? 'anthropic/v1' : 'v1'}`
+    client.send({
+      _tag: 'DiscoverModels',
+      baseUrl,
+      apiKey: 'test-provider-secret',
+      apiFormat: format,
+    })
+    const discovery = await client.wait(
+      (event) => event._tag === 'Models' || event._tag === 'Error',
+    )
+    expect(discovery._tag).toBe('Models')
+    if (discovery._tag !== 'Models') throw new Error('Discovery failed')
+    if (format === 'anthropic') {
+      expect(discovery.models.map((model) => model.displayName)).toEqual([
+        'Claude Haiku',
+        'Claude Sonnet',
+      ])
+      expect(discovery.models[1]?.thinking.low).toEqual({
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'low' },
+      })
+    }
+    const mapping = discovery.models.at(-1)
+    if (!mapping) throw new Error('No model')
+    client.send({
+      _tag: 'SaveSettings',
+      apiKey: 'test-provider-secret',
+      settings: {
+        provider: 'api',
+        apiFormat: format,
+        baseUrl,
+        models: [mapping],
+        modelId: mapping.id,
+        thinking: format === 'anthropic' ? 'low' : 'off',
+        memoryModelId: mapping.id,
+        memoryThinking: 'off',
+      },
+    })
+    expect(
+      (await client.wait((event) => event._tag === 'Saved' || event._tag === 'Error'))._tag,
+    ).toBe('Saved')
+    const before = formatRequests.length
+    client.send({
+      _tag: 'Send',
+      requestId: `format-${format}`,
+      text: 'What is the date? ' + 'context '.repeat(100),
+    })
+    await client.wait((event) => event._tag === 'Status' && !event.busy)
+    const snapshot = await client.snapshot()
+    expect(client.observed.filter((event) => event._tag === 'Error')).toEqual([])
+    expect(snapshot.messages.filter((message) => message.kind === 'talk').at(-1)?.text).toBe(
+      format === 'anthropic' ? 'Hello from Anthropic' : 'Hello from ChatGPT',
+    )
+    client.send({ _tag: 'Send', requestId: `followup-${format}`, text: 'Continue.' })
+    await client.wait((event) => event._tag === 'Status' && !event.busy)
+    const sent = formatRequests.slice(before).filter((request) => request.format === format)
+    expect(sent.length).toBeGreaterThanOrEqual(2)
+    expect(sent[0]?.body).toMatchObject(
+      format === 'anthropic'
+        ? { max_tokens: 8192, thinking: { type: 'adaptive' }, output_config: { effort: 'low' } }
+        : { max_output_tokens: 8192, store: false },
+    )
+    expect(Array.isArray(sent[0]?.body.tools)).toBe(true)
+    expect(sent.some((request) => JSON.stringify(request.body).includes('Compaction:'))).toBe(true)
+    if (format === 'anthropic') expect(sent[0]?.body.system).toBeDefined()
+    client.close()
+  }, 15000)
+}
