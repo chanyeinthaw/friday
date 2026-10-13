@@ -1,4 +1,7 @@
 import { Effect, Exit, Queue, Semaphore } from 'effect'
+import { Prompt } from 'effect/ai'
+import { cachePrompt } from './CachePrompt.ts'
+import { optChatTools } from './OptChatTools.ts'
 import { defineAgent, startSession, type FoldModel } from '@humanlayer/fold-core'
 import {
   batchView,
@@ -166,12 +169,35 @@ export const makeMemory = (
             agent: defineAgent({
               name: 'memory',
               model,
+              tools: optChatTools({
+                zoom: () => failure('Compactions cannot call tools.'),
+                date: () => failure('Compactions cannot call tools.'),
+              }),
+              hooks: {
+                preRequest: [
+                  {
+                    name: 'OptChat.compactionView',
+                    handler: (input) => {
+                      const first = input.prompt.content.findIndex(
+                        (message) => message.role === 'user',
+                      )
+                      return Effect.succeed({
+                        _tag: 'changed' as const,
+                        prompt: Prompt.make([
+                          { role: 'system', content: instructions },
+                          ...cachePrompt(view, input.prompt.content.slice(first)).content,
+                        ]),
+                      })
+                    },
+                  },
+                ],
+              },
               systemPrompt: instructions,
               autoCompact: { enabled: false },
             }),
           })
           let best = ''
-          let task = `${view}\n${compactionTask(job)}`
+          let task = compactionTask(job)
           for (let attempt = 0; attempt < 5; attempt++) {
             const reply = yield* session.send(task)
             const candidate = reply.resultText?.trim() ?? ''

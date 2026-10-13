@@ -228,8 +228,13 @@ export const configuredModel = (
   key: Redacted.Redacted<string>,
   mapping: ModelMapping,
   thinking: Thinking,
+  userId: string,
 ) => {
   const fields = { ...mapping.requestFields, ...mapping.thinking[thinking] }
+  const transformClient = (client: HttpClient.HttpClient) =>
+    HttpClient.mapRequest(client, (request) =>
+      HttpClientRequest.setHeader(request, 'Session-Id', userId),
+    )
   const format = settings.apiFormat ?? 'chat-completions'
   const activeModel = {
     providerId: 'user-provider',
@@ -247,12 +252,15 @@ export const configuredModel = (
         config: {
           max_output_tokens: mapping.maxOutputTokens,
           ...fields,
+          prompt_cache_key: userId,
           store: false,
           useItemReferences: false,
           strictJsonSchema: false,
         },
       }).pipe(
-        Effect.provide(ResponsesClient.layer({ apiUrl: settings.baseUrl, apiKey: key })),
+        Effect.provide(
+          ResponsesClient.layer({ apiUrl: settings.baseUrl, apiKey: key, transformClient }),
+        ),
         Effect.provide(FetchHttpClient.layer),
       ),
     })
@@ -276,7 +284,11 @@ export const configuredModel = (
         },
       }).pipe(
         Effect.provide(
-          AnthropicClient.layer({ apiUrl: anthropicRoot(settings.baseUrl), apiKey: key }),
+          AnthropicClient.layer({
+            apiUrl: anthropicRoot(settings.baseUrl),
+            apiKey: key,
+            transformClient,
+          }),
         ),
         Effect.provide(FetchHttpClient.layer),
       ),
@@ -292,9 +304,16 @@ export const configuredModel = (
     activeModel,
     make: OpenAiLanguageModel.make({
       model: mapping.id,
-      config: { ...tokenFields, ...fields, parallel_tool_calls: false, strictJsonSchema: false },
+      config: {
+        ...tokenFields,
+        ...fields,
+        parallel_tool_calls: false,
+        strictJsonSchema: false,
+      },
     }).pipe(
-      Effect.provide(OpenAiClient.layer({ apiUrl: settings.baseUrl, apiKey: key })),
+      Effect.provide(
+        OpenAiClient.layer({ apiUrl: settings.baseUrl, apiKey: key, transformClient }),
+      ),
       Effect.provide(FetchHttpClient.layer),
     ),
   })

@@ -6,7 +6,6 @@ import { Toaster } from './components/ui/sonner.tsx'
 import { useAtomValue } from '@effect/atom-react'
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  ArrowLeft,
   ArrowUp,
   Check,
   Copy,
@@ -15,7 +14,6 @@ import {
   Plus,
   ChevronDown,
   Settings,
-  LogOut,
   Eye,
   EyeOff,
   ExternalLink,
@@ -66,6 +64,9 @@ import { Bubble, BubbleContent } from './components/ui/bubble.tsx'
 import { Marker, MarkerContent } from './components/ui/marker.tsx'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover.tsx'
 import { LoginScreen } from './LoginScreen.tsx'
+import { ClerkElement } from './ClerkElement.tsx'
+import { SettingsLayout } from './SettingsLayout.tsx'
+import { useIsMobile } from './hooks/use-mobile.ts'
 import ChatMarkdown from './markdown/ChatMarkdown.tsx'
 import {
   Dialog,
@@ -75,15 +76,6 @@ import {
   DialogTitle,
 } from './components/ui/dialog.tsx'
 
-function ClerkElement() {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const element = document.createElement('wednesday-auth')
-    ref.current?.append(element)
-    return () => element.remove()
-  }, [])
-  return <div ref={ref} />
-}
 function Choice({
   value,
   onChange,
@@ -966,6 +958,7 @@ function ProviderTabs({
   )
 }
 function ProviderSettings({ model }: { model: Model }) {
+  const mobile = useIsMobile()
   const [method, setMethod] = useState<'api' | 'chatgpt'>(model.provider)
   const [authOpen, setAuthOpen] = useState(false)
   const refreshedAccount = useRef<string | null>(null)
@@ -993,7 +986,7 @@ function ProviderSettings({ model }: { model: Model }) {
   return (
     <details
       key={model.userId}
-      open={model.activeSettings ? undefined : true}
+      open={model.activeSettings && mobile ? undefined : true}
       className="group/provider rounded-2xl border">
       <summary className="flex cursor-pointer list-none items-center gap-3 p-5 [&::-webkit-details-marker]:hidden sm:p-6">
         <Bot className="size-5 shrink-0 text-muted-foreground" />
@@ -1158,39 +1151,16 @@ function ChatPreferences({ model }: { model: Model }) {
 }
 export function SettingsScreen() {
   const model = useAtomValue(stateAtom)
-  const navigate = useNavigate()
-  const back = () => {
-    dispatch(Action.OpenedPage({ page: 'chat' }))
-    void navigate({ to: '/' })
-  }
   return (
-    <main className="min-h-dvh bg-background">
-      <div className="mx-auto max-w-2xl px-5 pb-12 pt-8 sm:px-8 sm:pt-12">
-        <div className="mb-8 flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="border border-border bg-transparent backdrop-blur-md"
-            aria-label="Back to chat"
-            onClick={back}>
-            <ArrowLeft />
-          </Button>
-          <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        </div>
-        <div className="space-y-5">
-          <ProviderSettings model={model} />
-          <ChatPreferences model={model} />
-
-          <Feedback model={model} />
-        </div>
-        <div className="mt-8 flex items-center justify-between border-t pt-5">
-          <span className="text-sm text-muted-foreground">Account</span>
-          <Button variant="ghost" size="sm" onClick={() => dispatch(Action.SignOut())}>
-            <LogOut /> Sign out
-          </Button>
-        </div>
+    <SettingsLayout>
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <ProviderSettings model={model} />
+        <ChatPreferences model={model} />
       </div>
-    </main>
+      <div className="mt-5">
+        <Feedback model={model} />
+      </div>
+    </SettingsLayout>
   )
 }
 export function ChatScreen() {

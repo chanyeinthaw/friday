@@ -85,7 +85,11 @@ let provider: ReturnType<typeof Bun.serve>
 let applicationPort = 0
 let deviceApproved = false
 let refreshCount = 0
-const formatRequests: { format: string; body: Record<string, Schema.Json> }[] = []
+const formatRequests: {
+  format: string
+  body: Record<string, Schema.Json>
+  sessionId: string | null
+}[] = []
 const decodeObject = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
 )
@@ -361,10 +365,20 @@ const deviceProvider = async (request: Request) => {
     }
     const raw = await request.text()
     const body = api ? parseResponsesRequest(raw) : parseCodexRequest(raw)
-    if (api) formatRequests.push({ format: 'responses', body: decodeObject(raw) })
-    else codexRequests.push(body)
+    if (api)
+      formatRequests.push({
+        format: 'responses',
+        body: decodeObject(raw),
+        sessionId: request.headers.get('Session-Id'),
+      })
+    else {
+      codexRequests.push(body)
+      expect(decodeObject(raw).prompt_cache_key).toBe(request.headers.get('Session-Id'))
+      expect(request.headers.get('Session-Id')).toBe('user_device_complete')
+    }
     const callsDate =
       body.tools?.some((tool) => tool.name === 'date') &&
+      !/"(?:text|content)"\s*:\s*"Compaction:/.test(raw) &&
       !body.input.some((item) => item.type === 'function_call_output')
     const output = callsDate
       ? [
@@ -484,7 +498,7 @@ const anthropicProvider = async (request: Request) => {
   if (url.pathname === '/anthropic/v1/messages') {
     expect(request.headers.get('x-api-key')).toBe('test-provider-secret')
     const body = decodeObject(await request.text())
-    formatRequests.push({ format: 'anthropic', body })
+    formatRequests.push({ format: 'anthropic', body, sessionId: request.headers.get('Session-Id') })
     const messages = parseAnthropicMessages(body.messages)
     const callsDate =
       Array.isArray(body.tools) &&
@@ -1264,6 +1278,11 @@ for (const format of ['responses', 'anthropic'] as const) {
         : { max_output_tokens: 8192, store: false },
     )
     expect(Array.isArray(sent[0]?.body.tools)).toBe(true)
+    for (const request of sent) {
+      expect(request.sessionId).toBe(client.userId)
+      expect(request.body.tools).toEqual(sent[0]?.body.tools)
+      if (format === 'responses') expect(request.body.prompt_cache_key).toBe(client.userId)
+    }
     expect(sent.some((request) => JSON.stringify(request.body).includes('Compaction:'))).toBe(true)
     if (format === 'anthropic') expect(sent[0]?.body.system).toBeDefined()
     client.close()

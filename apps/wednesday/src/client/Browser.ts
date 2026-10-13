@@ -71,6 +71,45 @@ export const browserLayer = Layer.effect(
         }
       },
     )
+    customElements.define(
+      'wednesday-account',
+      class extends HTMLElement {
+        private unsubscribe: (() => void) | undefined
+
+        connectedCallback() {
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.className =
+            'flex min-h-11 w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-muted focus-visible:outline-ring'
+          button.setAttribute('aria-label', 'Manage account')
+          button.onclick = () => clerk.openUserProfile()
+          const avatar = document.createElement('img')
+          avatar.alt = ''
+          avatar.className = 'size-8 shrink-0 rounded-full'
+          const name = document.createElement('span')
+          name.className = 'truncate'
+          button.append(avatar, name)
+          this.replaceChildren(button)
+          const update = () => {
+            const user = clerk.user
+            avatar.src = user?.imageUrl ?? ''
+            avatar.hidden = !user?.imageUrl
+            name.textContent =
+              user?.fullName ||
+              user?.username ||
+              user?.primaryEmailAddress?.emailAddress ||
+              'Account'
+          }
+          update()
+          this.unsubscribe = clerk.addListener(update)
+        }
+
+        disconnectedCallback() {
+          this.unsubscribe?.()
+          this.replaceChildren()
+        }
+      },
+    )
     const responses = yield* Queue.unbounded<{
       readonly userId: string
       readonly event: ServerEvent

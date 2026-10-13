@@ -342,6 +342,7 @@ export const chatGptLayer = Layer.effect(
                   request.pipe(
                     HttpClientRequest.setHeader('ChatGPT-Account-Id', tokens.accountId),
                     HttpClientRequest.setHeader('originator', 'codex_cli_rs'),
+                    HttpClientRequest.setHeader('Session-Id', userId),
                   ),
                 ),
             }).pipe(Effect.provideService(HttpClient.HttpClient, http))
@@ -403,6 +404,7 @@ export const chatGptLayer = Layer.effect(
             config: {
               ...mapping.requestFields,
               ...mapping.thinking[thinking],
+              prompt_cache_key: userId,
               store: false,
               include: ['reasoning.encrypted_content'],
               useItemReferences: false,
