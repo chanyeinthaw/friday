@@ -17,28 +17,32 @@ const cacheEnd = (message: Prompt.Message) => {
   }
 }
 
-/** Four-line messages keep old cache boundaries intact as the view grows. */
+/** Match OptChat's single user message with stable four-line text blocks. */
 export const cachePrompt = (view: string, suffix: readonly Prompt.Message[]) => {
   const source = view.slice('<chat>\n'.length, -'\n</chat>'.length)
   const lines = source ? source.split('\n') : []
-  const messages = [...Prompt.make([{ role: 'user', content: '<chat>\n' }]).content]
-  for (let start = 0; start < lines.length; start += 4) {
-    const complete = start + 4 <= lines.length
-    const lastComplete = complete && start + 8 > lines.length
-    const block = Prompt.make([
-      {
-        role: 'user',
-        content: lines.slice(start, start + 4).join('\n') + '\n',
-        options: lastComplete ? { anthropic: { cacheControl: { type: 'ephemeral' } } } : {},
-      },
-    ])
-    messages.push(...block.content)
+  const whole = Math.floor(lines.length / 4)
+  const marked = { anthropic: { cacheControl: { type: 'ephemeral' as const } } }
+  const blocks = [Prompt.textPart({ text: '<chat>\n', options: whole === 0 ? marked : {} })]
+  for (let index = 0; index < whole; index++) {
+    blocks.push(
+      Prompt.textPart({
+        text: lines.slice(index * 4, (index + 1) * 4).join('\n') + '\n',
+        options: index === whole - 1 ? marked : {},
+      }),
+    )
   }
-  const end = suffix.at(-1)
-  return Prompt.make([
-    ...messages,
-    { role: 'user', content: '</chat>' },
-    ...suffix.slice(0, -1),
-    ...(end ? [cacheEnd(end)] : []),
-  ])
+  const tail = lines.slice(whole * 4)
+  blocks.push(Prompt.textPart({ text: (tail.length ? tail.join('\n') + '\n' : '') + '</chat>\n' }))
+  const first = suffix[0]
+  const initial = Prompt.userMessage({
+    content: [...blocks, ...(first?.role === 'user' ? first.content : [])],
+    options: first?.role === 'user' ? first.options : {},
+  })
+  const messages = [initial, ...suffix.slice(first?.role === 'user' ? 1 : 0)]
+  return Prompt.make(
+    messages.map((message, index) =>
+      suffix.length && index === messages.length - 1 ? cacheEnd(message) : message,
+    ),
+  )
 }

@@ -7,7 +7,7 @@
     "build": "bun run scripts/build.ts",
     "check": "effect-tsgo patch --typescript && tsc --noEmit && tsc --noEmit -p tsconfig.integration.json",
     "test": "vitest run src --exclude **/*.integration.test.ts",
-    "test:integration": "bun test ./src/server/Wednesday.integration.test.ts"
+    "test:integration": "bun test ./src/server/*.integration.test.ts"
   },
   "dependencies": {
     "@clerk/backend": "3.23.2",

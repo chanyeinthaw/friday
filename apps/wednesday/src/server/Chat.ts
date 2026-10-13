@@ -2,6 +2,7 @@ import {
   Cache,
   Cause,
   Context,
+  Deferred,
   Effect,
   Fiber,
   Layer,
@@ -79,6 +80,7 @@ export const chatLayer = Layer.effect(
       session?: FoldSession
       fiber?: Fiber.Fiber<void, never>
       streaming?: { id: string; turnId: string; text: string; date: string }
+      memoryIdle?: Deferred.Deferred<void>
       accepting: boolean
     }
     const active = new Map<string, Turn>()
@@ -115,15 +117,33 @@ export const chatLayer = Layer.effect(
           const key = yield* credentials.decrypt(saved.encryptedKey)
           const model =
             saved.settings.provider === 'chatgpt'
-              ? chatGpt.model(userId, mapping, saved.settings.memoryThinking ?? 'off')
+              ? chatGpt.model(
+                  userId,
+                  mapping,
+                  saved.settings.memoryThinking ?? 'off',
+                  false,
+                  `${userId}:memory`,
+                )
               : configuredModel(
                   saved.settings,
                   key,
                   mapping,
                   saved.settings.memoryThinking ?? 'off',
-                  userId,
+                  `${userId}:memory`,
                 )
-          const memory = yield* makeMemory(storage, userId, model)
+          // Compaction requests wait while the frozen chat turn owns provider capacity.
+          const beforeRequest = Effect.suspend(() => {
+            const idle = active.get(userId)?.memoryIdle
+            return idle ? Deferred.await(idle) : Effect.void
+          })
+          const memory = yield* makeMemory(
+            storage,
+            userId,
+            model,
+            undefined,
+            undefined,
+            beforeRequest,
+          )
           const wakeups = yield* Queue.sliding<void>(1)
           const worker = yield* Effect.forever(
             Effect.gen(function* () {
@@ -192,6 +212,7 @@ export const chatLayer = Layer.effect(
       } satisfies typeof model
       const memory = yield* getMemory(userId, saved)
       const view = yield* memory.settle()
+      turn.memoryIdle = yield* Deferred.make<void>()
       const firstSeq = yield* storage.logSequence(userId)
       const logEvents = yield* PubSub.unbounded<LogEntry>()
       const logGate = yield* Semaphore.make(1)
@@ -352,6 +373,7 @@ export const chatLayer = Layer.effect(
               message: 'This response ended before using your message.',
             })
           active.delete(userId)
+          if (turn.memoryIdle) yield* Deferred.succeed(turn.memoryIdle, undefined)
           yield* publish(userId, status(userId))
         }),
       ),

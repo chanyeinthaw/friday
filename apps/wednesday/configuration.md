@@ -36,7 +36,7 @@ One Clerk user ID owns one permanent conversation. Every storage query includes 
 
 Fold events and their message projections are written in one transaction. Consumed user messages retain their request IDs for reconciliation across tabs and reconnects. Original chat messages and the binary summary tree persist independently of browser connections. OptChat freezes earlier memory for each run and retains the current run's messages and tools in the model's request tail. The agent exposes only `zoom` and `date`, and Fold's ordinary auto-compaction is disabled.
 
-Memory jobs are queued atomically with each appended message and processed in the background, with at most eight compactions per user. Successful nodes are immutable; completing two siblings queues their parent. Failed jobs retry on a later message, and unfinished jobs recover after restart. The next turn waits for earlier memory to settle.
+Memory jobs are queued atomically with each appended message and processed in the background, with at most eight compactions per user. New compaction requests wait while the user's chat turn is active. Successful nodes are immutable; completing two siblings queues their parent. Failed jobs retry on a later message, and unfinished jobs recover after restart. The next turn waits for earlier memory to settle.
 
 The main view grows to 128,000 UTF-8 bytes, then batches toward 64,000. A separate persisted compaction view grows to 32,000 bytes and batches toward 16,000. It contains only built summaries and ends before a source message, or at the end of a merge's source range. View updates preserve Friday's binary addressing and age-based merge order.
 

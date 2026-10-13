@@ -10,7 +10,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Semaphore from 'effect/Semaphore'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
 
 import { piOperation } from './Runtime.ts'
 
@@ -29,14 +29,14 @@ export const makePiSqliteStorage = Effect.fn('PiSqliteStorage.open')(function* (
     exec: (query) => run(sql.unsafe(query).pipe(Effect.asVoid, Effect.provide(executionContext))),
     run: (query, ...bindings) =>
       run(sql.unsafe(query, bindings).pipe(Effect.asVoid, Effect.provide(executionContext))),
-    get: <T extends object>(query: string, ...bindings: SqliteValue[]) =>
+    get: <T extends object>(query: string, ...bindings: SqliteValue[]): Promise<T | undefined> =>
       run(
         sql.unsafe<T>(query, bindings).pipe(
           Effect.map((rows) => rows[0]),
           Effect.provide(executionContext),
         ),
       ),
-    all: <T extends object>(query: string, ...bindings: SqliteValue[]) =>
+    all: <T extends object>(query: string, ...bindings: SqliteValue[]): Promise<T[]> =>
       run(
         sql.unsafe<T>(query, bindings).pipe(
           Effect.map((rows) => [...rows]),
@@ -61,20 +61,20 @@ export const makePiSqliteStorage = Effect.fn('PiSqliteStorage.open')(function* (
           }),
         ),
       ),
-    get: (query, ...bindings) =>
+    get: <T extends object>(query: string, ...bindings: SqliteValue[]): Promise<T | undefined> =>
       run(
         lock.withPermit(
           Effect.tryPromise({
-            try: () => outside.get(query, ...bindings),
+            try: () => outside.get<T>(query, ...bindings),
             catch: (cause) => cause,
           }),
         ),
       ),
-    all: (query, ...bindings) =>
+    all: <T extends object>(query: string, ...bindings: SqliteValue[]): Promise<T[]> =>
       run(
         lock.withPermit(
           Effect.tryPromise({
-            try: () => outside.all(query, ...bindings),
+            try: () => outside.all<T>(query, ...bindings),
             catch: (cause) => cause,
           }),
         ),

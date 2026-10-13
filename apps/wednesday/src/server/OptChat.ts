@@ -88,6 +88,7 @@ export const makeMemory = (
   model: FoldModel,
   budget = 128_000,
   compactBudget = 32_000,
+  beforeRequest: Effect.Effect<void> = Effect.void,
 ) =>
   Effect.gen(function* () {
     const pumpGate = yield* Semaphore.make(1)
@@ -199,6 +200,7 @@ export const makeMemory = (
           let best = ''
           let task = compactionTask(job)
           for (let attempt = 0; attempt < 5; attempt++) {
+            yield* beforeRequest
             const reply = yield* session.send(task)
             const candidate = reply.resultText?.trim() ?? ''
             if (!candidate) return yield* failure('The memory model returned an empty summary.')
@@ -254,15 +256,19 @@ export const makeMemory = (
       ),
     )
     const settle = Effect.fn('OptChat.settle')(function* () {
-      yield* pump()
+      // Drain in-flight compactions before chat takes provider capacity, but only
+      // require the summaries in its bounded view to have succeeded.
+      const pumped = yield* Effect.result(pump())
       const state = yield* refit()
       const nodes = yield* nodesFor(state.parts, state.total)
       if (
         state.frontier !== state.total ||
         state.pending ||
         state.parts.some((part) => !nodes.has(nodeKey(part)))
-      )
+      ) {
+        if (pumped._tag === 'Failure') return yield* Effect.fail(pumped.failure)
         return yield* failure('Memory is not ready for this turn. Your history is saved.')
+      }
       return renderView(state.parts, nodes)
     })
     const zoom = Effect.fn('OptChat.zoom')(function* (id: number, count: number) {

@@ -93,6 +93,28 @@ const formatRequests: {
 const decodeObject = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
 )
+const userMessage = Schema.decodeUnknownOption(
+  Schema.Struct({
+    role: Schema.Literal('user'),
+    content: Schema.Union([
+      Schema.String,
+      Schema.Array(Schema.Struct({ text: Schema.optionalKey(Schema.String) })),
+    ]),
+  }),
+)
+const isStringContent = Schema.is(Schema.String)
+const compactionMessage = (message: Schema.Json) => {
+  const decoded = userMessage(message)
+  if (decoded._tag === 'None') return false
+  const content = decoded.value.content
+  return isStringContent(content)
+    ? content.startsWith('Compaction:')
+    : content.some((part) => part.text?.startsWith('Compaction:'))
+}
+const isCompactionRequest = (body: Record<string, Schema.Json>) => {
+  const messages = body.input ?? body.messages
+  return Array.isArray(messages) && messages.some(compactionMessage)
+}
 const codexRequests: ReturnType<typeof parseJson>[] = []
 const chatGptAccessToken = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-test' } })).toString('base64url')}.signature`
 let requestCount = 0
@@ -374,7 +396,11 @@ const deviceProvider = async (request: Request) => {
     else {
       codexRequests.push(body)
       expect(decodeObject(raw).prompt_cache_key).toBe(request.headers.get('Session-Id'))
-      expect(request.headers.get('Session-Id')).toBe('user_device_complete')
+      expect(request.headers.get('Session-Id')).toBe(
+        isCompactionRequest(decodeObject(raw))
+          ? 'user_device_complete:memory'
+          : 'user_device_complete',
+      )
     }
     const callsDate =
       body.tools?.some((tool) => tool.name === 'date') &&
@@ -582,6 +608,7 @@ beforeAll(async () => {
   provider = Bun.serve({
     port: 0,
     async fetch(request) {
+      if (request.headers.get('upgrade') === 'websocket') return new Response(null, { status: 426 })
       const deviceResponse = await deviceProvider(request)
       if (deviceResponse) return deviceResponse
       const anthropicResponse = await anthropicProvider(request)
@@ -910,6 +937,38 @@ test('forgets active turns and pending steering on restart while retaining setti
   resumed.close()
 }, 10000)
 
+test('defers new compactions during a chat turn and resumes them after Stop', async () => {
+  const client = await connect('user_compaction_priority')
+  await save(client, 'memory-model', 'low')
+  let started = false
+  let notifyStarted: (() => void) | undefined
+  const memoryStarted = new Promise<void>((resolve) => {
+    notifyStarted = resolve
+  })
+  memoryResponse = () => {
+    started = true
+    notifyStarted?.()
+    return 'user: Preserve the original decision.'
+  }
+  const gate = holdChat()
+  client.send({
+    _tag: 'Send',
+    requestId: 'priority-turn',
+    text: 'Remember this decision. ' + 'q'.repeat(800),
+  })
+  await gate.started
+  const snapshot = await client.snapshot()
+  expect(snapshot.busy).toBe(true)
+  expect(started).toBe(false)
+  client.send({ _tag: 'Stop', turnId: 'priority-turn' })
+  await client.wait((event) => event._tag === 'Status' && !event.busy)
+  await memoryStarted
+  expect(started).toBe(true)
+  gate.release()
+  memoryResponse = undefined
+  client.close()
+}, 10000)
+
 test('compacts in the background with eight calls, bounded source context, and a separate model', async () => {
   const client = await connect('user_memory')
   await save(client, 'memory-model', 'low')
@@ -1013,6 +1072,34 @@ test('keeps successful summaries and retries failed work on a later message', as
       )
       .get()?.text,
   ).toBe('user: Keep this original decision.')
+  database.close()
+  memoryResponse = undefined
+  client.close()
+}, 10000)
+
+test('starts chat from ready leaves when an unused ancestor fails compaction', async () => {
+  const client = await connect('user_unused_ancestor')
+  await save(client, 'memory-model')
+  memoryResponse = (raw) =>
+    raw.includes('Compaction: merge lines') ? '' : 'user: ' + 'q'.repeat(506)
+  client.send({
+    _tag: 'Send',
+    requestId: 'ancestor-first',
+    text: 'Remember this decision. ' + 'q'.repeat(800),
+  })
+  await client.wait((event) => event._tag === 'Status' && !event.busy)
+  client.send({ _tag: 'Send', requestId: 'ancestor-next', text: 'Continue with the decision.' })
+  await client.wait((event) => event._tag === 'Status' && !event.busy)
+  const snapshot = await client.snapshot()
+  expect(snapshot.messages.filter((message) => message.kind === 'talk')).toHaveLength(2)
+  const database = new Database(join(temporary, 'test.sqlite'), { readonly: true })
+  expect(
+    database
+      .query<{ count: number }, []>(
+        'SELECT count(*) AS count FROM wednesday_memory_jobs WHERE user_id="user_unused_ancestor" AND count>1 AND status="failed"',
+      )
+      .get()?.count,
+  ).toBeGreaterThan(0)
   database.close()
   memoryResponse = undefined
   client.close()
@@ -1212,6 +1299,23 @@ test('streams completed paragraphs, restores them for another tab, and replaces 
   other.close()
 })
 
+const expectInitialOptChatPrompt = (body: Record<string, Schema.Json> | undefined) => {
+  const messages = body?.input ?? body?.messages
+  if (!Array.isArray(messages)) throw new Error('Initial messages are missing')
+  const users = messages.flatMap((message) => {
+    const decoded = userMessage(message)
+    return decoded._tag === 'Some' ? [decoded.value] : []
+  })
+  expect(users).toHaveLength(1)
+  const content = users[0]?.content
+  if (!Array.isArray(content)) throw new Error('Initial text blocks are missing')
+  expect(content.map((part) => part.text)).toEqual([
+    '<chat>\n',
+    '</chat>\n',
+    'What is the date? ' + 'context '.repeat(100),
+  ])
+}
+
 for (const format of ['responses', 'anthropic'] as const) {
   test(`discovers and runs OptChat with ${format}, including memory requests`, async () => {
     const client = await connect(`user_format_${format}`)
@@ -1278,10 +1382,12 @@ for (const format of ['responses', 'anthropic'] as const) {
         : { max_output_tokens: 8192, store: false },
     )
     expect(Array.isArray(sent[0]?.body.tools)).toBe(true)
+    expectInitialOptChatPrompt(sent[0]?.body)
     for (const request of sent) {
-      expect(request.sessionId).toBe(client.userId)
+      const identity = isCompactionRequest(request.body) ? `${client.userId}:memory` : client.userId
+      expect(request.sessionId).toBe(identity)
       expect(request.body.tools).toEqual(sent[0]?.body.tools)
-      if (format === 'responses') expect(request.body.prompt_cache_key).toBe(client.userId)
+      if (format === 'responses') expect(request.body.prompt_cache_key).toBe(identity)
     }
     expect(sent.some((request) => JSON.stringify(request.body).includes('Compaction:'))).toBe(true)
     if (format === 'anthropic') expect(sent[0]?.body.system).toBeDefined()
