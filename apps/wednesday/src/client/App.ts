@@ -377,7 +377,6 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
         turnId: event.turnId,
         hasApiKey: event.hasApiKey,
         deviceLoading: model.deviceAuthorization ? model.deviceLoading : false,
-        page: event.settings ? model.page : 'settings',
       }
       return {
         model:

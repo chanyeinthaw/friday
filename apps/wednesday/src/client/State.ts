@@ -41,3 +41,8 @@ export const start = () =>
     }),
   )
 export const dispose = () => runtime.dispose()
+
+export const sendSignInCode = (email: string) =>
+  runtime.runPromise(Effect.flatMap(Browser, (browser) => browser.sendSignInCode(email)))
+export const verifySignInCode = (code: string) =>
+  runtime.runPromise(Effect.flatMap(Browser, (browser) => browser.verifySignInCode(code)))

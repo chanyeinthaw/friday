@@ -49,4 +49,4 @@ const compiled = await Bun.build({
   ],
 })
 if (!compiled.success) throw new Error(compiled.logs.map(String).join('\n'))
-console.log(`Built Wednesday with ${frontend.outputs.length} embedded frontend assets`)
+console.log(`Built Friday with ${frontend.outputs.length} embedded frontend assets`)

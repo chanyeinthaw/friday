@@ -45,7 +45,7 @@ const program = Effect.gen(function* () {
     fetch: (request) => http.handler(request),
   })
   yield* Effect.addFinalizer(() => Effect.promise(() => server.stop(true)))
-  yield* Effect.log(`Wednesday listening on ${hostname}:${server.port}`)
+  yield* Effect.log(`Friday listening on ${hostname}:${server.port}`)
   return yield* Effect.never
 }).pipe(Effect.scoped)
 BunRuntime.runMain(program)
