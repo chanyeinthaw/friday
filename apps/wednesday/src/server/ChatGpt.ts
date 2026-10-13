@@ -18,6 +18,7 @@ import { DeviceAuthorization, ModelMapping, Thinking } from '../shared/protocol.
 import { Credentials } from './Providers.ts'
 import { Storage } from './Storage.ts'
 import { failure, type WednesdayError } from './errors.ts'
+import { responsesSocketClient } from './ResponsesSocket.ts'
 
 const clientId = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const Tokens = Schema.Struct({
@@ -96,7 +97,13 @@ export class ChatGpt extends Context.Service<
     readonly cancel: (userId: string, attemptId?: string) => Effect.Effect<void>
     readonly access: (userId: string) => Effect.Effect<Tokens, WednesdayError>
     readonly models: (userId: string) => Effect.Effect<readonly ModelMapping[], WednesdayError>
-    readonly model: (userId: string, mapping: ModelMapping, thinking: Thinking) => FoldModel
+    readonly model: (
+      userId: string,
+      mapping: ModelMapping,
+      thinking: Thinking,
+      socket?: boolean,
+      cacheKey?: string,
+    ) => FoldModel
   }
 >()('@wednesday/ChatGpt') {}
 
@@ -320,7 +327,13 @@ export const chatGptLayer = Layer.effect(
         }),
       ),
     )
-    const model = (userId: string, mapping: ModelMapping, thinking: Thinking) =>
+    const model = (
+      userId: string,
+      mapping: ModelMapping,
+      thinking: Thinking,
+      socket = true,
+      cacheKey = userId,
+    ) =>
       customModel({
         activeModel: {
           providerId: 'chatgpt',
@@ -331,7 +344,10 @@ export const chatGptLayer = Layer.effect(
           reasoning: { _tag: 'disabled' },
         },
         make: Effect.gen(function* () {
-          const client = yield* OpenAiClient.make({ apiUrl: backend })
+          const transport = socket ? yield* responsesSocketClient(http) : http
+          const client = yield* OpenAiClient.make({ apiUrl: backend }).pipe(
+            Effect.provideService(HttpClient.HttpClient, transport),
+          )
           const authenticated = Effect.gen(function* () {
             const tokens = yield* access(userId)
             return yield* OpenAiClient.make({
@@ -342,10 +358,10 @@ export const chatGptLayer = Layer.effect(
                   request.pipe(
                     HttpClientRequest.setHeader('ChatGPT-Account-Id', tokens.accountId),
                     HttpClientRequest.setHeader('originator', 'codex_cli_rs'),
-                    HttpClientRequest.setHeader('Session-Id', userId),
+                    HttpClientRequest.setHeader('Session-Id', cacheKey),
                   ),
                 ),
-            }).pipe(Effect.provideService(HttpClient.HttpClient, http))
+            }).pipe(Effect.provideService(HttpClient.HttpClient, transport))
           }).pipe(Effect.mapError((error) => aiFailure(error.message)))
           const createResponseStream = Effect.fn('ChatGpt.responseStream')(function* (
             options: Parameters<OpenAiClient.Service['createResponseStream']>[0],
@@ -404,7 +420,7 @@ export const chatGptLayer = Layer.effect(
             config: {
               ...mapping.requestFields,
               ...mapping.thinking[thinking],
-              prompt_cache_key: userId,
+              prompt_cache_key: cacheKey,
               store: false,
               include: ['reasoning.encrypted_content'],
               useItemReferences: false,

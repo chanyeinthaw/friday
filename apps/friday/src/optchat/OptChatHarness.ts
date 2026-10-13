@@ -286,7 +286,7 @@ export const makeOptChatHarness = (memory: OptChatMemory, getHarness: () => Harn
               view = frozen.view
               firstEntry = frozen.inputEntry
             }
-            // Use the exact Pi request tail so provider reasoning and steering remain intact.
+            // Retain Pi's active messages so provider reasoning and steering remain intact.
             const history = yield* entries(conversation)
             const firstMessage = history
               .find((entry) => entry.id === firstEntry)
@@ -311,7 +311,11 @@ export const makeOptChatHarness = (memory: OptChatMemory, getHarness: () => Harn
                 timestamp: 0,
               },
             ]
-            const tail = request.messages.slice(start)
+            // The leading message already contains the current system sections and tools.
+            // Replaying later system entries would append the same instructions again.
+            const tail = request.messages
+              .slice(start)
+              .filter((message) => message.role !== 'system')
             const initial = tail[0]
             if (initial?.role !== 'user')
               return yield* new PiDurableError({

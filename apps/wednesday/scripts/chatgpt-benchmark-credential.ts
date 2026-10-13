@@ -6,7 +6,12 @@ import { failure } from '../src/server/errors.ts'
 
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(StoredSettings))
 const program = Effect.acquireUseRelease(
-  Effect.sync(() => new Database('/source/wednesday.sqlite', { readonly: true })),
+  Effect.sync(
+    () =>
+      new Database(Bun.env.FRIDAY_BENCHMARK_DATABASE ?? '/source/wednesday.sqlite', {
+        readonly: true,
+      }),
+  ),
   (database) =>
     Effect.gen(function* () {
       const rows = database

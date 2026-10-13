@@ -10,6 +10,7 @@ import { AnthropicClient, AnthropicLanguageModel } from '@humanlayer/effect-ai-a
 import { customModel } from '@humanlayer/fold-core'
 import { ModelMapping, type Settings, type Thinking, type ApiFormat } from '../shared/protocol.ts'
 import { failure } from './errors.ts'
+import { responsesSocketClient } from './ResponsesSocket.ts'
 
 const protectedFields = new Set([
   'model',
@@ -229,6 +230,7 @@ export const configuredModel = (
   mapping: ModelMapping,
   thinking: Thinking,
   userId: string,
+  socket = false,
 ) => {
   const fields = { ...mapping.requestFields, ...mapping.thinking[thinking] }
   const transformClient = (client: HttpClient.HttpClient) =>
@@ -247,22 +249,29 @@ export const configuredModel = (
   if (format === 'responses')
     return customModel({
       activeModel,
-      make: ResponsesModel.make({
-        model: mapping.id,
-        config: {
-          max_output_tokens: mapping.maxOutputTokens,
-          ...fields,
-          prompt_cache_key: userId,
-          store: false,
-          useItemReferences: false,
-          strictJsonSchema: false,
-        },
-      }).pipe(
-        Effect.provide(
-          ResponsesClient.layer({ apiUrl: settings.baseUrl, apiKey: key, transformClient }),
-        ),
-        Effect.provide(FetchHttpClient.layer),
-      ),
+      make: Effect.gen(function* () {
+        const http = yield* FetchHttpClient.layer.pipe(
+          Layer.build,
+          Effect.map((context) => Context.get(context, HttpClient.HttpClient)),
+        )
+        const transport = socket ? yield* responsesSocketClient(http) : http
+        return yield* ResponsesModel.make({
+          model: mapping.id,
+          config: {
+            max_output_tokens: mapping.maxOutputTokens,
+            ...fields,
+            prompt_cache_key: userId,
+            store: false,
+            useItemReferences: false,
+            strictJsonSchema: false,
+          },
+        }).pipe(
+          Effect.provide(
+            ResponsesClient.layer({ apiUrl: settings.baseUrl, apiKey: key, transformClient }),
+          ),
+          Effect.provideService(HttpClient.HttpClient, transport),
+        )
+      }),
     })
   if (format === 'anthropic')
     return customModel({
@@ -300,6 +309,27 @@ export const configuredModel = (
     'max_tokens' in fields || 'max_completion_tokens' in fields
       ? {}
       : { [tokenField]: mapping.maxOutputTokens }
+  // The compatibility SDK drops prompt_cache_key during Responses-to-Chat conversion.
+  // Set it on the client payload, after conversion, for known OpenAI model families.
+  const cacheIdentity = /^(gpt-|o[134](?:-|$)|codex-)/.test(mapping.id)
+    ? { prompt_cache_key: userId }
+    : {}
+  const cachedClient = Layer.effect(
+    OpenAiClient.OpenAiClient,
+    Effect.gen(function* () {
+      const client = yield* OpenAiClient.make({
+        apiUrl: settings.baseUrl,
+        apiKey: key,
+        transformClient,
+      })
+      return OpenAiClient.OpenAiClient.of({
+        ...client,
+        createResponse: (request) => client.createResponse({ ...request, ...cacheIdentity }),
+        createResponseStream: (request) =>
+          client.createResponseStream({ ...request, ...cacheIdentity }),
+      })
+    }),
+  )
   return customModel({
     activeModel,
     make: OpenAiLanguageModel.make({
@@ -310,11 +340,6 @@ export const configuredModel = (
         parallel_tool_calls: false,
         strictJsonSchema: false,
       },
-    }).pipe(
-      Effect.provide(
-        OpenAiClient.layer({ apiUrl: settings.baseUrl, apiKey: key, transformClient }),
-      ),
-      Effect.provide(FetchHttpClient.layer),
-    ),
+    }).pipe(Effect.provide(cachedClient), Effect.provide(FetchHttpClient.layer)),
   })
 }

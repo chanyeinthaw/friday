@@ -1,11 +1,21 @@
 // Run with a credential on stdin; all chat and memory state lives in a disposable database.
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { Prompt } from 'effect/ai'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SqliteClient } from '@effect/sql-sqlite-bun'
-import { ConfigProvider, Effect, Fiber, Layer, Redacted, Schedule, Schema, Stream } from 'effect'
+import {
+  ConfigProvider,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  Redacted,
+  Schedule,
+  Schema,
+  Stream,
+} from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import { SqlClient } from 'effect/sql'
 import { Chat, chatLayer } from '../src/server/Chat.ts'
@@ -13,9 +23,14 @@ import { ChatGpt, chatGptLayer } from '../src/server/ChatGpt.ts'
 import { Credentials, credentialsLayer, defaultMapping } from '../src/server/Providers.ts'
 import { sqliteMigrations, sqliteStorage } from '../src/server/SqliteStorage.ts'
 import { WednesdayError } from '../src/server/errors.ts'
-import { ApiFormat } from '../src/shared/protocol.ts'
+import { ApiFormat, Thinking } from '../src/shared/protocol.ts'
 import { MemoryState, Storage, StoredSettings } from '../src/server/Storage.ts'
 import { failure } from '../src/server/errors.ts'
+import {
+  ResponsesSocketContinuation,
+  ResponsesSocketObserver,
+} from '../src/server/ResponsesSocket.ts'
+import { readBenchmarkUsage } from './benchmark-stream.ts'
 
 const Detail = Schema.Struct({ cached_tokens: Schema.optionalKey(Schema.Finite) })
 const Usage = Schema.Struct({
@@ -27,8 +42,22 @@ const Usage = Schema.Struct({
   prompt_tokens_details: Schema.optionalKey(Detail),
 })
 const Event = Schema.Struct({
+  type: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  code: Schema.optionalKey(Schema.Union([Schema.String, Schema.Number])),
+  error: Schema.optionalKey(
+    Schema.Struct({
+      type: Schema.optionalKey(Schema.String),
+      code: Schema.optionalKey(Schema.String),
+    }),
+  ),
   usage: Schema.optionalKey(Schema.NullOr(Usage)),
-  response: Schema.optionalKey(Schema.Struct({ usage: Schema.optionalKey(Schema.NullOr(Usage)) })),
+  response: Schema.optionalKey(
+    Schema.Struct({
+      model: Schema.optionalKey(Schema.String),
+      usage: Schema.optionalKey(Schema.NullOr(Usage)),
+    }),
+  ),
 })
 const Content = Schema.Union([
   Schema.String,
@@ -42,7 +71,7 @@ const Request = Schema.Struct({
   model: Schema.String,
   tools: Schema.optionalKey(Schema.Array(Schema.Unknown)),
 })
-const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(Event))
+const inspectEvent = Schema.decodeUnknownOption(Event)
 const encodeMemory = Schema.encodeSync(Schema.fromJsonString(MemoryState))
 const isString = Schema.is(Schema.String)
 const decodeRequest = Schema.decodeUnknownSync(Schema.fromJsonString(Request))
@@ -66,14 +95,23 @@ const decodeWire = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
 )
 const jsonArray = Schema.is(Schema.Array(Schema.Json))
+const jsonRecord = Schema.is(Schema.Record(Schema.String, Schema.Json))
+const isEncryptedReasoning = Schema.is(
+  Schema.Struct({ type: Schema.Literal('reasoning'), encrypted_content: Schema.String }),
+)
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
 const chatGptSource = Bun.argv[3] === 'chatgpt'
+const preparedMemory = Bun.argv[6] === 'prepared'
 const format = Schema.decodeUnknownSync(ApiFormat)(
   chatGptSource ? 'responses' : (Bun.argv[3] ?? 'chat-completions'),
 )
 if (format === 'anthropic') throw new Error('This CPA benchmark supports the two OpenAI formats.')
 const modelId = Bun.argv[2] ?? 'gpt-6.1-sol'
-const userId = `cache-benchmark-${randomBytes(8).toString('hex')}`
+const thinking = Schema.decodeUnknownSync(Thinking)(
+  Bun.env.FRIDAY_CACHE_BENCHMARK_THINKING ?? 'low',
+)
+const userId =
+  Bun.env.FRIDAY_CACHE_BENCHMARK_SESSION ?? `cache-benchmark-${randomBytes(8).toString('hex')}`
 const apiKey = (await Bun.stdin.text()).trim()
 if (!apiKey) throw new Error('Provide a provider credential on stdin.')
 type Measurement = {
@@ -82,21 +120,54 @@ type Measurement = {
   step: number
   steeringMessages: number
   status: number
+  returnedModel: string | null
   inputTokens: number | null
   cachedTokens: number | null
   outputTokens: number | null
 }
+const hasKnownUsage = (row: Measurement) =>
+  row.status >= 200 &&
+  row.status < 300 &&
+  row.inputTokens !== null &&
+  row.cachedTokens !== null &&
+  row.inputTokens >= 0 &&
+  row.cachedTokens >= 0 &&
+  row.cachedTokens <= row.inputTokens
+const usageEvent = (data: string) => {
+  const wire = decodeWire(data)
+  const decoded = inspectEvent(wire)
+  if (decoded._tag === 'None') {
+    const fields = {
+      model: wire.model,
+      error: wire.error,
+      code: wire.code,
+      response: wire.response,
+      'response.model': jsonRecord(wire.response) ? wire.response.model : undefined,
+    }
+    const nulls = Object.entries(fields)
+      .filter(([, value]) => value === null)
+      .map(([name]) => name)
+    throw new Error(`Invalid provider usage event; nullable fields: ${nulls.join(',') || 'none'}`)
+  }
+  return decoded.value
+}
 // Read provider fields directly so missing cache usage remains unknown rather than zero.
 const readUsage = (text: string) => {
   let usage: typeof Usage.Type | undefined
+  let returnedModel: string | null = null
   for (const line of text.split('\n')) {
     if (!line.startsWith('data:')) continue
     const data = line.slice(5).trim()
     if (!data || data === '[DONE]') continue
-    const event = decodeEvent(data)
+    const event = usageEvent(data)
+    if (event.type === 'error' || event.error)
+      throw new Error(
+        `Provider stream rejected: ${event.code ?? event.error?.type ?? event.error?.code ?? 'unknown'}`,
+      )
     usage = event.response?.usage ?? event.usage ?? usage
+    returnedModel = event.response?.model ?? event.model ?? returnedModel
   }
-  return usage
+  return { usage, returnedModel }
 }
 const usageMeasurement = (
   text: string,
@@ -106,13 +177,14 @@ const usageMeasurement = (
   steeringMessages: number,
   status: number,
 ): Measurement => {
-  const usage = readUsage(text)
+  const { usage, returnedModel } = readUsage(text)
   return {
     purpose,
     turn,
     step,
     steeringMessages,
     status,
+    returnedModel,
     inputTokens: usage?.input_tokens ?? usage?.prompt_tokens ?? null,
     cachedTokens:
       usage?.input_tokens_details?.cached_tokens ??
@@ -124,9 +196,11 @@ const usageMeasurement = (
 const measurements: Measurement[] = []
 const pending: Promise<void>[] = []
 let measurementFailed = false
+let memoryMeasurementFailures = 0
 const chatSteps = new Map<number, number>()
 const previousPrompts = new Map<number, { messages: readonly string[]; settings: string }>()
 const credentialsSeen = new Map<string, number>()
+const chatCompletedAt = new Map<number, number>()
 let replayStarted = false
 const steeringTexts = [
   'Steering update A: continue the remaining tool steps in order, then also call date(3) before your final answer.',
@@ -137,8 +211,19 @@ const requiredTools = [
   'date({"id":0})',
   'date({"id":3})',
 ]
+const verifiedTurn = (
+  calls: readonly Measurement[],
+  tools: readonly string[],
+  consumedSteering: number,
+) =>
+  calls.length >= 8 &&
+  calls.every(hasKnownUsage) &&
+  tools.length === requiredTools.length &&
+  requiredTools.every((tool, index) => tools[index] === tool) &&
+  consumedSteering === 2 &&
+  calls.some((row) => row.steeringMessages === 2)
 const summarize = (calls: readonly Measurement[]) => {
-  const known = calls.filter((row) => row.inputTokens !== null && row.cachedTokens !== null)
+  const known = calls.filter(hasKnownUsage)
   const inputTokens = known.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0)
   const cachedTokens = known.reduce((sum, row) => sum + (row.cachedTokens ?? 0), 0)
   return {
@@ -150,6 +235,10 @@ const summarize = (calls: readonly Measurement[]) => {
   }
 }
 let turn = 0
+let chatIdle: Deferred.Deferred<void> | undefined
+const releaseMemory = Effect.suspend(() =>
+  chatIdle ? Deferred.succeed(chatIdle, undefined) : Effect.void,
+)
 const recordPrefix = Effect.fn('Benchmark.recordPrefix')(function* (
   body: string,
   currentTurn: number,
@@ -181,6 +270,9 @@ const recordPrefix = Effect.fn('Benchmark.recordPrefix')(function* (
     sharedMessages,
     prefixPreserved: previous ? sharedMessages === previous.messages.length : null,
     settingsPreserved: previous ? settings === previous.settings : null,
+    encryptedReasoningItems: jsonArray(inputMessages)
+      ? inputMessages.filter(isEncryptedReasoning).length
+      : 0,
   })
   previousPrompts.set(currentTurn, { messages, settings })
 })
@@ -189,6 +281,7 @@ const recordRoute = Effect.fn('Benchmark.recordRoute')(function* (
   purpose: Measurement['purpose'],
   currentTurn: number,
   step: number,
+  init?: Parameters<typeof fetch>[1],
 ) {
   const authIndex = response.headers.get('X-CPA-TRACE-ID')?.match(/^\d{14}-([0-9a-f]{16})-/)?.[1]
   if (authIndex && !credentialsSeen.has(authIndex))
@@ -199,21 +292,41 @@ const recordRoute = Effect.fn('Benchmark.recordRoute')(function* (
     turn: currentTurn,
     step,
     credential: authIndex ? credentialsSeen.get(authIndex) : null,
+    turnStateAvailable: response.headers.has('x-codex-turn-state'),
+    turnStateSent: new Headers(init?.headers).has('x-codex-turn-state'),
+    connection: authIndex
+      ? createHash('sha256').update(authIndex).digest('hex').slice(0, 12)
+      : null,
   })
 })
 const requestUrl = (input: Parameters<typeof fetch>[0]) =>
   isString(input) ? input : input instanceof URL ? input.href : input.url
+const requestBody = (init?: Parameters<typeof fetch>[1]) =>
+  isString(init?.body)
+    ? init.body
+    : init?.body instanceof Uint8Array
+      ? new TextDecoder().decode(init.body)
+      : undefined
+const assertIdentity = (
+  request: typeof Request.Type,
+  init?: Parameters<typeof fetch>[1],
+  purpose: Measurement['purpose'] = 'chat',
+) => {
+  const identity = purpose === 'memory' ? `${userId}:memory` : userId
+  if (
+    new Headers(init?.headers).get('Session-Id') !== identity ||
+    ((format === 'responses' || /^(gpt-|o[134](?:-|$)|codex-)/.test(modelId)) &&
+      request.prompt_cache_key !== identity)
+  )
+    throw new Error('The provider request lost its stable user identity.')
+}
 const benchmarkTransport = (body: string, init?: Parameters<typeof fetch>[1]) =>
   Bun.argv[5] === 'cache-key' && format === 'chat-completions'
     ? { ...init, body: encodeJson({ ...decodeWire(body), prompt_cache_key: userId }) }
     : init
 const measuredFetch: typeof globalThis.fetch = Object.assign(
   async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-    const body = isString(init?.body)
-      ? init.body
-      : init?.body instanceof Uint8Array
-        ? new TextDecoder().decode(init.body)
-        : undefined
+    const body = requestBody(init)
     if (body === undefined) return fetch(input, init)
     const url = requestUrl(input)
     if (chatGptSource && !url.endsWith('/responses')) return fetch(input, init)
@@ -226,23 +339,35 @@ const measuredFetch: typeof globalThis.fetch = Object.assign(
     )
     const purpose = requestText.some((part) => part.startsWith('Compaction:')) ? 'memory' : 'chat'
     if (
-      new Headers(init?.headers).get('Session-Id') !== userId ||
-      (format === 'responses' && request.prompt_cache_key !== userId)
+      purpose === 'memory' &&
+      chatIdle &&
+      Bun.env.FRIDAY_CACHE_BENCHMARK_MEMORY_SCHEDULING === 'idle'
     )
-      throw new Error('The provider request lost its stable user identity.')
+      await Effect.runPromise(
+        Deferred.await(chatIdle),
+        init?.signal ? { signal: init.signal } : undefined,
+      )
+    assertIdentity(request, init, purpose)
     const currentTurn = turn
     const step = purpose === 'chat' ? (chatSteps.get(currentTurn) ?? 0) + 1 : 0
     if (purpose === 'chat') chatSteps.set(currentTurn, step)
     const steeringMessages = steeringTexts.filter((text) => requestText.includes(text)).length
     if (purpose === 'chat') await Effect.runPromise(recordPrefix(body, currentTurn, step))
     const transport = benchmarkTransport(body, init)
+    const startedAt = performance.now()
+    const previousCompletedAt = chatCompletedAt.get(currentTurn)
     const response = await fetch(input, transport)
-    await Effect.runPromise(recordRoute(response, purpose, currentTurn, step))
+    await Effect.runPromise(recordRoute(response, purpose, currentTurn, step, transport))
     const copy = response.clone()
     pending.push(
       Effect.runPromise(
         Effect.gen(function* () {
-          const text = yield* Effect.tryPromise(() => copy.text())
+          const text =
+            response.status >= 400
+              ? yield* Effect.tryPromise(() => copy.text())
+              : yield* readBenchmarkUsage(copy)
+          const completedAt = performance.now()
+          if (purpose === 'chat') chatCompletedAt.set(currentTurn, completedAt)
           if (response.status >= 400) {
             const rejection = decodeRejection(text)
             yield* Effect.logInfo({
@@ -251,16 +376,28 @@ const measuredFetch: typeof globalThis.fetch = Object.assign(
               details: rejection._tag === 'Some' ? rejection.value : null,
             })
           }
-          const row = usageMeasurement(
-            text,
-            purpose,
-            currentTurn,
-            step,
-            steeringMessages,
-            response.status,
-          )
+          const row = yield* Effect.try({
+            try: () =>
+              usageMeasurement(text, purpose, currentTurn, step, steeringMessages, response.status),
+            catch: (error) =>
+              failure(
+                error instanceof Error &&
+                  (error.message.startsWith('Provider stream rejected:') ||
+                    error.message.startsWith('Invalid provider usage event;'))
+                  ? error.message
+                  : 'Invalid provider usage response.',
+              ),
+          })
           measurements.push(row)
-          yield* Effect.logInfo({ event: 'model-usage', ...row })
+          yield* Effect.logInfo({
+            event: 'model-usage',
+            ...row,
+            durationMillis: Math.round(completedAt - startedAt),
+            sincePreviousCompletionMillis:
+              purpose === 'chat' && previousCompletedAt !== undefined
+                ? Math.round(startedAt - previousCompletedAt)
+                : null,
+          })
           if (
             Bun.argv[6] === 'replay' &&
             purpose === 'chat' &&
@@ -290,10 +427,17 @@ const measuredFetch: typeof globalThis.fetch = Object.assign(
             }
           }
         }).pipe(
-          Effect.catch(() =>
+          Effect.catch((error) =>
             Effect.gen(function* () {
-              measurementFailed = true
-              yield* Effect.logError('Could not measure or replay the provider response.')
+              if (purpose === 'chat') measurementFailed = true
+              else memoryMeasurementFailures++
+              yield* Effect.logError(
+                error instanceof Error &&
+                  (error.message.startsWith('Provider stream rejected:') ||
+                    error.message.startsWith('Invalid provider usage event;'))
+                  ? error.message
+                  : 'Could not measure or replay the provider response.',
+              )
             }),
           ),
         ),
@@ -303,6 +447,79 @@ const measuredFetch: typeof globalThis.fetch = Object.assign(
   },
   { preconnect: fetch.preconnect },
 )
+const socketObserver: typeof ResponsesSocketObserver.Service = (request) =>
+  Effect.gen(function* () {
+    if (request.body._tag !== 'Uint8Array') return (_event: Schema.Json) => Effect.void
+    const body = new TextDecoder().decode(request.body.body)
+    const wire = decodeRequest(body)
+    assertIdentity(wire, { headers: request.headers })
+    const currentTurn = turn
+    const step = (chatSteps.get(currentTurn) ?? 0) + 1
+    chatSteps.set(currentTurn, step)
+    if (step === 1 && Bun.env.FRIDAY_CACHE_BENCHMARK_MEMORY_SCHEDULING === 'idle')
+      chatIdle = Deferred.makeUnsafe<void>()
+    const requestText = (wire.input ?? []).flatMap((message) =>
+      isString(message.content)
+        ? [message.content]
+        : (message.content ?? []).flatMap((part) => (part.text ? [part.text] : [])),
+    )
+    const steeringMessages = steeringTexts.filter((text) => requestText.includes(text)).length
+    yield* recordPrefix(body, currentTurn, step)
+    return (event: Schema.Json) =>
+      Effect.gen(function* () {
+        const decoded = inspectEvent(event)
+        if (decoded._tag === 'None') return
+        if (decoded.value.type === 'friday.transport') {
+          if (step > 1 && Bun.env.FRIDAY_CACHE_BENCHMARK_STEP_DELAY_MS)
+            yield* Effect.sleep(Number(Bun.env.FRIDAY_CACHE_BENCHMARK_STEP_DELAY_MS))
+          yield* Effect.logInfo(event)
+          return
+        }
+        if (decoded.value.type === 'error' || decoded.value.type === 'response.failed') {
+          measurementFailed = true
+          yield* Effect.logError({
+            event: 'provider-stream-rejected',
+            code:
+              decoded.value.code ??
+              decoded.value.error?.code ??
+              decoded.value.error?.type ??
+              'unknown',
+          })
+          return
+        }
+        if (!['response.completed', 'response.incomplete'].includes(decoded.value.type ?? ''))
+          return
+        const row = usageMeasurement(
+          `data: ${encodeJson(event)}\n`,
+          'chat',
+          currentTurn,
+          step,
+          steeringMessages,
+          200,
+        )
+        measurements.push(row)
+        yield* Effect.logInfo({ event: 'model-usage', transport: 'websocket', ...row })
+      })
+  })
+const seedMemory = Effect.fn('Benchmark.seedMemory')(function* () {
+  const sql = yield* SqlClient.SqlClient
+  // Real adapter jobs build the binary tree from a small, synthetic conversation.
+  for (let id = 0; id < 16; id++) {
+    const text = `Project decision ${id}: use email codes for sign-in, a private conversation per person, SQLite behind a storage interface, a light chat interface, and a short composer. Streaming reveals completed paragraphs. Model settings save automatically. Keep borders soft, put settings on their own page, and preserve user choices when switching providers.`
+    const kind = id % 2 ? 'talk' : 'user'
+    yield* sql`INSERT INTO wednesday_messages (user_id,id,kind,text,date) VALUES (${userId},${id},${kind},${text},${'2026-10-13T00:00:00.000Z'})`
+    if (preparedMemory)
+      yield* sql`INSERT INTO wednesday_memory_nodes (user_id,id,count,text) VALUES (${userId},${id},1,${`${kind}: ${text}`})`
+    else
+      yield* sql`INSERT INTO wednesday_memory_jobs (user_id,id,count,source) VALUES (${userId},${id},1,${`${kind}: ${text}`})`
+  }
+  const parts = Array.from({ length: 16 }, (_, id) => ({ id, count: 1 }))
+  if (preparedMemory)
+    for (const count of [2, 4, 8, 16])
+      for (let id = 0; id < 16; id += count)
+        yield* sql`INSERT INTO wednesday_memory_nodes (user_id,id,count,text) VALUES (${userId},${id},${count},${`Decisions ${id} through ${id + count - 1}: email codes, private conversations, SQLite storage interfaces, light UI, short composer, paragraph streaming, automatic model settings, soft borders, and preserved provider choices.`})`
+  yield* sql`INSERT INTO wednesday_memory_views (user_id,payload) VALUES (${userId},${encodeMemory({ parts, pending: false, revision: 0, compactParts: preparedMemory ? parts : [], compactPending: false, compactRevision: preparedMemory ? 0 : -1, total: 16, frontier: preparedMemory ? 16 : 0 })})`
+})
 const program = Effect.acquireUseRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), 'friday-cache-'))),
   (directory) =>
@@ -332,7 +549,10 @@ const program = Effect.acquireUseRelease(
         const chosen =
           saved?.settings.models.find((model) => model.id === modelId) ??
           defaultMapping(modelId, format)
-        const mapping = { ...chosen, maxOutputTokens: 1024 }
+        const mapping = {
+          ...chosen,
+          maxOutputTokens: 1024,
+        }
         if (saved) {
           const environment = yield* Effect.tryPromise(() =>
             readFile('/home/chanyeinthaw/.config/wednesday/development.env', 'utf8'),
@@ -355,7 +575,7 @@ const program = Effect.acquireUseRelease(
               ...saved.settings,
               modelId,
               memoryModelId: modelId,
-              thinking: 'low',
+              thinking,
               memoryThinking: 'low',
               models: [mapping],
             },
@@ -382,23 +602,16 @@ const program = Effect.acquireUseRelease(
             settings: {
               provider: 'api',
               apiFormat: format,
-              baseUrl: 'http://127.0.0.1:8320/v1',
+              baseUrl: Bun.env.FRIDAY_CACHE_BENCHMARK_URL ?? 'http://127.0.0.1:8320/v1',
               modelId,
               memoryModelId: modelId,
-              thinking: 'low',
+              thinking,
               memoryThinking: 'low',
               models: [mapping],
             },
           })
-        // Real adapter jobs build the binary tree from a small, synthetic conversation.
-        for (let id = 0; id < 16; id++) {
-          const text = `Project decision ${id}: use email codes for sign-in, a private conversation per person, SQLite behind a storage interface, a light chat interface, and a short composer. Streaming reveals completed paragraphs. Model settings save automatically. Keep borders soft, put settings on their own page, and preserve user choices when switching providers.`
-          const kind = id % 2 ? 'talk' : 'user'
-          yield* sql`INSERT INTO wednesday_messages (user_id,id,kind,text,date) VALUES (${userId},${id},${kind},${text},${'2026-10-13T00:00:00.000Z'})`
-          yield* sql`INSERT INTO wednesday_memory_jobs (user_id,id,count,source) VALUES (${userId},${id},1,${`${kind}: ${text}`})`
-        }
-        const parts = Array.from({ length: 16 }, (_, id) => ({ id, count: 1 }))
-        yield* sql`INSERT INTO wednesday_memory_views (user_id,payload) VALUES (${userId},${encodeMemory({ parts, pending: false, revision: 0, compactParts: [], compactPending: false, compactRevision: -1, total: 16, frontier: 0 })})`
+        yield* seedMemory()
+        yield* Effect.addFinalizer(() => releaseMemory)
         // Every turn traverses real OptChat memory through separate model/tool round trips.
         const prompts = Array.from(
           { length: Number(Bun.argv[4] ?? 3) },
@@ -446,14 +659,10 @@ const program = Effect.acquireUseRelease(
           )
           yield* chat.handle(userId, { _tag: 'Send', requestId, text })
           yield* Fiber.join(finished).pipe(Effect.timeout('3 minutes'))
+          yield* releaseMemory
           yield* Effect.promise(() => Promise.all(pending))
           const calls = measurements.filter((row) => row.purpose === 'chat' && row.turn === turn)
-          if (
-            calls.length < 8 ||
-            !requiredTools.every((tool, index) => tools[index] === tool) ||
-            consumedSteering.size !== 2 ||
-            !calls.some((row) => row.steeringMessages === 2)
-          )
+          if (!verifiedTurn(calls, tools, consumedSteering.size))
             return yield* failure(
               'Turn did not complete the multi-step tool and steering workload.',
             )
@@ -479,6 +688,15 @@ const program = Effect.acquireUseRelease(
         yield* Effect.promise(() => Promise.all(pending))
         if (measurementFailed) return yield* failure('Provider usage measurement failed.')
         const chatCalls = measurements.filter((row) => row.purpose === 'chat')
+        const unknownMemoryCalls = measurements.filter(
+          (row) => row.purpose === 'memory' && !hasKnownUsage(row),
+        ).length
+        if (memoryMeasurementFailures || unknownMemoryCalls)
+          yield* Effect.logWarning({
+            event: 'memory-usage-unavailable',
+            failedMeasurements: memoryMeasurementFailures,
+            unknownCalls: unknownMemoryCalls,
+          })
         const groups = {
           'chat-first-requests': chatCalls.filter((row) => row.step === 1),
           'chat-in-turn-followups': chatCalls.filter((row) => row.step > 1),
@@ -499,14 +717,25 @@ const program = Effect.acquireUseRelease(
             format,
             provider: chatGptSource ? 'chatgpt' : 'cpa',
             modelId,
+            thinking,
             cacheKeyOverride: Bun.argv[5] === 'cache-key',
             diagnosticReplay: Bun.argv[6] === 'replay',
+            preparedMemory,
+            memorySession: 'separate',
+            memoryScheduling: Bun.env.FRIDAY_CACHE_BENCHMARK_MEMORY_SCHEDULING ?? 'concurrent',
+            continuation: Bun.env.FRIDAY_CACHE_BENCHMARK_CONTINUATION !== 'off',
+            stepDelayMillis: Number(Bun.env.FRIDAY_CACHE_BENCHMARK_STEP_DELAY_MS ?? 0),
             ...summarize(calls),
           })
         }
       }).pipe(
         Effect.provide(services),
         Effect.provideService(FetchHttpClient.Fetch, measuredFetch),
+        Effect.provideService(ResponsesSocketObserver, socketObserver),
+        Effect.provideService(
+          ResponsesSocketContinuation,
+          Bun.env.FRIDAY_CACHE_BENCHMARK_CONTINUATION !== 'off',
+        ),
         Effect.scoped,
       )
     }),
@@ -514,6 +743,7 @@ const program = Effect.acquireUseRelease(
 )
 await Effect.runPromise(
   program.pipe(
+    Effect.scoped,
     Effect.catch((error) =>
       Effect.gen(function* () {
         yield* Effect.logError(
