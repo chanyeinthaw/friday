@@ -1,4 +1,4 @@
-# Run Wednesday
+# Run Friday
 
 Build the executable from the repository root:
 
@@ -17,13 +17,13 @@ set +a
 ./apps/wednesday/dist/wednesday
 ```
 
-Open `http://localhost:3002`. Click the settings icon in the top-right corner. Choose OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages, enter your provider address and access key, find models, and choose a default model. Settings save automatically.
+Open `http://localhost:3002`. Enter your email in the chat composer, then enter the code sent by Clerk. Sign-in replies and errors appear in the chat. Resend the code or change the email from the composer controls. After verification, Friday opens your private conversation. Click the settings icon in the top-right corner. Choose OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages, enter your provider address and access key, find models, and choose a default model. Settings save automatically.
 
-In Provider, choose ChatGPT and select Sign in with ChatGPT. Open the authorization link, enter the displayed device code, and approve access. Wednesday stores encrypted tokens per user and refreshes them automatically. Device codes expire after 15 minutes. Disconnect removes the saved credentials and keeps conversation history. API key remains available as an alternative.
+In Provider, choose ChatGPT and select Sign in with ChatGPT. Open the authorization link, enter the displayed device code, and approve access. Friday stores encrypted tokens per user and refreshes them automatically. Device codes expire after 15 minutes. Disconnect removes the saved credentials and keeps conversation history. API key remains available as an alternative.
 
 Choose chat and memory models with independent thinking effort in Settings. Model pickers open as searchable bottom sheets on mobile. Use the gear on a model entry in either picker to adjust its limits, supported thinking levels, and provider options in a desktop dialog or mobile sheet. Provider display names appear when available; model IDs remain the API identifiers. Expand Provider to update your API address or key. Settings save automatically after you finish editing. A toast confirms each successful update. Changes made during a response save when it finishes.
 
-Choose the chat model and thinking effort on the Provider settings page. The rounded composer starts at two lines and grows to four lines before scrolling. On desktop, press **Enter** to send or Shift + Enter for a new line. On touch devices, Enter inserts a new line; tap the send button to send. While Wednesday is working, messages steer the active turn at its next model-step boundary. **Stop** interrupts the turn and cancels pending steering. Pending messages appear immediately as user bubbles.
+Choose the chat model and thinking effort on the Provider settings page. The rounded composer starts at two lines and grows to four lines before scrolling. On desktop, press **Enter** to send or Shift + Enter for a new line. On touch devices, Enter inserts a new line; tap the send button to send. While Friday is working, messages steer the active turn at its next model-step boundary. **Stop** interrupts the turn and cancels pending steering. Pending messages appear immediately as user bubbles.
 
 Chat initially loads the latest 250 visible messages. Load more at the top fetches earlier messages without moving the current reading position. Responses appear as completed paragraphs and Markdown blocks. The renderer includes syntax highlighting, code wrapping and copying, tables with Markdown and CSV copying, GitHub alerts, footnotes, collapsible details, image previews, and Mermaid diagrams.
 

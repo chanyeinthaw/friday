@@ -262,6 +262,8 @@ describe('settings saves', () => {
         state = update(state, Message.ToggledThinkingLevel({ level: 'high', enabled: false })).model
         const commands: ClientCommand[] = []
         const browser = Browser.of({
+          sendSignInCode: () => Effect.void,
+          verifySignInCode: () => Effect.void,
           sessionChanges: Stream.empty,
           connect: () => Stream.empty,
           signOut: Effect.void,
@@ -534,6 +536,8 @@ describe('API formats', () => {
       const sent: ClientCommand[] = []
       const model = { ...connected, apiFormat: 'responses' as const, settingsDirty: true }
       const browser = Browser.of({
+        sendSignInCode: () => Effect.void,
+        verifySignInCode: () => Effect.void,
         send: (command) =>
           Effect.sync(() => {
             sent.push(command)

@@ -280,7 +280,7 @@ export const chatLayer = Layer.effect(
           ),
         )
       const agent = defineAgent({
-        name: 'Wednesday',
+        name: 'Friday',
         model: streamedModel,
         systemPrompt: instructions,
         autoCompact: { enabled: false },

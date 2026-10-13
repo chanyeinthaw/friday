@@ -1,3 +1,5 @@
+import { emailSignIn, signInError } from './EmailSignIn.ts'
+import logoUrl from './branding/friday-logo.png'
 import { Clerk } from '@clerk/clerk-js'
 import { Context, Effect, Layer, Queue, Schedule, Schema, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/http'
@@ -12,6 +14,8 @@ export interface SessionChange {
 export class Browser extends Context.Service<
   Browser,
   {
+    readonly sendSignInCode: (email: string) => Effect.Effect<void, Error>
+    readonly verifySignInCode: (code: string) => Effect.Effect<void, Error>
     readonly sessionChanges: Stream.Stream<SessionChange>
     readonly connect: () => Stream.Stream<ServerEvent>
     readonly signOut: Effect.Effect<void, Error>
@@ -36,6 +40,8 @@ export const browserLayer = Layer.effect(
           }),
         },
         appearance: {
+          layout: { logoImageUrl: logoUrl, logoPlacement: 'inside' },
+          elements: { logoImage: { height: '64px', width: '64px', borderRadius: '50%' } },
           variables: {
             colorBackground: '#ffffff',
             colorForeground: '#27272a',
@@ -56,14 +62,12 @@ export const browserLayer = Layer.effect(
         connectedCallback() {
           const node = document.createElement('div')
           this.append(node)
-          if (location.pathname === '/waitlist') clerk.mountWaitlist(node)
-          else clerk.mountSignIn(node, { routing: 'hash' })
+          clerk.mountWaitlist(node)
         }
         disconnectedCallback() {
           const node = this.children[0]
           if (!(node instanceof HTMLDivElement)) return
-          if (location.pathname === '/waitlist') clerk.unmountWaitlist(node)
-          else clerk.unmountSignIn(node)
+          clerk.unmountWaitlist(node)
         }
       },
     )
@@ -186,6 +190,19 @@ export const browserLayer = Layer.effect(
       try: () => clerk.signOut(),
       catch: () => new Error('Could not sign out.'),
     })
-    return Browser.of({ send, connect, sessionChanges, signOut })
+    const { sendSignInCode, verifySignInCode } = emailSignIn({
+      create: (email) =>
+        Effect.gen(function* () {
+          const signIn = clerk.client?.signIn
+          if (!signIn) return yield* Effect.fail(new Error('Sign-in is still loading. Try again.'))
+          return yield* Effect.tryPromise({
+            try: () => signIn.create({ identifier: email }),
+            catch: signInError,
+          })
+        }),
+      activate: (session) =>
+        Effect.tryPromise({ try: () => clerk.setActive({ session }), catch: signInError }),
+    })
+    return Browser.of({ send, connect, sessionChanges, signOut, sendSignInCode, verifySignInCode })
   }),
 ).pipe(Layer.provide(FetchHttpClient.layer))

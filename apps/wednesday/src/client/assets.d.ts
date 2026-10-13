@@ -8,3 +8,8 @@ declare module 'wednesday:frontend' {
   }[]
   export default files
 }
+
+declare module '*.png' {
+  const url: string
+  export default url
+}

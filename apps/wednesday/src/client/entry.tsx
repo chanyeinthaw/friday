@@ -14,5 +14,5 @@ if (container)
     </RegistryContext.Provider>,
   )
 void start().catch(() =>
-  dispatch(Message.Failed({ message: 'Unable to open Wednesday. Please reload.' })),
+  dispatch(Message.Failed({ message: 'Unable to open Friday. Please reload.' })),
 )

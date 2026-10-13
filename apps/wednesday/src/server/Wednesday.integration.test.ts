@@ -647,7 +647,7 @@ test('compiled binary embeds frontend and rejects cross-origin HTTP requests', a
   const html = await fetch(`http://127.0.0.1:${applicationPort}/`).then((response) =>
     response.text(),
   )
-  expect(html).toContain('<title>Wednesday</title>')
+  expect(html).toContain('<title>Friday</title>')
   const script = html.match(/src="([^"]+\.js)"/)
   expect(script?.[1]).toBeDefined()
   const asset = await fetch(

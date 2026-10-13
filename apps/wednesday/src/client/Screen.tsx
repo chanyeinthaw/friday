@@ -1,5 +1,5 @@
 import { Schema } from 'effect'
-import { Link, Outlet, useNavigate } from '@tanstack/react-router'
+import { Link, Outlet, useNavigate, useLocation } from '@tanstack/react-router'
 import { cn } from 'cn'
 import { toast } from 'sonner'
 import { Toaster } from './components/ui/sonner.tsx'
@@ -65,6 +65,7 @@ import { Message, MessageContent, MessageFooter } from './components/ui/message.
 import { Bubble, BubbleContent } from './components/ui/bubble.tsx'
 import { Marker, MarkerContent } from './components/ui/marker.tsx'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover.tsx'
+import { LoginScreen } from './LoginScreen.tsx'
 import ChatMarkdown from './markdown/ChatMarkdown.tsx'
 import {
   Dialog,
@@ -441,6 +442,17 @@ function Composer({ model }: { model: Model }) {
             placement="inline"
             className="pointer-events-auto border border-border bg-transparent backdrop-blur-md"
           />
+        </div>
+      )}
+      {model.connection === 'ready' && !model.activeSettings && (
+        <div className="pointer-events-auto flex justify-center">
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className="rounded-full bg-transparent backdrop-blur-md">
+            <Link to="/settings">Choose a model</Link>
+          </Button>
         </div>
       )}
       <form
@@ -1186,8 +1198,10 @@ export function ChatScreen() {
   return <Chat model={model} />
 }
 export function AppShell() {
+  const pathname = useLocation({ select: (location) => location.pathname })
   const model = useAtomValue(stateAtom)
   const ready = useAtomValue(readyAtom)
+  const wasSignedOut = useRef(false)
   const saved = useRef(model.settingsSaved)
   useEffect(() => {
     if (model.settingsSaved > saved.current)
@@ -1196,17 +1210,25 @@ export function AppShell() {
   }, [model.settingsSaved])
   const navigate = useNavigate()
   useEffect(() => {
+    if (ready && !model.userId) wasSignedOut.current = true
+    if (model.userId && wasSignedOut.current) {
+      wasSignedOut.current = false
+      dispatch(Action.OpenedPage({ page: 'chat' }))
+      void navigate({ to: '/' })
+      return
+    }
     if (model.userId && model.page === 'settings') {
       dispatch(Action.OpenedPage({ page: 'chat' }))
       void navigate({ to: '/settings' })
     }
-  }, [model.userId, model.page, navigate])
+  }, [model.userId, model.page, ready, navigate])
   if (!ready)
     return (
       <div className="flex min-h-dvh items-center justify-center p-6 text-sm text-muted-foreground">
         {model.error || 'Loading…'}
       </div>
     )
+  if (!model.userId && pathname !== '/waitlist') return <LoginScreen />
   if (!model.userId)
     return (
       <main className="flex min-h-dvh items-center justify-center px-4 py-12">
