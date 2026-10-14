@@ -7,7 +7,7 @@ import * as Exit from 'effect/Exit'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 
 import {
   LegacyDiscordConfigMigrationError,

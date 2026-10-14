@@ -6,7 +6,7 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 
 import { ChannelTurns } from '../conversation/ChannelTurns.ts'
 import { ThreadPersistence } from '../conversation/ThreadPersistence.ts'

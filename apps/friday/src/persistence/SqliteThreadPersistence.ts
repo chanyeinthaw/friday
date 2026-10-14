@@ -20,8 +20,8 @@ import {
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
-import * as SqlSchema from 'effect/unstable/sql/SqlSchema'
+import { SqlClient } from 'effect/sql'
+import { SqlSchema } from 'effect/sql'
 
 import type { ThreadPersistenceContract } from '../conversation/ThreadPersistence.ts'
 import { PersistenceDecodeError, PersistenceSqlError } from './Errors.ts'

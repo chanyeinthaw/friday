@@ -4,7 +4,7 @@ import * as Layer from 'effect/Layer'
 import * as MutableRef from 'effect/MutableRef'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 
 import {
   loadAppConfig,

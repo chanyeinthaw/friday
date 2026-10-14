@@ -1,7 +1,7 @@
 import type { DiscordAdapter } from '@chat-adapter/discord'
 import type { ListThreadsOptions, ThreadSummary } from 'chat'
 import * as Effect from 'effect/Effect'
-import * as Encoding from 'effect/Encoding'
+import { Base64Url } from 'effect/encoding'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
@@ -740,7 +740,7 @@ const decodeDiscordScopesPosition = (
   if (cursor === undefined || cursor.trim() === '') {
     return Option.some({ after: undefined, skip: 0 })
   }
-  const jsonResult = Encoding.decodeBase64UrlString(cursor.trim())
+  const jsonResult = Base64Url.decodeString(cursor.trim())
   if (!Result.isSuccess(jsonResult)) return Option.none()
   const payload = Option.getOrUndefined(
     decodeDiscordScopesCursorJsonOption(Result.getOrThrow(jsonResult)),
@@ -757,7 +757,7 @@ const encodeDiscordScopesPosition = (position: DiscordScopesPosition): string =>
   }
   if (position.after !== undefined) payload.after = position.after
   if (position.skip > 0) payload.skip = position.skip
-  return Encoding.encodeBase64Url(encodeDiscordScopesCursorJsonSync(payload))
+  return Base64Url.encode(encodeDiscordScopesCursorJsonSync(payload))
 }
 
 /**
@@ -777,7 +777,7 @@ const encodeDiscordChannelsCursorJsonSync = Schema.encodeSync(DiscordChannelsCur
 
 const decodeDiscordChannelsOffset = (cursor: string | undefined): Option.Option<number> => {
   if (cursor === undefined || cursor.trim() === '') return Option.some(0)
-  const jsonResult = Encoding.decodeBase64UrlString(cursor.trim())
+  const jsonResult = Base64Url.decodeString(cursor.trim())
   if (!Result.isSuccess(jsonResult)) return Option.none()
   const payload = Option.getOrUndefined(
     decodeDiscordChannelsCursorJsonOption(Result.getOrThrow(jsonResult)),
@@ -792,7 +792,7 @@ const encodeDiscordChannelsOffset = (offset: number): string => {
     k: 'discord-channels',
   }
   if (offset > 0) payload.off = offset
-  return Encoding.encodeBase64Url(encodeDiscordChannelsCursorJsonSync(payload))
+  return Base64Url.encode(encodeDiscordChannelsCursorJsonSync(payload))
 }
 
 const discoverCurrent = Effect.fn('DiscordDiscovery.current')(function* (

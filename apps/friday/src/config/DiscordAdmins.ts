@@ -4,7 +4,7 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 
 /**
  * A stable Discord user ID (snowflake): the decimal form of a positive 64-bit
