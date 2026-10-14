@@ -17,7 +17,6 @@ import {
   Eye,
   EyeOff,
   ExternalLink,
-  Bot,
   X,
 } from 'lucide-react'
 import { dispatch, readyAtom, stateAtom } from './State.ts'
@@ -66,7 +65,6 @@ import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover
 import { LoginScreen } from './LoginScreen.tsx'
 import { ClerkElement } from './ClerkElement.tsx'
 import { SettingsLayout } from './SettingsLayout.tsx'
-import { useIsMobile } from './hooks/use-mobile.ts'
 import ChatMarkdown from './markdown/ChatMarkdown.tsx'
 import {
   Dialog,
@@ -455,12 +453,12 @@ function Composer({ model }: { model: Model }) {
         }}>
         <InputGroup className="rounded-3xl bg-transparent shadow-sm backdrop-blur-md">
           <InputGroupTextarea
-            rows={2}
+            rows={1}
             aria-label="Message"
             placeholder={model.busy ? 'Steer this response…' : 'Message…'}
             value={model.draft}
             onChange={(event) => dispatch(Action.ChangedDraft({ value: event.target.value }))}
-            className="min-h-[calc(2lh+1.5rem)] max-h-[calc(4lh+1.5rem)] overflow-y-auto px-5 py-3 text-base [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:text-sm"
+            className="min-h-12 max-h-[calc(4lh+1.5rem)] overflow-y-auto px-5 py-3 text-base/6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:text-sm/6"
             onKeyDown={(event) => {
               const touchDevice =
                 navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches
@@ -710,10 +708,31 @@ const thinkingLabels = {
   max: 'Maximum',
 } satisfies Record<Thinking, string>
 
+function SettingsRow({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-3 px-4 py-4 lg:flex-row lg:items-center lg:justify-between lg:gap-6 sm:px-5">
+      <div className="min-w-0 lg:flex-1">
+        <p className="text-sm font-medium">{title}</p>
+        {description && (
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{description}</p>
+        )}
+      </div>
+      <div className="w-full min-w-0 lg:w-[22rem] lg:shrink-0">{children}</div>
+    </div>
+  )
+}
 function ProviderKeyInput({ model }: { model: Model }) {
   const [showKey, setShowKey] = useState(false)
   return (
-    <Field label="API key">
+    <SettingsRow title="API key">
       <div className="relative">
         <Input
           aria-label="API key"
@@ -738,7 +757,7 @@ function ProviderKeyInput({ model }: { model: Model }) {
           {showKey ? <EyeOff /> : <Eye />}
         </Button>
       </div>
-    </Field>
+    </SettingsRow>
   )
 }
 function ChatGptSignIn({
@@ -856,7 +875,7 @@ const parseApiFormat = Schema.decodeUnknownOption(ApiFormat)
 function ApiProviderSettings({ model }: { model: Model }) {
   return (
     <>
-      <Field label="API format">
+      <SettingsRow title="Message format">
         <Select
           value={model.apiFormat}
           disabled={model.busy || model.fetching || model.saving || model.connection !== 'ready'}
@@ -864,7 +883,7 @@ function ApiProviderSettings({ model }: { model: Model }) {
             const format = parseApiFormat(value)
             if (format._tag === 'Some') dispatch(Action.SelectedApiFormat({ format: format.value }))
           }}>
-          <SelectTrigger className="w-full">
+          <SelectTrigger aria-label="Message format" className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -873,9 +892,10 @@ function ApiProviderSettings({ model }: { model: Model }) {
             <SelectItem value="anthropic">Anthropic Messages</SelectItem>
           </SelectContent>
         </Select>
-      </Field>
-      <Field label="API address">
+      </SettingsRow>
+      <SettingsRow title="API address">
         <Input
+          aria-label="API address"
           type="url"
           autoComplete="url"
           spellCheck={false}
@@ -887,9 +907,9 @@ function ApiProviderSettings({ model }: { model: Model }) {
           value={model.baseUrl}
           onChange={(e) => dispatch(Action.ChangedUrl({ value: e.target.value }))}
         />
-      </Field>
+      </SettingsRow>
       <ProviderKeyInput model={model} />
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-5">
         <span className="text-xs text-muted-foreground">
           {model.models.length
             ? `${model.models.length} models available`
@@ -928,7 +948,7 @@ function ProviderTabs({
   const disabled = model.saving || model.fetching || model.deviceLoading
   return (
     <div
-      className="grid grid-cols-2 gap-2 rounded-xl bg-muted/50 p-1"
+      className="grid grid-cols-2 gap-2 rounded-[calc(var(--radius-md)+0.25rem)] bg-muted/50 p-1"
       role="group"
       aria-label="Provider type">
       <Button
@@ -958,7 +978,6 @@ function ProviderTabs({
   )
 }
 function ProviderSettings({ model }: { model: Model }) {
-  const mobile = useIsMobile()
   const [method, setMethod] = useState<'api' | 'chatgpt'>(model.provider)
   const [authOpen, setAuthOpen] = useState(false)
   const refreshedAccount = useRef<string | null>(null)
@@ -984,65 +1003,63 @@ function ProviderSettings({ model }: { model: Model }) {
         ? new URL(provider).hostname
         : 'Add a provider'
   return (
-    <details
-      key={model.userId}
-      open={model.activeSettings && mobile ? undefined : true}
-      className="group/provider rounded-2xl border">
-      <summary className="flex cursor-pointer list-none items-center gap-3 p-5 [&::-webkit-details-marker]:hidden sm:p-6">
-        <Bot className="size-5 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-medium">Provider</h2>
-          <p className="mt-1 truncate text-sm text-muted-foreground">{providerName}</p>
+    <section aria-labelledby="provider-settings">
+      <h2 id="provider-settings" className="mb-3 px-4 text-sm text-muted-foreground">
+        Provider
+      </h2>
+      <div className="overflow-hidden rounded-2xl border border-border/80">
+        <SettingsRow title="Connection" description={providerName}>
+          <ProviderTabs model={model} method={method} setMethod={setMethod} />
+        </SettingsRow>
+        <div className="border-t border-border/70">
+          {method === 'chatgpt' ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-5">
+              {signedIn ? (
+                <>
+                  <span className="inline-flex items-center gap-2 text-sm">
+                    <Check className="size-4" />
+                    Signed in
+                  </span>
+                  <div className="grid w-full grid-cols-2 gap-2 sm:w-auto">
+                    <Button
+                      variant="outline"
+                      disabled={
+                        model.fetching ||
+                        model.provider !== 'chatgpt' ||
+                        model.connection !== 'ready'
+                      }
+                      onClick={() => dispatch(Action.Discover())}>
+                      {model.fetching ? 'Finding models…' : 'Refresh models'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={model.busy || model.deviceLoading || model.connection !== 'ready'}
+                      onClick={() => dispatch(Action.DisconnectChatGpt())}>
+                      Disconnect
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <Button
+                  className="w-full"
+                  disabled={model.busy || model.deviceLoading || model.connection !== 'ready'}
+                  onClick={() => {
+                    setAuthOpen(true)
+                    dispatch(Action.StartChatGpt())
+                  }}>
+                  Sign in with ChatGPT
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="divide-y divide-border/70">
+              <ApiProviderSettings model={model} />
+            </div>
+          )}
         </div>
-        <ChevronDown className="size-4 shrink-0 text-muted-foreground group-open/provider:rotate-180" />
-      </summary>
-      <div className="space-y-5 border-t p-5 sm:p-6">
-        <ProviderTabs model={model} method={method} setMethod={setMethod} />
-        {method === 'chatgpt' ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            {signedIn ? (
-              <>
-                <span className="inline-flex items-center gap-2 text-sm">
-                  <Check className="size-4" />
-                  Signed in
-                </span>
-                <div className="grid w-full grid-cols-2 gap-2 sm:w-auto">
-                  <Button
-                    variant="outline"
-                    disabled={
-                      model.fetching || model.provider !== 'chatgpt' || model.connection !== 'ready'
-                    }
-                    onClick={() => dispatch(Action.Discover())}>
-                    {model.fetching ? 'Finding models…' : 'Refresh models'}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={model.busy || model.deviceLoading || model.connection !== 'ready'}
-                    onClick={() => dispatch(Action.DisconnectChatGpt())}>
-                    Disconnect
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <Button
-                className="w-full"
-                disabled={model.busy || model.deviceLoading || model.connection !== 'ready'}
-                onClick={() => {
-                  setAuthOpen(true)
-                  dispatch(Action.StartChatGpt())
-                }}>
-                Sign in with ChatGPT
-              </Button>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-5">
-            <ApiProviderSettings model={model} />
-          </div>
-        )}
       </div>
       <ChatGptSignIn model={model} open={authOpen} setOpen={setAuthOpen} />
-    </details>
+    </section>
   )
 }
 function ModelPreference({
@@ -1059,9 +1076,11 @@ function ModelPreference({
   const levels = Thinking.literals.filter((level) => selected?.thinking[level] !== undefined)
   const title = memory ? 'Memory model' : 'Chat model'
   return (
-    <Field label={title}>
+    <SettingsRow
+      title={title}
+      description={memory ? 'Used to remember earlier messages.' : 'Used for your conversation.'}>
       <div className="flex min-w-0 items-center gap-2">
-        <div className="flex min-w-0 flex-1 items-stretch rounded-xl border shadow-xs">
+        <div className="flex min-w-0 flex-1 items-stretch rounded-md border shadow-xs">
           <div className="min-w-0 flex-1">
             <ModelCombobox
               label={title}
@@ -1071,7 +1090,7 @@ function ModelPreference({
               onConfigure={(value) =>
                 onConfigure(value === 'Same as chat model' ? model.modelId : value)
               }
-              className="rounded-none rounded-l-xl border-0 shadow-none"
+              className="rounded-none rounded-l-md border-0 shadow-none"
               onSelect={(value) =>
                 memory
                   ? dispatch(
@@ -1089,7 +1108,7 @@ function ModelPreference({
                 label={memory ? 'Memory thinking effort' : 'Chat thinking effort'}
                 disabled={levels.length < 2}
                 value={memory ? model.memoryThinking : model.thinking}
-                className="rounded-none rounded-r-xl border-0 shadow-none"
+                className="rounded-none rounded-r-md border-0 shadow-none"
                 onChange={(value) =>
                   dispatch(
                     memory
@@ -1107,7 +1126,7 @@ function ModelPreference({
           )}
         </div>
       </div>
-    </Field>
+    </SettingsRow>
   )
 }
 function ChatPreferences({ model }: { model: Model }) {
@@ -1118,10 +1137,10 @@ function ChatPreferences({ model }: { model: Model }) {
   }
   return (
     <section aria-labelledby="chat-preferences">
-      <h2 id="chat-preferences" className="mb-3 px-1 text-base font-medium">
+      <h2 id="chat-preferences" className="mb-3 px-4 text-sm text-muted-foreground">
         Models
       </h2>
-      <div className="space-y-5 rounded-2xl border p-5 sm:p-6">
+      <div className="divide-y divide-border/70 overflow-hidden rounded-2xl border border-border/80">
         <ModelPreference model={model} onConfigure={configure} />
         <ModelPreference model={model} memory onConfigure={configure} />
       </div>
@@ -1153,9 +1172,9 @@ export function SettingsScreen() {
   const model = useAtomValue(stateAtom)
   return (
     <SettingsLayout>
-      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <ProviderSettings model={model} />
+      <div className="space-y-9">
         <ChatPreferences model={model} />
+        <ProviderSettings model={model} />
       </div>
       <div className="mt-5">
         <Feedback model={model} />

@@ -79,15 +79,20 @@ export const browserLayer = Layer.effect(
         connectedCallback() {
           const button = document.createElement('button')
           button.type = 'button'
-          button.className =
-            'flex min-h-11 w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-muted focus-visible:outline-ring'
+          const avatarOnly = this.hasAttribute('avatar-only')
+          button.className = avatarOnly
+            ? 'flex size-7 items-center justify-center rounded-full hover:opacity-80 focus-visible:outline-ring'
+            : 'flex min-h-11 w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-muted focus-visible:outline-ring'
           button.setAttribute('aria-label', 'Manage account')
           button.onclick = () => clerk.openUserProfile()
           const avatar = document.createElement('img')
           avatar.alt = ''
-          avatar.className = 'size-8 shrink-0 rounded-full'
+          avatar.className = avatarOnly
+            ? 'size-6 shrink-0 rounded-full'
+            : 'size-8 shrink-0 rounded-full'
           const name = document.createElement('span')
           name.className = 'truncate'
+          name.hidden = avatarOnly
           button.append(avatar, name)
           this.replaceChildren(button)
           const update = () => {
