@@ -516,7 +516,7 @@ function Chat({ model }: { model: Model }) {
       <SettingsLink />
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="flex-1">
-          <MessageScrollerViewport>
+          <MessageScrollerViewport className="scroll-fade-y">
             <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-3 px-5 pb-[calc(var(--composer-height,120px)+2.5rem)] pt-20 sm:px-8">
               {model.connection === 'ready' &&
                 model.messages.length === 0 &&
