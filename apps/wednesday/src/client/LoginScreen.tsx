@@ -118,7 +118,7 @@ export function LoginScreen() {
     <main ref={layout} className="relative flex h-dvh flex-col">
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="flex-1">
-          <MessageScrollerViewport>
+          <MessageScrollerViewport className="scroll-fade-y [--scroll-fade-t-size:0px]">
             <MessageScrollerContent className="mx-auto w-full max-w-3xl px-5 pb-[calc(var(--composer-height,120px)+2.5rem)] pt-20 sm:px-8">
               {messages.map((message, index) => (
                 <MessageScrollerItem key={index} messageId={`login-${index}`}>
