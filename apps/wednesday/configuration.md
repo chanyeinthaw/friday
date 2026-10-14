@@ -4,8 +4,8 @@
 
 | Variable                         | Value                                                                                                                                        |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLERK_PUBLISHABLE_KEY`          | Clerk development publishable key, beginning with `pk_test_`                                                                                 |
-| `CLERK_JWT_KEY`                  | The development instance's PEM public key for session verification                                                                           |
+| `CLERK_PUBLISHABLE_KEY`          | Clerk publishable key, beginning with `pk_test_` or `pk_live_`                                                                               |
+| `CLERK_JWT_KEY`                  | The matching Clerk instance's PEM public key for session verification                                                                        |
 | `WEDNESDAY_ENCRYPTION_KEY`       | A base64-encoded 32-byte key for encrypting provider API keys                                                                                |
 | `WEDNESDAY_ORIGIN`               | Browser origin accepted by Clerk verification and authenticated HTTP requests. Default `http://localhost:3002`                               |
 | `WEDNESDAY_PORT`                 | Listening port. Default `3002`                                                                                                               |
@@ -90,7 +90,7 @@ Images enter the current model message directly, including consumed steering. Th
 
 ## Current scope
 
-The web app starts with fresh history. Friday's existing application and data remain separate. This version has no history import, shared conversations, organizations, subagents, coding tools, or production Clerk configuration. The development deployment runs through Docker Compose on silicon and Tailscale HTTPS port 8446.
+The web app starts with fresh history. Friday's existing application and data remain separate. This version has no history import, shared conversations, organizations, subagents, or coding tools. The development deployment runs through Docker Compose on silicon and Tailscale HTTPS port 8446.
 
 The build splits browser assets before embedding them in the executable. Highlighting and Mermaid load only when needed. Embedded assets use Effect HTTP compression with Brotli quality 5 or gzip. Hashed assets have immutable cache headers; HTML uses `no-cache`. Reconnecting displays a rounded status pill and preserves the timeline and draft. Sending resumes after the snapshot has synchronized.
 
@@ -104,7 +104,6 @@ The integration page reads the team's remaining credits, plan allowance, and bil
 
 Official pricing and API details are recorded in [the Firecrawl research note](../../docs/research/firecrawl.md). The adapter and encrypted-storage lifecycle have mocked integration coverage; a real Firecrawl key is needed to verify a billable search against the hosted API.
 
-
 ## Chat activities
 
 Chat shows compact activity rows based on T3 Code's work log. Consecutive tool calls share a disclosure; each step expands to show its command, search query, or memory range and a result preview. New tool calls retain their completed, failed, or stopped status after reload. Migration 7 adds this display metadata alongside the existing message projections. It leaves the agent log and memory source text unchanged.
@@ -112,3 +111,20 @@ Chat shows compact activity rows based on T3 Code's work log. Consecutive tool c
 Initial snapshots and older-history pages include up to 500 tool activities alongside their 250 visible messages. Reconnects also refresh activities within the last 500 message IDs to reconcile a tool that completed while the tab was disconnected. The client updates the existing row by ID. Tool results preview the first 4,000 characters with an ellipsis when truncated. Stop and startup recovery settle unfinished activities.
 
 The live status changes between Thinking, the active tool, and Writing response. It reports lifecycle state and does not expose model reasoning text. Thinking and Writing response disappear when the turn ends; completed tool rows remain in the timeline. Existing tool calls from before migration 7 have no activity metadata.
+
+## Optmem releases
+
+Friday Optmem uses `optmem-vX.Y.Z` tags, including prereleases such as
+`optmem-v0.0.0-nightly.1`. The CLI keeps its existing `vX.Y.Z` tags.
+Only commits on `main` can publish Optmem releases.
+
+The Optmem release workflow checks types, lint, unit tests, and compiled integration
+tests before publishing `friday-optmem-linux-x64.tar.gz`, `SHA256SUMS`, and an `IMAGE`
+asset containing the immutable container digest. Container images use
+`ghcr.io/chanyeinthaw/friday-optmem`.
+
+Production runs separately from the CLI and development services through Fleet at
+https://friday.si14.space. Fleet's `scripts/services/optmem` deploys the release digest
+and its user timer checks for newer Optmem releases every five minutes.
+Production uses a fresh SQLite volume, production Clerk keys, a separate encryption
+key, and the private `friday-optmem-production-attachments` R2 bucket.
