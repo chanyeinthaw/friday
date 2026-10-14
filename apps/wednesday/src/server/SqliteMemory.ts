@@ -1,3 +1,4 @@
+import { replyContext } from '../shared/replies.ts'
 import { Effect, PartitionedSemaphore, Schema } from 'effect'
 import type { SqlClient } from 'effect/sql'
 import { ChatMessage } from '../shared/protocol.ts'
@@ -104,7 +105,7 @@ export const makeSqliteMemory = Effect.fn('SqliteMemory.make')(function* (
     if (!messages.length) return
     const state = yield* memory(userId)
     for (const message of messages)
-      yield* sql`INSERT INTO wednesday_memory_jobs (user_id,id,count,source) VALUES (${userId},${message.id},1,${`${message.kind}: ${message.text}`})`
+      yield* sql`INSERT INTO wednesday_memory_jobs (user_id,id,count,source) VALUES (${userId},${message.id},1,${`${message.kind}: ${replyContext(message)}`})`
     yield* saveMemory(userId, {
       ...state,
       parts: [...state.parts, ...messages.map((message) => ({ id: message.id, count: 1 }))],

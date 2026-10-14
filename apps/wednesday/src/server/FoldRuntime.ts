@@ -7,7 +7,7 @@ import {
   EventLogUnavailableError,
   type LogEntry,
 } from '@humanlayer/fold-core'
-import { AgentRuntime, type AgentOptions } from './AgentRuntime.ts'
+import { AgentRuntime, type AgentImage, type AgentOptions } from './AgentRuntime.ts'
 import { cachePrompt } from './CachePrompt.ts'
 import { optChatTools } from './OptChatTools.ts'
 import { observeText } from './StreamingModel.ts'
@@ -49,6 +49,7 @@ export const foldRuntimeLayer = Layer.effect(
                 ),
               }
             : base
+          const imageInputs = new Map<string, readonly AgentImage[]>()
           let requestStart: number | undefined
           const rows: LogEntry[] = []
           const events = yield* PubSub.unbounded<LogEntry>()
@@ -105,7 +106,7 @@ export const foldRuntimeLayer = Layer.effect(
               model,
               systemPrompt: options.systemPrompt,
               autoCompact: { enabled: false },
-              tools: optChatTools(options.memory),
+              tools: optChatTools(options.memory, options.bash, options.webSearch),
               hooks: {
                 preRequest: [
                   {
@@ -122,8 +123,28 @@ export const foldRuntimeLayer = Layer.effect(
                           _tag: 'changed' as const,
                           prompt: Prompt.make([
                             { role: 'system', content: options.systemPrompt },
-                            ...cachePrompt(options.view, input.prompt.content.slice(requestStart))
-                              .content,
+                            ...cachePrompt(
+                              options.view,
+                              input.prompt.content.slice(requestStart).map((message) => {
+                                if (message.role !== 'user') return message
+                                const text = message.content
+                                  .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+                                  .join('')
+                                const images = imageInputs.get(text) ?? []
+                                return Prompt.userMessage({
+                                  options: message.options,
+                                  content: [
+                                    ...message.content,
+                                    ...images.map((image) =>
+                                      Prompt.filePart({
+                                        mediaType: image.mimeType,
+                                        data: Buffer.from(image.data, 'base64'),
+                                      }),
+                                    ),
+                                  ],
+                                })
+                              }),
+                            ).content,
                           ]),
                         }
                       }),
@@ -135,7 +156,11 @@ export const foldRuntimeLayer = Layer.effect(
             steering: 'one-at-a-time',
           })
           return {
-            send: Effect.fn('FoldRuntime.send')(function* (text: string) {
+            send: Effect.fn('FoldRuntime.send')(function* (
+              text: string,
+              images: readonly AgentImage[] = [],
+            ) {
+              imageInputs.set(text, images)
               const result = yield* session
                 .send(text)
                 .pipe(
@@ -145,8 +170,9 @@ export const foldRuntimeLayer = Layer.effect(
                 return yield* failure('The provider could not complete the response.')
               return result.resultText ?? ''
             }),
-            steer: (text: string) =>
-              session.steer(text).pipe(
+            steer: (text: string, images: readonly AgentImage[] = []) =>
+              Effect.sync(() => imageInputs.set(text, images)).pipe(
+                Effect.andThen(session.steer(text)),
                 Effect.as(true),
                 Effect.catchTag('AgentNotRunningError', () => Effect.succeed(false)),
                 Effect.mapError(() => failure('Could not steer the response.')),

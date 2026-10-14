@@ -6,6 +6,8 @@ import { Auth } from './Auth.ts'
 import { Chat } from './Chat.ts'
 import { Storage } from './Storage.ts'
 import { browseMemory, readMemoryOriginal } from './Memory.ts'
+import { Firecrawl } from './Firecrawl.ts'
+import { Attachments } from './Attachments.ts'
 import { failure } from './errors.ts'
 
 export const authenticationLayer = Layer.effect(
@@ -122,9 +124,45 @@ export const memoryApiLayer = HttpApiBuilder.group(
       )
   }),
 )
+export const attachmentsApiLayer = HttpApiBuilder.group(
+  Api,
+  'attachments',
+  Effect.fn('HttpApi.attachments')(function* (handlers) {
+    const attachments = yield* Attachments
+    return handlers
+      .handle('upload', ({ payload }) =>
+        Effect.flatMap(CurrentUser, (user) => attachments.prepare(user.userId, payload)),
+      )
+      .handle('complete', ({ params }) =>
+        Effect.flatMap(CurrentUser, (user) => attachments.complete(user.userId, params.id)),
+      )
+      .handle('download', ({ params }) =>
+        Effect.flatMap(CurrentUser, (user) => attachments.download(user.userId, params.id)),
+      )
+  }),
+)
+export const integrationsApiLayer = HttpApiBuilder.group(
+  Api,
+  'integrations',
+  Effect.fn('HttpApi.integrations')(function* (handlers) {
+    const firecrawl = yield* Firecrawl
+    return handlers
+      .handle('firecrawl', () =>
+        Effect.flatMap(CurrentUser, (user) => firecrawl.status(user.userId)),
+      )
+      .handle('connectFirecrawl', ({ payload }) =>
+        Effect.flatMap(CurrentUser, (user) => firecrawl.connect(user.userId, payload.apiKey)),
+      )
+      .handle('disconnectFirecrawl', () =>
+        Effect.flatMap(CurrentUser, (user) => firecrawl.disconnect(user.userId)),
+      )
+  }),
+)
 export const apiLayer = HttpApiBuilder.layer(Api).pipe(
   Layer.provide(chatApiLayer),
+  Layer.provide(integrationsApiLayer),
   Layer.provide(memoryApiLayer),
+  Layer.provide(attachmentsApiLayer),
   Layer.provide(publicApiLayer),
   Layer.provide(authenticationLayer),
 )

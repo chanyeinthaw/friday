@@ -7,11 +7,12 @@ export const frontendLayer = HttpRouter.use((router) =>
   Effect.gen(function* () {
     for (const file of frontend) {
       const html = file.html
+      const revalidate = html || file.url.startsWith('/pwa/')
       const body = yield* Effect.promise(() => Bun.file(file.path).bytes())
       const response = HttpServerResponse.uint8Array(body, {
         headers: {
           'content-type': file.mime,
-          'cache-control': html ? 'no-cache' : 'public, max-age=31536000, immutable',
+          'cache-control': revalidate ? 'no-cache' : 'public, max-age=31536000, immutable',
         },
       })
       if (html) {

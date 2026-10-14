@@ -15,10 +15,21 @@ export interface AgentConnection {
     WednesdayError
   >
 }
+export interface AgentImage {
+  readonly type: 'image'
+  readonly data: string
+  readonly mimeType: string
+}
 export interface AgentSession {
-  readonly send: (text: string) => Effect.Effect<string, WednesdayError>
+  readonly send: (
+    text: string,
+    images?: readonly AgentImage[],
+  ) => Effect.Effect<string, WednesdayError>
   /** Returns false when the active run has already ended; never starts a follow-up turn. */
-  readonly steer: (text: string) => Effect.Effect<boolean, WednesdayError>
+  readonly steer: (
+    text: string,
+    images?: readonly AgentImage[],
+  ) => Effect.Effect<boolean, WednesdayError>
 }
 export interface AgentOptions {
   readonly connection: AgentConnection
@@ -28,6 +39,8 @@ export interface AgentOptions {
     readonly zoom: (id: number, count: number) => Effect.Effect<string, WednesdayError>
     readonly date: (id: number) => Effect.Effect<string, WednesdayError>
   }
+  readonly webSearch?: ((query: string) => Effect.Effect<string, WednesdayError>) | undefined
+  readonly bash?: (command: string) => Effect.Effect<string, WednesdayError>
   readonly beforeRequest: Effect.Effect<void, WednesdayError>
   readonly onText?: (part: { readonly id: string; readonly delta: string }) => Effect.Effect<void>
   // Preserve the existing log format so changing engines requires no history migration.

@@ -1,5 +1,15 @@
+import { Attachment } from '../shared/Attachments.ts'
 import { Data, Schema } from 'effect'
-import { ServerEvent, ModelMapping, Thinking, ApiFormat } from '../shared/protocol.ts'
+import { ServerEvent, ModelMapping, Thinking, ApiFormat, MessageReply } from '../shared/protocol.ts'
+
+export const PendingUpload = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  mediaType: Schema.String,
+  source: Schema.String,
+  progress: Schema.Number,
+})
+export type PendingUpload = typeof PendingUpload.Type
 
 const MessageSchema = Schema.TaggedUnion({
   SessionChanged: { userId: Schema.String },
@@ -12,6 +22,14 @@ const MessageSchema = Schema.TaggedUnion({
   PollChatGpt: {},
   CancelChatGpt: {},
   DisconnectChatGpt: {},
+  SelectedReply: { reply: MessageReply },
+  CancelledReply: {},
+  UploadStarted: { upload: PendingUpload },
+  UploadProgress: { id: Schema.String, progress: Schema.Number },
+  UploadCancelled: { id: Schema.String },
+  AttachmentUploaded: { id: Schema.String, attachment: Attachment },
+  UploadFailed: { id: Schema.String, message: Schema.String },
+  RemovedAttachment: { id: Schema.String },
   ChangedDraft: { value: Schema.String },
   ChangedUrl: { value: Schema.String },
   ChangedKey: { value: Schema.String },
@@ -22,6 +40,8 @@ const MessageSchema = Schema.TaggedUnion({
   OpenedPage: { page: Schema.Literals(['chat', 'settings']) },
   Send: { steer: Schema.Boolean },
   PreparedSubmission: {
+    attachments: Schema.Array(Attachment),
+    reply: Schema.optionalKey(MessageReply),
     requestId: Schema.String,
     text: Schema.String,
     date: Schema.String,

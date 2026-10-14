@@ -11,6 +11,8 @@ allowBuilds:
   browser-tabs-lock: false
   core-js: false
   '@parcel/watcher': false
+  '@mongodb-js/zstd': false
+  node-liblzma: false
 
 catalog:
   '@effect/tsgo': 0.36.4

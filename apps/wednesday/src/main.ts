@@ -6,6 +6,9 @@ import { frontendLayer } from './server/Frontend.ts'
 import { authLayer } from './server/Auth.ts'
 import { chatGptLayer } from './server/ChatGpt.ts'
 import { agentRuntimeLayer } from './server/AgentRuntimeLive.ts'
+import { attachmentsLayer } from './server/Attachments.ts'
+import { attachmentObjectsLayer } from './server/AttachmentObjects.ts'
+import { firecrawlLayer } from './server/Firecrawl.ts'
 import { chatLayer } from './server/Chat.ts'
 import { credentialsLayer } from './server/Providers.ts'
 import { sqliteMigrations, sqliteStorage } from './server/SqliteStorage.ts'
@@ -19,13 +22,20 @@ const database = Layer.unwrap(
 )
 const migrations = sqliteMigrations.pipe(Layer.provide(database))
 const persistence = sqliteStorage.pipe(Layer.provide(migrations), Layer.provide(database))
+const attachments = attachmentsLayer.pipe(
+  Layer.provide(persistence),
+  Layer.provide(attachmentObjectsLayer),
+)
+const firecrawl = firecrawlLayer.pipe(Layer.provide(persistence), Layer.provide(credentialsLayer))
 const chat = chatLayer.pipe(
+  Layer.provide(firecrawl),
+  Layer.provide(attachments),
   Layer.provide(agentRuntimeLayer),
   Layer.provide(chatGptLayer),
   Layer.provide(persistence),
   Layer.provide(credentialsLayer),
 )
-const services = Layer.mergeAll(chat, authLayer, persistence)
+const services = Layer.mergeAll(chat, authLayer, persistence, attachments, firecrawl)
 const app = Layer.merge(apiLayer.pipe(Layer.provide(services)), frontendLayer).pipe(
   Layer.provide(BunHttpServer.layerHttpServices),
 )

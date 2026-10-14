@@ -1,3 +1,6 @@
+import { firecrawlLayer } from '../src/server/Firecrawl.ts'
+import { attachmentsLayer } from '../src/server/Attachments.ts'
+import { AttachmentObjects } from '../src/server/AttachmentObjects.ts'
 // Run with a credential on stdin; all chat and memory state lives in a disposable database.
 import { createHash, randomBytes } from 'node:crypto'
 import { zstdDecompressSync } from 'node:zlib'
@@ -537,6 +540,24 @@ const program = Effect.acquireUseRelease(
       const chatGpt = chatGptLayer.pipe(Layer.provide(storage), Layer.provide(credentials))
       const services = Layer.merge(
         chatLayer.pipe(
+          Layer.provide(firecrawlLayer.pipe(Layer.provide(storage), Layer.provide(credentials))),
+          Layer.provide(
+            attachmentsLayer.pipe(
+              Layer.provide(storage),
+              Layer.provide(
+                Layer.succeed(
+                  AttachmentObjects,
+                  AttachmentObjects.of({
+                    uploadUrl: () => Effect.die('Benchmark has no attachments'),
+                    downloadUrl: () => Effect.die('Benchmark has no attachments'),
+                    read: () => Effect.die('Benchmark has no attachments'),
+                    write: () => Effect.die('Benchmark has no attachments'),
+                    remove: () => Effect.die('Benchmark has no attachments'),
+                  }),
+                ),
+              ),
+            ),
+          ),
           Layer.provide(agentRuntimeLayer),
           Layer.provide(chatGpt),
           Layer.provide(storage),

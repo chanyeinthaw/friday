@@ -1,6 +1,7 @@
+import { Attachment } from '../shared/Attachments.ts'
 import { Context, Effect, Schema } from 'effect'
 import { LogEntry, type LogEntryInput } from '@humanlayer/fold-core'
-import { ChatMessage, Settings } from '../shared/protocol.ts'
+import { ChatMessage, Settings, PendingMessage } from '../shared/protocol.ts'
 import type { WednesdayError } from './errors.ts'
 
 export const StoredSettings = Schema.Struct({ settings: Settings, encryptedKey: Schema.String })
@@ -20,10 +21,54 @@ export const MemoryState = Schema.Struct({
 export interface MemoryState extends Schema.Schema.Type<typeof MemoryState> {}
 export const MemoryJob = Schema.Struct({ ...Part.fields, source: Schema.String })
 export interface MemoryJob extends Schema.Schema.Type<typeof MemoryJob> {}
+export const StoredAttachment = Schema.Struct({
+  ...Attachment.fields,
+  state: Schema.Literals(['pending', 'ready', 'used', 'deleting']),
+})
+export interface StoredAttachment extends Schema.Schema.Type<typeof StoredAttachment> {}
+export interface ExpiredAttachment {
+  readonly userId: string
+  readonly id: string
+  readonly state: StoredAttachment['state']
+}
 /** Domain storage contract; SQL and migration syntax stay in the adapter. */
 export class Storage extends Context.Service<
   Storage,
   {
+    readonly saveAttachment: (
+      userId: string,
+      file: Attachment,
+    ) => Effect.Effect<void, WednesdayError>
+    readonly attachment: (
+      userId: string,
+      id: string,
+    ) => Effect.Effect<StoredAttachment | null, WednesdayError>
+    readonly attachments: (userId: string) => Effect.Effect<readonly Attachment[], WednesdayError>
+    readonly commitAttachments: (
+      userId: string,
+      ids: readonly string[],
+    ) => Effect.Effect<void, WednesdayError>
+    readonly completeAttachment: (userId: string, id: string) => Effect.Effect<void, WednesdayError>
+    readonly claimExpiredAttachments: () => Effect.Effect<
+      readonly ExpiredAttachment[],
+      WednesdayError
+    >
+    readonly finishAttachmentCleanup: (
+      userId: string,
+      id: string,
+    ) => Effect.Effect<void, WednesdayError>
+    readonly integrationKey: (
+      userId: string,
+      integration: 'firecrawl',
+    ) => Effect.Effect<string | null, WednesdayError>
+    readonly saveIntegrationKey: (
+      userId: string,
+      integration: 'firecrawl',
+      encryptedKey: string | null,
+    ) => Effect.Effect<void, WednesdayError>
+    readonly settleActivities: (
+      userId: string,
+    ) => Effect.Effect<readonly ChatMessage[], WednesdayError>
     readonly settings: (userId: string) => Effect.Effect<StoredSettings | null, WednesdayError>
     readonly saveSettings: (
       userId: string,
@@ -77,6 +122,7 @@ export class Storage extends Context.Service<
       entry: LogEntryInput,
       consumedRequestId: string | null,
       messageDate?: string,
+      submission?: Pick<PendingMessage, 'text' | 'reply' | 'attachments'>,
     ) => Effect.Effect<{ entry: LogEntry; messages: readonly ChatMessage[] }, WednesdayError>
     readonly recover: () => Effect.Effect<void, WednesdayError>
   }

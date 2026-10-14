@@ -1,4 +1,12 @@
 import { Context, Schema } from 'effect'
+import { FirecrawlStatus, FirecrawlConnection } from './Integrations.ts'
+import {
+  Attachment,
+  AttachmentUpload,
+  AttachmentDownload,
+  PreparedUpload,
+  maxAttachments,
+} from './Attachments.ts'
 import {
   HttpApi,
   HttpApiEndpoint,
@@ -26,7 +34,14 @@ export class Authentication extends HttpApiMiddleware.Service<
   security: { bearer: HttpApiSecurity.bearer },
   error: Unauthorized.annotate({ httpApiStatus: 401 }),
 }) {}
-const Submission = Schema.Struct({ requestId: Schema.NonEmptyString, text: Schema.NonEmptyString })
+const Submission = Schema.Struct({
+  requestId: Schema.NonEmptyString,
+  text: Schema.NonEmptyString,
+  replyTo: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  attachmentIds: Schema.optionalKey(
+    Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(maxAttachments)),
+  ),
+})
 const Replies = Schema.Array(ServerEvent)
 const error = WednesdayError.annotate({ httpApiStatus: 400 })
 const ChatApi = HttpApiGroup.make('chat')
@@ -101,6 +116,46 @@ const ChatApi = HttpApiGroup.make('chat')
   .middleware(Authentication)
 export const Api = HttpApi.make('Wednesday')
   .add(ChatApi)
+  .add(
+    HttpApiGroup.make('integrations')
+      .add(
+        HttpApiEndpoint.get('firecrawl', '/api/integrations/firecrawl', {
+          success: FirecrawlStatus,
+          error,
+        }),
+        HttpApiEndpoint.post('connectFirecrawl', '/api/integrations/firecrawl', {
+          payload: FirecrawlConnection,
+          success: FirecrawlStatus,
+          error,
+        }),
+        HttpApiEndpoint.post('disconnectFirecrawl', '/api/integrations/firecrawl/disconnect', {
+          success: FirecrawlStatus,
+          error,
+        }),
+      )
+      .middleware(Authentication),
+  )
+  .add(
+    HttpApiGroup.make('attachments')
+      .add(
+        HttpApiEndpoint.post('upload', '/api/attachments', {
+          payload: AttachmentUpload,
+          success: PreparedUpload,
+          error,
+        }),
+        HttpApiEndpoint.post('complete', '/api/attachments/:id/complete', {
+          params: Schema.Struct({ id: Schema.NonEmptyString }),
+          success: Attachment,
+          error,
+        }),
+        HttpApiEndpoint.get('download', '/api/attachments/:id', {
+          params: Schema.Struct({ id: Schema.NonEmptyString }),
+          success: AttachmentDownload,
+          error,
+        }),
+      )
+      .middleware(Authentication),
+  )
   .add(
     HttpApiGroup.make('memory')
       .add(

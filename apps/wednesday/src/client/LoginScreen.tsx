@@ -136,7 +136,7 @@ export function LoginScreen() {
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <div ref={composer} className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-            <div className="mx-auto w-full max-w-3xl space-y-3 px-4 pb-4 sm:px-8 sm:pb-6">
+            <div className="mx-auto w-full max-w-3xl space-y-3 px-4 pb-[calc(2rem+env(safe-area-inset-bottom,0px))] sm:px-8">
               <div className="flex items-center justify-center gap-2">
                 {busy && (
                   <span
@@ -187,7 +187,7 @@ export function LoginScreen() {
                 <InputGroup className="rounded-3xl bg-transparent shadow-sm backdrop-blur-md">
                   <InputGroupTextarea
                     ref={input}
-                    rows={2}
+                    rows={1}
                     aria-label={email ? 'Verification code' : 'Email address'}
                     placeholder={email ? 'Enter your code' : 'Enter your email'}
                     autoComplete={email ? 'one-time-code' : 'email'}
@@ -198,7 +198,7 @@ export function LoginScreen() {
                     disabled={busy || verified}
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
-                    className="min-h-[calc(2lh+1.5rem)] max-h-[calc(4lh+1.5rem)] overflow-y-auto px-5 py-3 text-base [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:text-sm"
+                    className="min-h-12 max-h-[calc(4lh+1.5rem)] overflow-y-auto px-5 py-3 text-base/6 sm:pt-3.5 sm:pb-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:text-sm/6"
                     onKeyDown={(event) => {
                       const touch =
                         navigator.maxTouchPoints > 0 ||
@@ -214,7 +214,7 @@ export function LoginScreen() {
                       }
                     }}
                   />
-                  <InputGroupAddon align="inline-end" className="self-end p-2">
+                  <InputGroupAddon align="inline-end" className="self-end p-2 has-[>button]:mr-0">
                     <InputGroupButton
                       type="submit"
                       size="icon-sm"

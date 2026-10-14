@@ -1,12 +1,42 @@
+import { webSearchDescription } from './Firecrawl.ts'
 import { Effect, Schema } from 'effect'
 import { defineTool } from '@humanlayer/fold-core'
 import { WednesdayError } from './errors.ts'
 
-/** Chat and memory use identical declarations so their static prefixes can share a cache. */
-export const optChatTools = (memory: {
-  readonly zoom: (id: number, count: number) => Effect.Effect<string, WednesdayError>
-  readonly date: (id: number) => Effect.Effect<string, WednesdayError>
-}) => [
+/** Memory tools are shared; only chat sessions receive the attachment workspace. */
+export const optChatTools = (
+  memory: {
+    readonly zoom: (id: number, count: number) => Effect.Effect<string, WednesdayError>
+    readonly date: (id: number) => Effect.Effect<string, WednesdayError>
+  },
+  bash?: (command: string) => Effect.Effect<string, WednesdayError>,
+  webSearch?: (query: string) => Effect.Effect<string, WednesdayError>,
+) => [
+  ...(webSearch
+    ? [
+        defineTool({
+          name: 'web_search',
+          description: webSearchDescription,
+          parameters: Schema.Struct({ query: Schema.String }),
+          success: Schema.String,
+          failure: WednesdayError,
+          handler: ({ query }) => webSearch(query),
+        }),
+      ]
+    : []),
+  ...(bash
+    ? [
+        defineTool({
+          name: 'bash',
+          description:
+            'Run shell commands in a private virtual filesystem. /attachments is read-only; /tmp is writable for this turn. No network or host access.',
+          parameters: Schema.Struct({ command: Schema.String }),
+          success: Schema.String,
+          failure: WednesdayError,
+          handler: ({ command }) => bash(command),
+        }),
+      ]
+    : []),
   defineTool({
     name: 'zoom',
     description:

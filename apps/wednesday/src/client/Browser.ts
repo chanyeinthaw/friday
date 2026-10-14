@@ -1,3 +1,9 @@
+import type { FirecrawlStatus } from '../shared/Integrations.ts'
+import {
+  maxAttachmentSize,
+  type Attachment,
+  type AttachmentDownload,
+} from '../shared/Attachments.ts'
 import { emailSignIn, signInError } from './EmailSignIn.ts'
 import logoUrl from './branding/friday-logo.png'
 import { Clerk } from '@clerk/clerk-js'
@@ -16,6 +22,14 @@ export interface SessionChange {
 export class Browser extends Context.Service<
   Browser,
   {
+    readonly firecrawl: () => Effect.Effect<FirecrawlStatus, Error>
+    readonly connectFirecrawl: (apiKey: string) => Effect.Effect<FirecrawlStatus, Error>
+    readonly disconnectFirecrawl: () => Effect.Effect<FirecrawlStatus, Error>
+    readonly upload: (
+      file: File,
+      onProgress?: (percent: number) => void,
+    ) => Effect.Effect<Attachment, Error>
+    readonly download: (id: string) => Effect.Effect<AttachmentDownload, Error>
     readonly memory: (query: MemoryQuery) => Effect.Effect<MemorySnapshot, Error>
     readonly memoryOriginal: (id: number) => Effect.Effect<ChatMessage | null, Error>
     readonly sendSignInCode: (email: string) => Effect.Effect<void, Error>
@@ -155,11 +169,11 @@ export const browserLayer = Layer.effect(
             return yield* api.chat.history({ query: { beforeId: command.beforeId } })
           case 'Send':
             return yield* api.chat.send({
-              payload: { requestId: command.requestId, text: command.text },
+              payload: command,
             })
           case 'Steer':
             return yield* api.chat.steer({
-              payload: { requestId: command.requestId, text: command.text, turnId: command.turnId },
+              payload: command,
             })
           case 'Stop':
             return yield* api.chat.stop({ payload: command })
@@ -262,7 +276,62 @@ export const browserLayer = Layer.effect(
           return yield* Effect.fail(new Error('Your account has changed.'))
         return result
       })
+    const attachmentRequest = <A, E>(request: Effect.Effect<A, E>) =>
+      Effect.gen(function* () {
+        const userId = clerk.user?.id
+        if (!userId) return yield* Effect.fail(new Error('Sign in again to continue.'))
+        const result = yield* request.pipe(
+          Effect.mapError(
+            (error) =>
+              new Error(
+                error instanceof WednesdayError
+                  ? error.message
+                  : 'Your request could not be completed. Please try again.',
+              ),
+          ),
+        )
+        if (clerk.user?.id !== userId)
+          return yield* Effect.fail(new Error('Your account has changed.'))
+        return result
+      })
     return Browser.of({
+      firecrawl: () => attachmentRequest(api.integrations.firecrawl()),
+      connectFirecrawl: (apiKey) =>
+        attachmentRequest(api.integrations.connectFirecrawl({ payload: { apiKey } })),
+      disconnectFirecrawl: () => attachmentRequest(api.integrations.disconnectFirecrawl()),
+      upload: (file, onProgress) =>
+        attachmentRequest(
+          Effect.gen(function* () {
+            if (!file.size || file.size > maxAttachmentSize)
+              return yield* Effect.fail(new Error('Choose a nonempty file smaller than 10 MB.'))
+            const prepared = yield* api.attachments.upload({
+              payload: { name: file.name, mediaType: file.type, size: file.size },
+            })
+            yield* Effect.callback<void, Error>((resume) => {
+              const request = new XMLHttpRequest()
+              request.upload.onprogress = (event) => {
+                if (event.lengthComputable)
+                  onProgress?.(Math.min(99, Math.round((event.loaded / event.total) * 100)))
+              }
+              request.onload = () =>
+                resume(
+                  request.status >= 200 && request.status < 300
+                    ? Effect.void
+                    : Effect.fail(new Error('The file could not upload. Please try again.')),
+                )
+              request.onerror = () =>
+                resume(Effect.fail(new Error('The file could not upload. Please try again.')))
+              request.ontimeout = request.onerror
+              request.open('PUT', prepared.url)
+              request.timeout = 120_000
+              request.setRequestHeader('Content-Type', prepared.attachment.mediaType)
+              request.send(file)
+              return Effect.sync(() => request.abort())
+            })
+            return yield* api.attachments.complete({ params: { id: prepared.attachment.id } })
+          }),
+        ),
+      download: (id) => attachmentRequest(api.attachments.download({ params: { id } })),
       memory: (query) => read(api.memory.browse({ query })),
       memoryOriginal: (id) => read(api.memory.original({ query: { id } })),
       send,

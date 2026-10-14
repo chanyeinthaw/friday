@@ -1,5 +1,7 @@
+import { ResponsePhase } from '../shared/Activity.ts'
+import { Attachment } from '../shared/Attachments.ts'
 import { Effect, Schema } from 'effect'
-import { Message, matchMessage } from './Messages.ts'
+import { PendingUpload, Message, matchMessage } from './Messages.ts'
 import {
   editableFields,
   requestFields,
@@ -9,7 +11,9 @@ import {
 } from './ProviderFields.ts'
 import {
   ChatMessage,
+  MessageReply,
   StreamingMessage,
+  MemoryStatus,
   PendingMessage,
   ModelMapping,
   DeviceAuthorization,
@@ -51,8 +55,14 @@ export const Model = Schema.Struct({
   connection: Schema.Literals(['connecting', 'syncing', 'ready']),
   generation: Schema.Int,
   busy: Schema.Boolean,
+  memoryStatus: MemoryStatus,
+  responsePhase: ResponsePhase,
   page: Schema.Literals(['chat', 'settings']),
   draft: Schema.String,
+  attachments: Schema.Array(Attachment),
+  uploading: Schema.Int,
+  uploads: Schema.Array(PendingUpload),
+  reply: Schema.NullOr(MessageReply),
   error: Schema.String,
   notice: Schema.String,
   messages: Schema.Array(ChatMessage),
@@ -102,8 +112,14 @@ export const initialModel: Model = {
   connection: 'connecting',
   generation: 0,
   busy: false,
+  memoryStatus: 'idle',
+  responsePhase: 'thinking',
   page: 'chat',
   draft: '',
+  attachments: [],
+  uploading: 0,
+  uploads: [],
+  reply: null,
   error: '',
   notice: '',
   messages: [],
@@ -177,36 +193,70 @@ const validateEditor = (input: {
       ),
     ),
   )
-const prepareMessage = ({ text, turnId }: { text: string; turnId: string | null }) =>
-  Effect.sync(() =>
-    Message.PreparedSubmission({
-      requestId: crypto.randomUUID(),
-      text,
-      date: new Date().toISOString(),
-      mode: turnId ? 'steer' : 'send',
-      turnId,
-    }),
-  )
+const prepareMessage = ({
+  text,
+  turnId,
+  reply,
+  attachments,
+}: {
+  attachments: readonly Attachment[]
+  text: string
+  turnId: string | null
+  reply: MessageReply | null
+}) =>
+  Effect.sync(() => {
+    const submission: Extract<Message, { _tag: 'PreparedSubmission' }> = Message.PreparedSubmission(
+      {
+        attachments,
+        requestId: crypto.randomUUID(),
+        text,
+        date: new Date().toISOString(),
+        mode: turnId ? 'steer' : 'send',
+        turnId,
+      },
+    )
+    return reply ? { ...submission, reply } : submission
+  })
+type SubmissionReference = { replyTo?: number; attachmentIds?: readonly string[] }
 const submitMessage = ({
   requestId,
   text,
   mode,
   turnId,
+  reply,
+  attachments,
 }: {
+  attachments?: readonly Attachment[]
   requestId: string
   text: string
   mode: 'send' | 'steer'
+  reply?: MessageReply
   turnId?: string | null
 }) =>
   Effect.gen(function* () {
     const browser = yield* Browser
+    const reference: SubmissionReference = {}
+    if (attachments?.length) reference.attachmentIds = attachments.map((file) => file.id)
+    if (reply) reference.replyTo = reply.id
     if (mode === 'steer') {
       if (!turnId)
         return yield* Effect.fail(
           new Error('That response has ended. Edit your message to send it again.'),
         )
-      yield* browser.send({ _tag: 'Steer', requestId, text, turnId })
-    } else yield* browser.send({ _tag: 'Send', requestId, text })
+      yield* browser.send({
+        _tag: 'Steer',
+        requestId,
+        text,
+        turnId,
+        ...reference,
+      })
+    } else
+      yield* browser.send({
+        _tag: 'Send',
+        requestId,
+        text,
+        ...reference,
+      })
     return Message.Completed()
   }).pipe(
     Effect.catch((error) =>
@@ -238,7 +288,9 @@ const mappingEditor = (model: Model, mapping: ModelMapping): Model => ({
 const mergeMessages = (current: Model['messages'], incoming: Model['messages']) => {
   const ids = new Set(current.map((item) => item.id))
   const added = incoming.filter((item) => !ids.has(item.id))
-  return added.length ? [...current, ...added].sort((a, b) => a.id - b.id) : current
+  const updates = new Map(incoming.filter((item) => item.activity).map((item) => [item.id, item]))
+  const restored = updates.size ? current.map((item) => updates.get(item.id) ?? item) : current
+  return added.length ? [...restored, ...added].sort((a, b) => a.id - b.id) : restored
 }
 const reconcilePending = (
   model: Model,
@@ -368,6 +420,8 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
       const next: Model = {
         ...model,
         connection: 'ready',
+        memoryStatus: event.memoryStatus ?? 'idle',
+        responsePhase: event.responsePhase ?? 'thinking',
         hasOlder: event.hasOlder ?? model.hasOlder,
         messages,
         streaming: event.streaming ?? null,
@@ -396,7 +450,7 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
         ...model,
         pendingMessages: model.pendingMessages.map((item) =>
           event.requestIds.includes(item.requestId) && item.status !== 'failed'
-            ? { ...item, status: 'discarded' }
+            ? { ...item, status: event.reason === 'stopped' ? 'cancelled' : 'discarded' }
             : item,
         ),
       },
@@ -491,10 +545,22 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
         streaming: event.completesStreaming ? null : model.streaming,
       },
     }),
+    ResponsePhase: (event) => ({
+      model: model.turnId === event.turnId ? { ...model, responsePhase: event.phase } : model,
+    }),
+    MemoryStatus: (event) => ({ model: { ...model, memoryStatus: event.status } }),
     Status: (event) => ({
       model: {
         ...model,
         busy: event.busy,
+        messages: event.busy
+          ? model.messages
+          : model.messages.map((item) =>
+              item.activity?.status === 'running'
+                ? { ...item, activity: { ...item.activity, status: 'stopped' as const } }
+                : item,
+            ),
+        responsePhase: event.turnId === model.turnId ? model.responsePhase : 'thinking',
         streaming: event.busy ? model.streaming : null,
         turnId: event.turnId,
         pendingMessages: reconcilePending(model, event.pending),
@@ -635,6 +701,49 @@ const reduce = (model: Model, message: Message): UpdateResult =>
       model: { ...model, deviceLoading: true, settingsDirty: false },
       commands: [send({ _tag: 'DisconnectChatGpt' })],
     }),
+    SelectedReply: (message) => ({ model: { ...model, reply: message.reply } }),
+    CancelledReply: () => ({ model: { ...model, reply: null } }),
+    UploadStarted: ({ upload }) => ({
+      model: { ...model, uploading: model.uploading + 1, uploads: [...model.uploads, upload] },
+    }),
+    UploadProgress: ({ id, progress }) => ({
+      model: {
+        ...model,
+        uploads: model.uploads.map((upload) =>
+          upload.id === id ? { ...upload, progress } : upload,
+        ),
+      },
+    }),
+    UploadCancelled: ({ id }) => ({
+      model: {
+        ...model,
+        uploads: model.uploads.filter((upload) => upload.id !== id),
+        uploading: model.uploads.filter((upload) => upload.id !== id).length,
+      },
+    }),
+    AttachmentUploaded: ({ id, attachment }) => ({
+      model: model.uploads.some((upload) => upload.id === id)
+        ? {
+            ...model,
+            uploads: model.uploads.filter((upload) => upload.id !== id),
+            uploading: model.uploads.length - 1,
+            attachments: [...model.attachments, attachment],
+          }
+        : model,
+    }),
+    UploadFailed: ({ id, message }) => ({
+      model: model.uploads.some((upload) => upload.id === id)
+        ? {
+            ...model,
+            uploads: model.uploads.filter((upload) => upload.id !== id),
+            uploading: model.uploads.length - 1,
+            error: message,
+          }
+        : model,
+    }),
+    RemovedAttachment: (message) => ({
+      model: { ...model, attachments: model.attachments.filter((file) => file.id !== message.id) },
+    }),
     ChangedDraft: (message) => ({ model: { ...model, draft: message.value } }),
     ChangedUrl: (message) => ({ model: { ...model, baseUrl: message.value } }),
     ChangedKey: (message) => ({ model: { ...model, apiKey: message.value } }),
@@ -662,30 +771,49 @@ const reduce = (model: Model, message: Message): UpdateResult =>
       model: { ...model, generation: model.generation + 1, connection: 'connecting', error: '' },
     }),
     Send: () =>
-      model.draft.trim() && model.connection === 'ready' && model.activeSettings && !model.saving
+      (model.draft.trim() || model.attachments.length) &&
+      !model.uploading &&
+      model.connection === 'ready' &&
+      model.activeSettings &&
+      !model.saving
         ? {
             model: { ...model, error: '', notice: '' },
-            commands: [prepareMessage({ text: model.draft, turnId: model.turnId })],
+            commands: [
+              prepareMessage({
+                text: model.draft || 'Attached files',
+                turnId: model.turnId,
+                reply: model.reply,
+                attachments: model.attachments,
+              }),
+            ],
           }
         : { model },
-    PreparedSubmission: (message) => ({
-      model: {
-        ...model,
-        draft: model.draft === message.text ? '' : model.draft,
-        pendingMessages: [
-          ...model.pendingMessages,
-          {
-            requestId: message.requestId,
-            text: message.text,
-            mode: message.mode,
-            date: message.date,
-            status: 'sending',
-            turnId: message.turnId ?? message.requestId,
-          },
-        ],
-      },
-      commands: [submitMessage(message)],
-    }),
+    PreparedSubmission: (message) => {
+      const pending = {
+        requestId: message.requestId,
+        text: message.text,
+        mode: message.mode,
+        date: message.date,
+        status: 'sending',
+        attachments: message.attachments,
+        turnId: message.turnId ?? message.requestId,
+      } satisfies PendingMessage
+      return {
+        model: {
+          ...model,
+          draft: model.draft === message.text ? '' : model.draft,
+          attachments: model.attachments.filter(
+            (file) => !message.attachments.some((sent) => sent.id === file.id),
+          ),
+          reply: model.reply?.id === message.reply?.id ? null : model.reply,
+          pendingMessages: [
+            ...model.pendingMessages,
+            message.reply ? { ...pending, reply: message.reply } : pending,
+          ],
+        },
+        commands: [submitMessage(message)],
+      }
+    },
     SubmissionFailed: (message) => ({
       model: {
         ...model,
@@ -701,6 +829,8 @@ const reduce = (model: Model, message: Message): UpdateResult =>
             model: {
               ...model,
               draft: item.text,
+              attachments: item.attachments ?? [],
+              reply: item.reply ?? null,
               pendingMessages: model.pendingMessages.filter(
                 (row) => row.requestId !== item.requestId,
               ),

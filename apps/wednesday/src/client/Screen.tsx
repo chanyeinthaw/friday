@@ -1,4 +1,6 @@
+import { ChatActivity, ResponseActivity } from './ChatActivity.tsx'
 import { Schema } from 'effect'
+import { flushSync } from 'react-dom'
 import { Link, Outlet, useNavigate, useLocation } from '@tanstack/react-router'
 import { cn } from 'cn'
 import { toast } from 'sonner'
@@ -6,9 +8,11 @@ import { Toaster } from './components/ui/sonner.tsx'
 import { useAtomValue } from '@effect/atom-react'
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
+  Paperclip,
   ArrowUp,
   Check,
   Copy,
+  Reply,
   Square,
   Trash2,
   Plus,
@@ -19,9 +23,24 @@ import {
   ExternalLink,
   X,
 } from 'lucide-react'
-import { dispatch, readyAtom, stateAtom } from './State.ts'
+import { AttachmentItem, UploadTile, MessageAttachments } from './Attachments.tsx'
+import { maxAttachments, maxAttachmentSize } from '../shared/Attachments.ts'
+import {
+  dispatch,
+  readyAtom,
+  stateAtom,
+  registry,
+  uploadAttachment,
+  cancelUpload,
+} from './State.ts'
 import { Message as Action } from './Messages.ts'
-import { ApiFormat, Thinking } from '../shared/protocol.ts'
+import {
+  ApiFormat,
+  Thinking,
+  type MessageReply,
+  type ChatMessage,
+  type PendingMessage,
+} from '../shared/protocol.ts'
 import type { Model } from './App.ts'
 import type { ProviderField } from './ProviderFields.ts'
 import { Button } from './components/ui/button.tsx'
@@ -60,7 +79,6 @@ import {
 } from './components/ui/message-scroller.tsx'
 import { Message, MessageContent, MessageFooter } from './components/ui/message.tsx'
 import { Bubble, BubbleContent } from './components/ui/bubble.tsx'
-import { Marker, MarkerContent } from './components/ui/marker.tsx'
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover.tsx'
 import { LoginScreen } from './LoginScreen.tsx'
 import { ClerkElement } from './ClerkElement.tsx'
@@ -106,6 +124,104 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     </Label>
   )
 }
+function ReplyPreview({ reply, onCancel }: { reply: MessageReply; onCancel?: () => void }) {
+  return (
+    <div className="flex min-w-0 items-center gap-3 border-l-2 border-muted-foreground/30 pl-3 text-sm">
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-muted-foreground">
+          {reply.kind === 'user' ? 'You' : 'Friday'}
+        </p>
+        <p className="line-clamp-2 whitespace-pre-wrap break-words text-muted-foreground">
+          {reply.text.replace(/\s+/g, ' ').trim()}
+        </p>
+      </div>
+      {onCancel && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="shrink-0 rounded-full"
+          aria-label="Cancel reply"
+          onClick={onCancel}>
+          <X className="size-4" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+function MessageActions({ item }: { item: ChatMessage }) {
+  if (item.kind !== 'user' && item.kind !== 'talk') return null
+  return (
+    <MessageFooter
+      className={cn(
+        '[@media(hover:hover)_and_(pointer:fine)]:opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100',
+        item.kind === 'user' && 'justify-end',
+      )}>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="rounded-full text-muted-foreground [@media(hover:hover)_and_(pointer:fine)]:size-6"
+        aria-label={item.kind === 'user' ? 'Reply to your message' : 'Reply to Friday'}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          if (item.kind !== 'user' && item.kind !== 'talk') return
+          const input = document.querySelector<HTMLTextAreaElement>(
+            'textarea[aria-label="Message"]',
+          )
+          const selection = input ? ([input.selectionStart, input.selectionEnd] as const) : null
+          // WebKit can retain the caret's old layer position when an active input moves.
+          input?.blur()
+          const reply = { id: item.id, kind: item.kind, text: item.text }
+          flushSync(() => dispatch(Action.SelectedReply({ reply })))
+          if (!input) return
+          // Flush layout before requesting the keyboard, inside the original tap gesture.
+          input.getBoundingClientRect()
+          input.focus({ preventScroll: true })
+          if (selection) input.setSelectionRange(selection[0], selection[1])
+        }}>
+        <Reply className="size-3.5" />
+      </Button>
+      {item.kind !== 'user' && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="[@media(hover:hover)_and_(pointer:fine)]:size-6"
+          aria-label="Copy message"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(item.text)
+              .catch(() => dispatch(Action.Failed({ message: 'Could not copy this message.' })))
+          }}>
+          <Copy className="size-3.5" />
+        </Button>
+      )}
+    </MessageFooter>
+  )
+}
+
+function SubmissionFeedback({ item }: { item: PendingMessage }) {
+  if (item.status !== 'failed' && item.status !== 'discarded' && item.status !== 'cancelled')
+    return null
+  return (
+    <MessageFooter className="items-center gap-2">
+      <span className="text-xs text-muted-foreground">
+        {item.status === 'cancelled'
+          ? 'Stopped'
+          : item.status === 'discarded'
+            ? 'Not delivered'
+            : 'Not sent'}
+      </span>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => dispatch(Action.RetriedSubmission({ requestId: item.requestId }))}>
+        Send again
+      </Button>
+    </MessageFooter>
+  )
+}
+
 function Feedback({ model }: { model: Model }) {
   if (!model.error && !model.notice) return null
   return (
@@ -263,6 +379,23 @@ function ChatTimeline({ model }: { model: Model }) {
     viewport.scrollTop += element.getBoundingClientRect().top - top
     anchor.current = null
   }, [model.messages, model.loadingHistory])
+  const timeline = [
+    ...model.messages.filter(
+      (item) => item.kind === 'user' || item.kind === 'talk' || item.activity,
+    ),
+    ...model.pendingMessages,
+    ...(model.streaming
+      ? [{ ...model.streaming, id: -1, streamId: model.streaming.id, kind: 'talk' as const }]
+      : []),
+  ].toSorted((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
+  const rows: (ChatMessage | PendingMessage | { activities: ChatMessage[] })[] = []
+  for (const item of timeline) {
+    if ('id' in item && item.activity) {
+      const previous = rows.at(-1)
+      if (previous && 'activities' in previous) previous.activities.push(item)
+      else rows.push({ activities: [item] })
+    } else rows.push(item)
+  }
   return (
     <>
       {model.hasOlder && (
@@ -283,85 +416,73 @@ function ChatTimeline({ model }: { model: Model }) {
           </Button>
         </div>
       )}
-      {[
-        ...model.messages.filter((item) => item.kind === 'user' || item.kind === 'talk'),
-        ...model.pendingMessages,
-        ...(model.streaming
-          ? [
-              {
-                ...model.streaming,
-                id: -1,
-                streamId: model.streaming.id,
-                kind: 'talk' as const,
-              },
-            ]
-          : []),
-      ]
-        .toSorted((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
-        .map((item) => {
-          const stored = 'id' in item
-          const user = !stored || item.kind === 'user'
-          const key =
-            stored && item.streamId
-              ? `stream-${item.streamId}`
-              : item.requestId
-                ? `request-${item.requestId}`
-                : stored
-                  ? `message-${item.id}`
-                  : ''
+      {rows.map((item) => {
+        if ('activities' in item) {
+          const id = `activity-${item.activities[0]?.id}`
           return (
-            <MessageScrollerItem key={key} messageId={key} data-history-message>
-              <Message align={user ? 'end' : 'start'}>
-                <MessageContent>
-                  <Bubble variant={user ? 'secondary' : 'ghost'}>
-                    <BubbleContent>
-                      {user ? (
-                        <p className="whitespace-pre-wrap">{item.text}</p>
-                      ) : (
-                        <ChatMarkdown text={item.text} streaming={stored && item.id < 0} />
-                      )}
-                    </BubbleContent>
-                  </Bubble>
-                  {!stored && (item.status === 'failed' || item.status === 'discarded') && (
-                    <MessageFooter className="items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        {item.status === 'discarded' ? 'Not used' : 'Not sent'}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          dispatch(Action.RetriedSubmission({ requestId: item.requestId }))
-                        }>
-                        Edit
-                      </Button>
-                    </MessageFooter>
-                  )}
-                  {stored && item.id >= 0 && !user && (
-                    <MessageFooter>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Copy message"
-                        onClick={() => {
-                          void navigator.clipboard
-                            .writeText(item.text)
-                            .catch(() =>
-                              dispatch(Action.Failed({ message: 'Could not copy this message.' })),
-                            )
-                        }}>
-                        <Copy className="size-3.5" />
-                      </Button>
-                    </MessageFooter>
-                  )}
-                </MessageContent>
-              </Message>
+            <MessageScrollerItem key={id} messageId={id} data-history-message>
+              <ChatActivity messages={item.activities} />
             </MessageScrollerItem>
           )
-        })}
+        }
+        const stored = 'id' in item
+        const user = !stored || item.kind === 'user'
+        const key =
+          stored && item.streamId
+            ? `stream-${item.streamId}`
+            : item.requestId
+              ? `request-${item.requestId}`
+              : stored
+                ? `message-${item.id}`
+                : ''
+        return (
+          <MessageScrollerItem key={key} messageId={key} data-history-message>
+            <Message align={user ? 'end' : 'start'}>
+              <MessageContent className="gap-1">
+                <Bubble variant={user ? 'secondary' : 'ghost'}>
+                  <BubbleContent>
+                    {'reply' in item && item.reply && (
+                      <div className="mb-3">
+                        <ReplyPreview reply={item.reply} />
+                      </div>
+                    )}
+                    <MessageAttachments
+                      files={'attachments' in item ? item.attachments : undefined}
+                    />
+                    {user ? (
+                      <p className="whitespace-pre-wrap">{item.text}</p>
+                    ) : (
+                      <ChatMarkdown text={item.text} streaming={stored && item.id < 0} />
+                    )}
+                  </BubbleContent>
+                </Bubble>
+                {!stored && <SubmissionFeedback item={item} />}
+                {stored && item.id >= 0 && <MessageActions item={item} />}
+              </MessageContent>
+            </Message>
+          </MessageScrollerItem>
+        )
+      })}
     </>
   )
 }
+const addFiles = (files: readonly File[]) => {
+  const model = registry.get(stateAtom)
+  if (model.connection !== 'ready' || !model.activeSettings) return
+  const available = maxAttachments - model.attachments.length - model.uploading
+  if (files.length > available) {
+    toast.error('Attach up to 10 files per message.')
+    return
+  }
+  for (const file of files) {
+    if (!file.size || file.size > maxAttachmentSize) {
+      toast.error('Choose a nonempty file smaller than 10 MB.')
+      continue
+    }
+    uploadAttachment(file)
+  }
+}
+
 function Chat({ model }: { model: Model }) {
   const layout = useRef<HTMLElement>(null)
   const composer = useRef<HTMLDivElement>(null)
@@ -376,12 +497,26 @@ function Chat({ model }: { model: Model }) {
     return () => observer.disconnect()
   }, [])
   return (
-    <main ref={layout} className="relative flex h-dvh flex-col">
+    <main
+      ref={layout}
+      className="relative flex h-dvh flex-col"
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes('Files')) {
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'copy'
+        }
+      }}
+      onDrop={(event) => {
+        if (event.dataTransfer.files.length) {
+          event.preventDefault()
+          addFiles(Array.from(event.dataTransfer.files))
+        }
+      }}>
       <SettingsLink />
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-3xl px-5 pb-[calc(var(--composer-height,120px)+2.5rem)] pt-20 sm:px-8">
+            <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-3 px-5 pb-[calc(var(--composer-height,120px)+2.5rem)] pt-20 sm:px-8">
               {model.connection === 'ready' &&
                 model.messages.length === 0 &&
                 model.pendingMessages.length === 0 && (
@@ -392,15 +527,13 @@ function Chat({ model }: { model: Model }) {
                   </MessageScrollerItem>
                 )}
               <ChatTimeline model={model} />
-              {model.busy && (
-                <MessageScrollerItem messageId="thinking">
-                  <Marker
-                    role="status"
-                    className="w-fit rounded-full border bg-transparent px-3 py-1.5 backdrop-blur-md">
-                    <MarkerContent>Thinking…</MarkerContent>
-                  </Marker>
-                </MessageScrollerItem>
-              )}
+              {model.busy &&
+                model.memoryStatus !== 'preparing' &&
+                !model.messages.some((item) => item.activity?.status === 'running') && (
+                  <MessageScrollerItem messageId="thinking">
+                    <ResponseActivity phase={model.responsePhase} />
+                  </MessageScrollerItem>
+                )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <div ref={composer} className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
@@ -411,21 +544,40 @@ function Chat({ model }: { model: Model }) {
     </main>
   )
 }
+const composerCanSubmit = (model: Model) =>
+  (model.draft.trim() || model.attachments.length > 0) &&
+  !model.uploading &&
+  !!model.activeSettings &&
+  model.connection === 'ready' &&
+  !model.saving
+
+const composerHasDraft = (model: Model) =>
+  model.draft.length > 0 || model.attachments.length > 0 || model.uploading > 0
+
 function Composer({ model }: { model: Model }) {
+  const picker = useRef<HTMLInputElement>(null)
   const scrollable = useMessageScrollerScrollable()
   const submit = () => dispatch(Action.Send({ steer: model.busy }))
+  const showStop = model.busy && !composerHasDraft(model)
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-3 px-4 pb-4 sm:px-8 sm:pb-6">
+    <div className="mx-auto w-full max-w-3xl space-y-3 px-4 pb-[calc(2rem+env(safe-area-inset-bottom,0px))] sm:px-8">
       <div className="pointer-events-auto empty:hidden">
         <Feedback model={model} />
       </div>
-      {(model.connection !== 'ready' || scrollable.end) && (
+      {(model.connection !== 'ready' || model.memoryStatus !== 'idle' || scrollable.end) && (
         <div className="flex items-center justify-center gap-2">
           {model.connection !== 'ready' && (
             <span
               role="status"
               className="pointer-events-auto rounded-full border bg-transparent px-3 py-1.5 text-xs text-muted-foreground backdrop-blur-md">
               {model.connection === 'syncing' ? 'Syncing messages…' : 'Connecting…'}
+            </span>
+          )}
+          {model.memoryStatus !== 'idle' && (
+            <span
+              role="status"
+              className="pointer-events-auto rounded-full border bg-transparent px-3 py-1.5 text-xs text-muted-foreground backdrop-blur-md">
+              {model.memoryStatus === 'preparing' ? 'Preparing memory…' : 'Updating memory…'}
             </span>
           )}
           <MessageScrollerButton
@@ -451,54 +603,119 @@ function Composer({ model }: { model: Model }) {
           event.preventDefault()
           submit()
         }}>
-        <InputGroup className="rounded-3xl bg-transparent shadow-sm backdrop-blur-md">
-          <InputGroupTextarea
-            rows={1}
-            aria-label="Message"
-            placeholder={model.busy ? 'Steer this response…' : 'Message…'}
-            value={model.draft}
-            onChange={(event) => dispatch(Action.ChangedDraft({ value: event.target.value }))}
-            className="min-h-12 max-h-[calc(4lh+1.5rem)] overflow-y-auto px-5 py-3 text-base/6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:text-sm/6"
-            onKeyDown={(event) => {
-              const touchDevice =
-                navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches
-              if (touchDevice) return
-              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault()
-                submit()
-              }
-            }}
+        <div className="relative isolate overflow-hidden rounded-3xl border border-input bg-transparent shadow-sm focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 -z-10 rounded-[inherit] backdrop-blur-md"
           />
-          <InputGroupAddon align="inline-end" className="self-end p-2">
-            <div className="ml-auto flex gap-2">
-              {model.busy && (
-                <InputGroupButton
-                  type="button"
-                  size="icon-sm"
-                  variant="outline"
-                  className="rounded-full"
-                  aria-label="Stop response"
-                  onClick={() => dispatch(Action.Stop())}>
-                  <Square className="size-3.5" />
-                </InputGroupButton>
-              )}
-              <InputGroupButton
-                type="submit"
-                size="icon-sm"
-                variant="default"
-                className="rounded-full"
-                aria-label={model.busy ? 'Steer response' : 'Send message'}
-                disabled={
-                  !model.draft.trim() ||
-                  !model.activeSettings ||
-                  model.connection !== 'ready' ||
-                  model.saving
-                }>
-                <ArrowUp />
-              </InputGroupButton>
+          {(model.attachments.length > 0 || model.uploading > 0) && (
+            <div className="flex max-h-[min(16rem,35dvh)] flex-wrap gap-2 overflow-y-auto px-3 pt-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {model.attachments.map((file) => (
+                <AttachmentItem
+                  key={file.id}
+                  file={file}
+                  onRemove={() => dispatch(Action.RemovedAttachment({ id: file.id }))}
+                />
+              ))}
+              {model.uploads.map((upload) => (
+                <UploadTile
+                  key={upload.id}
+                  upload={upload}
+                  onRemove={() => cancelUpload(upload.id)}
+                />
+              ))}
             </div>
-          </InputGroupAddon>
-        </InputGroup>
+          )}
+          {model.reply && (
+            <div className="px-5 pt-4 pb-1">
+              <ReplyPreview
+                reply={model.reply}
+                onCancel={() => dispatch(Action.CancelledReply())}
+              />
+            </div>
+          )}
+          <InputGroup
+            key="composer-input"
+            className="rounded-none border-0 bg-transparent shadow-none has-[[data-slot=input-group-control]:focus-visible]:ring-0">
+            <InputGroupAddon align="inline-start" className="self-end p-2 has-[>button]:ml-0">
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                accept="image/png,image/jpeg,image/gif,image/webp,.txt,.md,.markdown,.html,.htm,.xhtml"
+                className="hidden"
+                aria-label="Choose attachments"
+                onChange={(event) => {
+                  addFiles(Array.from(event.target.files ?? []))
+                  event.target.value = ''
+                }}
+              />
+              <InputGroupButton
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                className="rounded-full"
+                aria-label="Attach files"
+                disabled={
+                  model.connection !== 'ready' ||
+                  !model.activeSettings ||
+                  model.attachments.length + model.uploading >= maxAttachments
+                }
+                onClick={() => picker.current?.click()}>
+                <Paperclip className="size-4" />
+              </InputGroupButton>
+            </InputGroupAddon>
+            <InputGroupTextarea
+              onPaste={(event) => {
+                const files = Array.from(event.clipboardData.files)
+                if (files.length) {
+                  event.preventDefault()
+                  addFiles(files)
+                }
+              }}
+              rows={1}
+              aria-label="Message"
+              placeholder={model.busy ? 'Steer this response…' : 'Message…'}
+              value={model.draft}
+              onChange={(event) => dispatch(Action.ChangedDraft({ value: event.target.value }))}
+              className="min-h-12 max-h-[calc(4lh+1.5rem)] overflow-y-auto pl-1 pr-2 py-3 text-base/6 sm:pt-3.5 sm:pb-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:text-sm/6"
+              onKeyDown={(event) => {
+                const touchDevice =
+                  navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches
+                if (touchDevice) return
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  submit()
+                }
+              }}
+            />
+            <InputGroupAddon align="inline-end" className="self-end p-2 has-[>button]:mr-0">
+              <div className="ml-auto flex">
+                {showStop ? (
+                  <InputGroupButton
+                    type="button"
+                    size="icon-sm"
+                    variant="destructive"
+                    className="rounded-full"
+                    aria-label="Stop response"
+                    onClick={() => dispatch(Action.Stop())}>
+                    <Square className="size-2.5 fill-current" />
+                  </InputGroupButton>
+                ) : (
+                  <InputGroupButton
+                    type="submit"
+                    size="icon-sm"
+                    variant="default"
+                    className="rounded-full"
+                    aria-label={model.busy ? 'Steer response' : 'Send message'}
+                    disabled={!composerCanSubmit(model)}>
+                    <ArrowUp />
+                  </InputGroupButton>
+                )}
+              </div>
+            </InputGroupAddon>
+          </InputGroup>
+        </div>
       </form>
     </div>
   )

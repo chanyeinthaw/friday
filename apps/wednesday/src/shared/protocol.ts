@@ -1,4 +1,6 @@
+import { ToolActivity, ResponsePhase } from './Activity.ts'
 import { Schema } from 'effect'
+import { Attachment, maxAttachments } from './Attachments.ts'
 
 export const Thinking = Schema.Literals(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 export type Thinking = typeof Thinking.Type
@@ -41,9 +43,20 @@ export const Settings = Schema.Struct({
   memoryThinking: Schema.optionalKey(Thinking),
 })
 export interface Settings extends Schema.Schema.Type<typeof Settings> {}
+export const MessageReply = Schema.Struct({
+  id: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  kind: Schema.Literals(['user', 'talk']),
+  text: Schema.String,
+})
+export interface MessageReply extends Schema.Schema.Type<typeof MessageReply> {}
 export const ChatMessage = Schema.Struct({
+  activity: Schema.optionalKey(ToolActivity),
   id: Schema.Int,
   requestId: Schema.optionalKey(Schema.String),
+  reply: Schema.optionalKey(MessageReply),
+  attachments: Schema.optionalKey(
+    Schema.Array(Attachment).check(Schema.isMaxLength(maxAttachments)),
+  ),
   kind: Schema.Literals(['user', 'talk', 'tool', 'echo']),
   streamId: Schema.optionalKey(Schema.String),
   text: Schema.String,
@@ -58,10 +71,16 @@ export const StreamingMessage = Schema.Struct({
 })
 export interface StreamingMessage extends Schema.Schema.Type<typeof StreamingMessage> {}
 export const PendingMessage = Schema.Struct({
+  reply: Schema.optionalKey(MessageReply),
+  attachments: Schema.optionalKey(
+    Schema.Array(Attachment).check(Schema.isMaxLength(maxAttachments)),
+  ),
   requestId: Schema.String,
   text: Schema.String,
   mode: Schema.Literals(['send', 'steer']),
-  status: Schema.optionalKey(Schema.Literals(['sending', 'waiting', 'failed', 'discarded'])),
+  status: Schema.optionalKey(
+    Schema.Literals(['sending', 'waiting', 'failed', 'discarded', 'cancelled']),
+  ),
   date: Schema.optionalKey(Schema.String),
   turnId: Schema.optionalKey(Schema.String),
 })
@@ -79,8 +98,19 @@ export const ClientCommand = Schema.TaggedUnion({
     apiKey: Schema.String,
     apiFormat: Schema.optionalKey(ApiFormat),
   },
-  Send: { requestId: Schema.NonEmptyString, text: Schema.NonEmptyString },
+  Send: {
+    requestId: Schema.NonEmptyString,
+    text: Schema.NonEmptyString,
+    replyTo: Schema.optionalKey(Schema.Int),
+    attachmentIds: Schema.optionalKey(
+      Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(maxAttachments)),
+    ),
+  },
   Steer: {
+    replyTo: Schema.optionalKey(Schema.Int),
+    attachmentIds: Schema.optionalKey(
+      Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(maxAttachments)),
+    ),
     requestId: Schema.NonEmptyString,
     text: Schema.NonEmptyString,
     turnId: Schema.NonEmptyString,
@@ -88,6 +118,8 @@ export const ClientCommand = Schema.TaggedUnion({
   Stop: { turnId: Schema.optionalKey(Schema.String) },
 })
 export type ClientCommand = typeof ClientCommand.Type
+export const MemoryStatus = Schema.Literals(['idle', 'updating', 'preparing'])
+
 export const ServerEvent = Schema.TaggedUnion({
   ChatGptAuthorization: { authorization: DeviceAuthorization },
   ChatGptPending: { attemptId: Schema.String },
@@ -95,7 +127,11 @@ export const ServerEvent = Schema.TaggedUnion({
   ChatGptCancelled: {},
   Connecting: {},
   Ready: { userId: Schema.String, streamId: Schema.optionalKey(Schema.String) },
+  MemoryStatus: { status: MemoryStatus },
+  ResponsePhase: { turnId: Schema.String, phase: ResponsePhase },
   Snapshot: {
+    memoryStatus: Schema.optionalKey(MemoryStatus),
+    responsePhase: Schema.optionalKey(ResponsePhase),
     settings: Schema.NullOr(Settings),
     hasApiKey: Schema.Boolean,
     hasOlder: Schema.optionalKey(Schema.Boolean),
@@ -116,7 +152,11 @@ export const ServerEvent = Schema.TaggedUnion({
     turnId: Schema.NullOr(Schema.String),
     pending: Schema.Array(PendingMessage),
   },
-  Discarded: { requestIds: Schema.Array(Schema.String), message: Schema.String },
+  Discarded: {
+    requestIds: Schema.Array(Schema.String),
+    message: Schema.String,
+    reason: Schema.optionalKey(Schema.Literals(['stopped', 'ended'])),
+  },
   SettingsChanged: { settings: Settings },
   Heartbeat: {},
   Error: { message: Schema.String, requestId: Schema.optionalKey(Schema.String) },
