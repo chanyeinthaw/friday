@@ -1,3 +1,4 @@
+import { zstdDecompressSync } from 'node:zlib'
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { createSign, generateKeyPairSync } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -608,6 +609,13 @@ beforeAll(async () => {
   provider = Bun.serve({
     port: 0,
     async fetch(request) {
+      if (request.headers.get('content-encoding') === 'zstd') {
+        const body = zstdDecompressSync(Buffer.from(await request.arrayBuffer()))
+        const headers = new Headers(request.headers)
+        headers.delete('content-encoding')
+        headers.delete('content-length')
+        request = new globalThis.Request(request.url, { method: request.method, headers, body })
+      }
       if (request.headers.get('upgrade') === 'websocket') return new Response(null, { status: 426 })
       const deviceResponse = await deviceProvider(request)
       if (deviceResponse) return deviceResponse
@@ -1093,13 +1101,12 @@ test('starts chat from ready leaves when an unused ancestor fails compaction', a
   const snapshot = await client.snapshot()
   expect(snapshot.messages.filter((message) => message.kind === 'talk')).toHaveLength(2)
   const database = new Database(join(temporary, 'test.sqlite'), { readonly: true })
-  expect(
-    database
-      .query<{ count: number }, []>(
-        'SELECT count(*) AS count FROM wednesday_memory_jobs WHERE user_id="user_unused_ancestor" AND count>1 AND status="failed"',
-      )
-      .get()?.count,
-  ).toBeGreaterThan(0)
+  const failed = database.query<{ count: number }, []>(
+    'SELECT count(*) AS count FROM wednesday_memory_jobs WHERE user_id="user_unused_ancestor" AND count>1 AND status="failed"',
+  )
+  const deadline = Date.now() + 3000
+  while ((failed.get()?.count ?? 0) === 0 && Date.now() < deadline) await Bun.sleep(10)
+  expect(failed.get()?.count).toBeGreaterThan(0)
   database.close()
   memoryResponse = undefined
   client.close()

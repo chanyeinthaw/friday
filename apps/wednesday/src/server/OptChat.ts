@@ -1,8 +1,6 @@
-import { Effect, Exit, Queue, Semaphore } from 'effect'
-import { Prompt } from 'effect/ai'
-import { cachePrompt } from './CachePrompt.ts'
-import { optChatTools } from './OptChatTools.ts'
-import { defineAgent, startSession, type FoldModel } from '@humanlayer/fold-core'
+import { Effect, Exit, Queue, Semaphore, type Scope } from 'effect'
+import type { AgentSession } from './AgentRuntime.ts'
+import type { WednesdayError } from './errors.ts'
 import {
   batchView,
   bytes,
@@ -85,10 +83,9 @@ const ancestors = (parts: readonly MemoryPart[], total: number) => {
 export const makeMemory = (
   storage: typeof Storage.Service,
   userId: string,
-  model: FoldModel,
+  open: (view: string) => Effect.Effect<AgentSession, WednesdayError, Scope.Scope>,
   budget = 128_000,
   compactBudget = 32_000,
-  beforeRequest: Effect.Effect<void> = Effect.void,
 ) =>
   Effect.gen(function* () {
     const pumpGate = yield* Semaphore.make(1)
@@ -166,43 +163,12 @@ export const makeMemory = (
       const view = yield* context(job)
       return yield* Effect.scoped(
         Effect.gen(function* () {
-          const session = yield* startSession({
-            agent: defineAgent({
-              name: 'memory',
-              model,
-              tools: optChatTools({
-                zoom: () => failure('Compactions cannot call tools.'),
-                date: () => failure('Compactions cannot call tools.'),
-              }),
-              hooks: {
-                preRequest: [
-                  {
-                    name: 'OptChat.compactionView',
-                    handler: (input) => {
-                      const first = input.prompt.content.findIndex(
-                        (message) => message.role === 'user',
-                      )
-                      return Effect.succeed({
-                        _tag: 'changed' as const,
-                        prompt: Prompt.make([
-                          { role: 'system', content: instructions },
-                          ...cachePrompt(view, input.prompt.content.slice(first)).content,
-                        ]),
-                      })
-                    },
-                  },
-                ],
-              },
-              systemPrompt: instructions,
-              autoCompact: { enabled: false },
-            }),
-          })
+          const session = yield* open(view)
           let best = ''
           let task = compactionTask(job)
           for (let attempt = 0; attempt < 5; attempt++) {
-            yield* beforeRequest
             const reply = yield* session.send(task)
-            const candidate = reply.resultText?.trim() ?? ''
+            const candidate = reply.trim()
             if (!candidate) return yield* failure('The memory model returned an empty summary.')
             if (!best || bytes(candidate) < bytes(best)) best = candidate
             if (bytes(best) <= summaryBytes) break

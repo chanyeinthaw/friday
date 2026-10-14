@@ -13,6 +13,8 @@
     "@clerk/backend": "3.23.2",
     "@clerk/clerk-js": "6.39.0",
     "@clerk/ui": "1.40.0",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
     "@effect/ai-openai": "4.0.3",
     "@effect/atom-react": "^4.0.3",
     "@effect/platform-browser": "4.0.3",

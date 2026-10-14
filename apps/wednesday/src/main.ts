@@ -5,6 +5,7 @@ import { HttpRouter } from 'effect/http'
 import { frontendLayer } from './server/Frontend.ts'
 import { authLayer } from './server/Auth.ts'
 import { chatGptLayer } from './server/ChatGpt.ts'
+import { agentRuntimeLayer } from './server/AgentRuntimeLive.ts'
 import { chatLayer } from './server/Chat.ts'
 import { credentialsLayer } from './server/Providers.ts'
 import { sqliteMigrations, sqliteStorage } from './server/SqliteStorage.ts'
@@ -19,6 +20,7 @@ const database = Layer.unwrap(
 const migrations = sqliteMigrations.pipe(Layer.provide(database))
 const persistence = sqliteStorage.pipe(Layer.provide(migrations), Layer.provide(database))
 const chat = chatLayer.pipe(
+  Layer.provide(agentRuntimeLayer),
   Layer.provide(chatGptLayer),
   Layer.provide(persistence),
   Layer.provide(credentialsLayer),

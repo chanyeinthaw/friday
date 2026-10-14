@@ -1,6 +1,6 @@
 # Responses request construction and caching
 
-Friday uses Fold's request construction for HTTP Responses calls. It does not capture native provider output and substitute that output into later HTTP requests.
+Friday defaults to Pi coding-agent SDK for chat turns and memory compactions. The `AgentRuntime` Effect service also provides a Fold adapter, selected with `WEDNESDAY_AGENT_ENGINE=fold`. Each adapter uses its own provider message conversion for HTTP Responses calls. It does not capture native provider output and substitute that output into later HTTP requests.
 
 The custom replay adapter preserved the provider's original reasoning, assistant messages, and tool calls. It also required response checkpoints, streamed-event parsing, output comparisons, and cleanup for interrupted requests. We removed that adapter to keep the provider integration smaller.
 
@@ -12,14 +12,19 @@ The retained cache behavior is:
 
 - The frozen memory view and initial request share one user message, with stable four-line text blocks. Tool results and steering follow that message.
 - Chat uses the user ID for `Session-Id` and the supported OpenAI `prompt_cache_key`. Memory uses a separate identity ending in `:memory`.
-- The compatibility client inserts `prompt_cache_key` after SDK conversion, which otherwise drops that field.
+- The Fold compatibility client inserts `prompt_cache_key` after SDK conversion, which otherwise drops that field.
 - New compaction requests wait while the user's chat turn is active.
-- ChatGPT's provider WebSocket continuation remains available. It uses a checked `previous_response_id` to continue on the provider, rather than substituting native output into an HTTP request. An HTTP fallback uses Fold's full request directly.
+- ChatGPT's provider WebSocket continuation remains available. It uses a checked `previous_response_id` to continue on the provider, rather than substituting native output into an HTTP request. An HTTP fallback uses the selected engine's full request conversion.
 
-The [cache benchmark](scripts/cache-benchmark.ts) verifies the tool sequence and consumed steering, checks request prefixes and cache identities, and reports missing usage separately. The current replay-disabled configuration is measured from the repository root with a CPA credential on stdin:
+The [cache benchmark](scripts/cache-benchmark.ts) verifies the tool sequence and consumed steering, checks request prefixes and cache identities, and reports missing usage separately. The default Pi configuration is measured from the repository root with a CPA credential on stdin:
 
 ```sh
 gopass show --noparsing agents/cpa1-api-key | bun apps/wednesday/scripts/cache-benchmark.ts gpt-6.1-sol responses 3
+
+# Run the retained Fold adapter with the same workload.
+gopass show --noparsing agents/cpa1-api-key | WEDNESDAY_AGENT_ENGINE=fold bun apps/wednesday/scripts/cache-benchmark.ts gpt-6.1-sol responses 3
 ```
+
+Pi keeps native reasoning and tool history in its active turn and converts only the initial user message into the frozen OptChat blocks. The storage adapter retains the existing log format; switching engines requires no history migration. This does not enable custom HTTP output replay.
 
 The benchmark creates a disposable database. It does not update saved user settings or conversation history. Its default CPA address is `http://127.0.0.1:8320/v1`; `FRIDAY_CACHE_BENCHMARK_URL` selects another address. The removed replay-enabled adapter is not exposed as a runtime option.
