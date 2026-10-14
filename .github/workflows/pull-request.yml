@@ -20,7 +20,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.3.14'
+          bun-version: '1.4.2'
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -37,5 +37,31 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build Optmem integration executable
+        run: pnpm --filter @friday/wednesday build
+
       - name: Verify
         run: pnpm verify
+
+  optmem:
+    name: Friday Optmem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.11.0'
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @friday/wednesday check
+      - run: pnpm exec oxlint apps/wednesday --quiet
+      - run: pnpm --filter @friday/wednesday test
+      - run: pnpm --filter @friday/wednesday build
+      - run: pnpm --filter @friday/wednesday test:integration

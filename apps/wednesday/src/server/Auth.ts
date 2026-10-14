@@ -31,8 +31,8 @@ export const authLayer = Layer.effect(
     const origin = yield* Config.String('WEDNESDAY_ORIGIN').pipe(
       Config.withDefault('http://localhost:3002'),
     )
-    if (!publishableKey.startsWith('pk_test_'))
-      return yield* failure('Friday currently requires Clerk development keys.')
+    if (!/^pk_(test|live)_[A-Za-z0-9+/=]+$/.test(publishableKey))
+      return yield* failure('Configure a valid Clerk publishable key.')
     const verify = Effect.fn('Auth.verify')(function* (token: string) {
       const claims = yield* Effect.tryPromise({
         try: () => verifyToken(token, { jwtKey, authorizedParties: [origin] }),

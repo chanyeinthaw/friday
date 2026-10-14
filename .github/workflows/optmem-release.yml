@@ -1,0 +1,74 @@
+name: Friday Optmem release
+
+on:
+  push:
+    tags:
+      - 'optmem-v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: optmem-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'chanyeinthaw/friday'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate Optmem release tag
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^optmem-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.11.0'
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check Friday Optmem
+        run: |
+          pnpm --filter @friday/wednesday check
+          pnpm exec oxlint apps/wednesday --quiet
+          pnpm --filter @friday/wednesday test
+      - name: Build the standalone executable
+        run: pnpm --filter @friday/wednesday build
+      - name: Run compiled integration tests
+        run: pnpm --filter @friday/wednesday test:integration
+      - name: Package Linux executable
+        run: |
+          mkdir -p dist/optmem-release
+          install -m 755 apps/wednesday/dist/wednesday dist/optmem-release/friday-optmem
+          tar -C dist/optmem-release -czf dist/optmem-release/friday-optmem-linux-x64.tar.gz friday-optmem
+          cd dist/optmem-release
+          sha256sum friday-optmem-linux-x64.tar.gz > SHA256SUMS
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish production image
+        env:
+          IMAGE: ghcr.io/chanyeinthaw/friday-optmem:${{ github.ref_name }}
+        run: |
+          docker build --label org.opencontainers.image.source=https://github.com/chanyeinthaw/friday --label org.opencontainers.image.revision="$GITHUB_SHA" --label org.opencontainers.image.version="$GITHUB_REF_NAME" --tag "$IMAGE" apps/wednesday
+          docker push "$IMAGE"
+          docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" > dist/optmem-release/IMAGE
+      - name: Publish Friday Optmem release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/optmem-release/*.tar.gz dist/optmem-release/SHA256SUMS dist/optmem-release/IMAGE --verify-tag --generate-notes --title "Friday Optmem ${GITHUB_REF_NAME#optmem-v}" ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
