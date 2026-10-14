@@ -26,7 +26,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.3.14'
+          bun-version: '1.4.2'
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -50,6 +50,9 @@ jobs:
 
       - name: Update version
         run: bun scripts/release-version.ts "$GITHUB_REF_NAME"
+
+      - name: Build Optmem integration executable
+        run: pnpm --filter @friday/wednesday build
 
       - name: Verify
         run: pnpm verify
