@@ -67,3 +67,12 @@
     cursor: pointer;
   }
 }
+
+.composer-spacing {
+  padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px));
+}
+@media (max-width: 639px) and (display-mode: browser) {
+  .composer-spacing {
+    padding-bottom: 0.5rem;
+  }
+}

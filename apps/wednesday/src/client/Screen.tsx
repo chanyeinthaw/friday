@@ -561,7 +561,7 @@ function Composer({ model }: { model: Model }) {
   const submit = () => dispatch(Action.Send({ steer: model.busy }))
   const showStop = model.busy && !composerHasDraft(model)
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-3 px-4 pb-[calc(2rem+env(safe-area-inset-bottom,0px))] sm:px-8">
+    <div className="mx-auto w-full max-w-3xl composer-spacing space-y-3 px-4 sm:px-8">
       <div className="pointer-events-auto empty:hidden">
         <Feedback model={model} />
       </div>
