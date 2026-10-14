@@ -2,7 +2,7 @@ import { createRootRoute, createRoute, createRouter } from '@tanstack/react-rout
 import { Option, Schema } from 'effect'
 import { AppShell, ChatScreen, SettingsScreen } from './Screen.tsx'
 const SettingsSearch = Schema.Struct({
-  view: Schema.optionalKey(Schema.Literals(['settings', 'memory', 'index'])),
+  view: Schema.optionalKey(Schema.Literals(['settings', 'memory', 'integrations', 'index'])),
 })
 const decodeSettingsSearch = Schema.decodeUnknownOption(SettingsSearch)
 const rootRoute = createRootRoute({ component: AppShell })

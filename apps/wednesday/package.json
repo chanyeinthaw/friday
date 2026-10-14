@@ -31,6 +31,7 @@
     "cn": "^0.4.0",
     "dompurify": "^3.4.16",
     "effect": "catalog:",
+    "just-bash": "3.6.0",
     "lucide-react": "^1.55.0",
     "mermaid": "^12.1.0",
     "radix-ui": "^1.7.0",

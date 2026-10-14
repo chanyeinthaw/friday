@@ -1,3 +1,4 @@
+import { webSearchDescription } from './Firecrawl.ts'
 import { Config, Effect, Layer, Redacted, Schema } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import { Prompt } from 'effect/ai'
@@ -7,7 +8,6 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
-  type AgentSession as PiSession,
   type AgentSessionEvent,
 } from '@earendil-works/pi-coding-agent'
 import {
@@ -20,7 +20,7 @@ import {
 import { streamSimple } from '@earendil-works/pi-ai/compat'
 import { closeOpenAICodexWebSocketSessions } from '@earendil-works/pi-ai/api/openai-codex-responses'
 import { AgentId, MessageId, ToolCallId, LogEntryInput } from '@humanlayer/fold-core'
-import { AgentRuntime } from './AgentRuntime.ts'
+import { AgentRuntime, type AgentImage } from './AgentRuntime.ts'
 import { cachePrompt } from './CachePrompt.ts'
 import { failure } from './errors.ts'
 
@@ -30,7 +30,24 @@ const encodeAssistant = Schema.encodeSync(Prompt.AssistantMessage)
 const encodeTool = Schema.encodeSync(Prompt.ToolMessage)
 const isString = Schema.is(Schema.String)
 const decodeFields = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))
-const systemFailure = () => failure('The provider could not complete the response.')
+// Only fixed messages cross the provider boundary; upstream errors can contain request data.
+const systemFailure = () =>
+  failure('The provider could not complete the response. Please try again.')
+const providerFailure = (message: string) => {
+  if (/usage_limit_reached|usage limit/i.test(message))
+    return failure('Your provider usage limit has been reached. Please try again later.')
+  if (/rate_limit|rate limit|too many requests/i.test(message))
+    return failure('Your provider is busy. Please try again shortly.')
+  if (/image.*(?:too large|invalid|unsupported)|(?:invalid|unsupported).*image/i.test(message))
+    return failure('The provider could not read this image. Try a smaller PNG or JPEG.')
+  if (/unsupported value.*(?:none|effort)|reasoning.*not supported/i.test(message))
+    return failure(
+      'This model does not support the selected effort. Choose another effort in Settings.',
+    )
+  if (/expired.*token|invalid_api_key|unauthorized|authentication/i.test(message))
+    return failure('Your provider connection has expired. Reconnect in Settings.')
+  return systemFailure()
+}
 
 export const piRuntimeLayer = Layer.effect(
   AgentRuntime,
@@ -68,11 +85,10 @@ export const piRuntimeLayer = Layer.effect(
             }),
           catch: systemFailure,
         })
-        const pendingSteering: string[] = []
-        let session: PiSession | undefined
         let work = Promise.resolve()
         let failed = false
-        let providerFailed = false
+        let providerError: ReturnType<typeof failure> | undefined
+        const lastProviderError = () => providerError
         const enqueue = <A, E>(effect: Effect.Effect<A, E>) => {
           work = work
             .then(() => Effect.runPromise(effect))
@@ -101,7 +117,7 @@ export const piRuntimeLayer = Layer.effect(
                 : api === 'anthropic-messages'
                   ? settings.baseUrl.replace(/\/v1\/?$/, '')
                   : settings.baseUrl,
-              input: ['text'],
+              input: ['text', 'image'],
               reasoning: Object.keys(mapping.thinking).some((level) => level !== 'off'),
               contextWindow: mapping.contextWindow,
               maxTokens: mapping.maxOutputTokens,
@@ -136,7 +152,15 @@ export const piRuntimeLayer = Layer.effect(
                   : []
               const messages = context.messages.map((message, index) =>
                 index === first && message.role === 'user'
-                  ? { ...message, content: blocks }
+                  ? {
+                      ...message,
+                      content: [
+                        ...blocks,
+                        ...(isString(message.content)
+                          ? []
+                          : message.content.filter((part) => part.type === 'image')),
+                      ],
+                    }
                   : message,
               )
               const headers = Object.fromEntries(
@@ -182,6 +206,8 @@ export const piRuntimeLayer = Layer.effect(
           compaction: { enabled: false },
           retry: { enabled: false, provider: { maxRetries: 0 } },
           cacheWarming: 'off',
+          // Preserve supported uploads without native image-resizing modules in the compiled binary.
+          images: { autoResize: false },
           enableAnalytics: false,
           enableInstallTelemetry: false,
           enableSkillCommands: false,
@@ -208,10 +234,6 @@ export const piRuntimeLayer = Layer.effect(
           await work
           if (failed) throw systemFailure()
         }
-        const deliverSteering = async () => {
-          if (!session) return
-          for (const text of pendingSteering.splice(0)) await session.steer(text)
-        }
         const created = yield* Effect.tryPromise({
           try: () =>
             createAgentSession({
@@ -223,8 +245,64 @@ export const piRuntimeLayer = Layer.effect(
               sessionManager: SessionManager.inMemory('/'),
               settingsManager,
               resourceLoader,
-              tools: ['zoom', 'date'],
+              tools: [
+                'zoom',
+                'date',
+                ...(options.bash ? ['bash'] : []),
+                ...(options.webSearch ? ['web_search'] : []),
+              ],
               customTools: [
+                ...(options.webSearch
+                  ? [
+                      {
+                        name: 'web_search',
+                        label: 'Web search',
+                        description: webSearchDescription,
+                        parameters: Type.Object({
+                          query: Type.String({ minLength: 1, maxLength: 500 }),
+                        }),
+                        execute: async (
+                          _id: string,
+                          { query }: { query: string },
+                          signal?: AbortSignal,
+                        ) => {
+                          await drainBeforeTool()
+                          const text = await Effect.runPromise(
+                            options.webSearch
+                              ? options.webSearch(query)
+                              : Effect.succeed('Web search unavailable.'),
+                            signal ? { signal } : undefined,
+                          )
+                          return { content: [{ type: 'text' as const, text }], details: undefined }
+                        },
+                      },
+                    ]
+                  : []),
+                ...(options.bash
+                  ? [
+                      {
+                        name: 'bash',
+                        label: 'bash',
+                        description:
+                          'Run shell commands in a private virtual filesystem. /attachments is read-only; /tmp is writable for this turn. Use ls, rg, sed, awk and jq to inspect files. No network or host access.',
+                        parameters: Type.Object({ command: Type.String() }),
+                        execute: async (
+                          _id: string,
+                          { command }: { command: string },
+                          signal?: AbortSignal,
+                        ) => {
+                          await drainBeforeTool()
+                          const text = await Effect.runPromise(
+                            options.bash
+                              ? options.bash(command)
+                              : Effect.succeed('Bash unavailable.'),
+                            signal ? { signal } : undefined,
+                          )
+                          return { content: [{ type: 'text' as const, text }], details: undefined }
+                        },
+                      },
+                    ]
+                  : []),
                 {
                   name: 'zoom',
                   label: 'zoom',
@@ -237,7 +315,6 @@ export const piRuntimeLayer = Layer.effect(
                       options.memory.zoom(id, n),
                       signal ? { signal } : undefined,
                     )
-                    await deliverSteering()
                     return { content: [{ type: 'text', text }], details: undefined }
                   },
                 },
@@ -252,7 +329,6 @@ export const piRuntimeLayer = Layer.effect(
                       options.memory.date(id),
                       signal ? { signal } : undefined,
                     )
-                    await deliverSteering()
                     return { content: [{ type: 'text', text }], details: undefined }
                   },
                 },
@@ -260,7 +336,6 @@ export const piRuntimeLayer = Layer.effect(
             }),
           catch: systemFailure,
         })
-        session = created.session
         const toolIds = new Map<string, ToolCallId>()
         const logToolId = (nativeId: string) => {
           const existing = toolIds.get(nativeId)
@@ -287,7 +362,7 @@ export const piRuntimeLayer = Layer.effect(
             message.role === 'assistant' &&
             (message.stopReason === 'error' || message.stopReason === 'aborted')
           )
-            providerFailed = true
+            providerError = providerFailure(message.errorMessage ?? '')
           if (!append) return
           const envelope = {
             agentId,
@@ -359,7 +434,7 @@ export const piRuntimeLayer = Layer.effect(
             )
           }
         }
-        const unsubscribe = session.subscribe(handle)
+        const unsubscribe = created.session.subscribe(handle)
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* Effect.promise(() => created.session.abort())
@@ -370,20 +445,29 @@ export const piRuntimeLayer = Layer.effect(
           }),
         )
         return {
-          send: Effect.fn('PiRuntime.send')(function* (text: string) {
-            providerFailed = false
+          send: Effect.fn('PiRuntime.send')(function* (
+            text: string,
+            images: readonly AgentImage[] = [],
+          ) {
+            providerError = undefined
             yield* Effect.tryPromise({
-              try: () => created.session.prompt(text, { expandPromptTemplates: false }),
+              try: () =>
+                created.session.prompt(text, { expandPromptTemplates: false, images: [...images] }),
               catch: systemFailure,
             })
             yield* Effect.promise(() => work)
-            if (failed || providerFailed) return yield* systemFailure()
+            if (failed) return yield* systemFailure()
+            const error = lastProviderError()
+            if (error) return yield* error
             return created.session.getLastAssistantText() ?? ''
           }),
-          steer: Effect.fn('PiRuntime.steer')((text: string) =>
-            Effect.sync(() => {
+          steer: Effect.fn('PiRuntime.steer')((text: string, images: readonly AgentImage[] = []) =>
+            Effect.gen(function* () {
               if (!created.session.isStreaming) return false
-              pendingSteering.push(text)
+              yield* Effect.tryPromise({
+                try: () => created.session.steer(text, [...images]),
+                catch: systemFailure,
+              })
               return true
             }),
           ),

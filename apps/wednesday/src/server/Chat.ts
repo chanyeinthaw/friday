@@ -1,3 +1,5 @@
+import type { ResponsePhase } from '../shared/Activity.ts'
+import { Firecrawl } from './Firecrawl.ts'
 import {
   Cache,
   Cause,
@@ -12,6 +14,7 @@ import {
   Scope,
   Stream,
   Redacted,
+  Option,
 } from 'effect'
 import type { LogEntryInput } from '@humanlayer/fold-core'
 import { AgentRuntime, type AgentSession, type AgentConnection } from './AgentRuntime.ts'
@@ -19,6 +22,7 @@ import {
   ServerEvent,
   type ClientCommand,
   type PendingMessage,
+  type MessageReply,
   type Settings,
   type ModelMapping,
   type Thinking,
@@ -28,8 +32,20 @@ import { Credentials, discoverModels, normalizeBaseUrl, validateMapping } from '
 import { ChatGpt } from './ChatGpt.ts'
 import { defaultMemoryModelId } from '../shared/modelDefaults.ts'
 import { makeMemory, turnInstructions, compactionInstructions } from './OptChat.ts'
+import { Attachments, attachmentPath } from './Attachments.ts'
+import { makeAttachmentBash } from './AttachmentBash.ts'
+import { Base64 } from 'effect/encoding'
+import { replyContext } from '../shared/replies.ts'
 import { completedMarkdown } from './Paragraphs.ts'
 import { WednesdayError, failure } from './errors.ts'
+
+type Submission = Extract<ClientCommand, { _tag: 'Send' | 'Steer' }>
+const sameSubmission = (previous: PendingMessage, command: Submission) =>
+  previous.text === command.text &&
+  previous.reply?.id === command.replyTo &&
+  JSON.stringify(previous.attachments?.map((file) => file.id) ?? []) ===
+    JSON.stringify(command.attachmentIds ?? []) &&
+  (command._tag !== 'Steer' || command.turnId === previous.turnId)
 
 export interface OwnedEvent {
   readonly userId: string
@@ -54,6 +70,8 @@ export const chatLayer = Layer.effect(
   Effect.gen(function* () {
     const scope = yield* Scope.Scope
     const storage = yield* Storage
+    const attachments = yield* Attachments
+    const firecrawl = yield* Firecrawl
     const credentials = yield* Credentials
     const chatGpt = yield* ChatGpt
     const runtime = yield* AgentRuntime
@@ -67,9 +85,21 @@ export const chatLayer = Layer.effect(
       fiber?: Fiber.Fiber<void, never>
       streaming?: { id: string; turnId: string; text: string; date: string }
       memoryIdle?: Deferred.Deferred<void>
+      stopped?: boolean
+      preparingMemory?: boolean
+      phase?: typeof ResponsePhase.Type
       accepting: boolean
     }
     const active = new Map<string, Turn>()
+    const memoryProcessing = new Set<string>()
+    const memoryStatus = (userId: string) =>
+      active.get(userId)?.preparingMemory
+        ? ('preparing' as const)
+        : memoryProcessing.has(userId)
+          ? ('updating' as const)
+          : ('idle' as const)
+    const publishMemoryStatus = (userId: string) =>
+      publish(userId, { _tag: 'MemoryStatus', status: memoryStatus(userId) })
     const receipts = yield* Cache.make({
       capacity: 10_000,
       timeToLive: '24 hours',
@@ -140,17 +170,28 @@ export const chatLayer = Layer.effect(
             const idle = active.get(userId)?.memoryIdle
             return idle ? Deferred.await(idle) : Effect.void
           })
-          const memory = yield* makeMemory(storage, userId, (view) =>
-            runtime.open({
-              connection: model,
-              systemPrompt: compactionInstructions,
-              view,
-              beforeRequest,
-              memory: {
-                zoom: () => failure('Compactions cannot call tools.'),
-                date: () => failure('Compactions cannot call tools.'),
-              },
-            }),
+          const memory = yield* makeMemory(
+            storage,
+            userId,
+            (view) =>
+              runtime.open({
+                connection: model,
+                systemPrompt: compactionInstructions,
+                view,
+                beforeRequest,
+                memory: {
+                  zoom: () => failure('Compactions cannot call tools.'),
+                  date: () => failure('Compactions cannot call tools.'),
+                },
+              }),
+            128_000,
+            32_000,
+            (processing) =>
+              Effect.gen(function* () {
+                if (processing) memoryProcessing.add(userId)
+                else memoryProcessing.delete(userId)
+                yield* publishMemoryStatus(userId)
+              }),
           )
           const wakeups = yield* Queue.sliding<void>(1)
           const worker = yield* Effect.forever(
@@ -179,6 +220,23 @@ export const chatLayer = Layer.effect(
       PubSub.publish(notifications, { userId, event }).pipe(Effect.asVoid)
     yield* storage.recover()
 
+    const submissionContext = (item: PendingMessage) =>
+      replyContext(item) +
+      (item.attachments?.length
+        ? `\n\nAttachments:\n${item.attachments.map((file) => `${JSON.stringify(attachmentPath(file))} (${file.mediaType}, ${file.size} bytes)`).join('\n')}\nUse bash to inspect attached files; image attachments are also included visually.`
+        : '')
+    const imagesFor = (userId: string, item: PendingMessage) =>
+      Effect.forEach(
+        (item.attachments ?? []).filter((file) => file.mediaType.startsWith('image/')),
+        (file) =>
+          attachments.read(userId, file).pipe(
+            Effect.map((bytes) => ({
+              type: 'image' as const,
+              data: Base64.encode(bytes),
+              mimeType: file.mediaType,
+            })),
+          ),
+      )
     const run = Effect.fn('Chat.run')(function* (userId: string, turn: Turn) {
       const submission = turn.initial
       const saved = yield* storage.settings(userId)
@@ -189,14 +247,21 @@ export const chatLayer = Layer.effect(
       const model = yield* connection(userId, saved, mapping, saved.settings.thinking)
       const parts = new Map<string, string>()
       let responseCount = 0
+      const setPhase = (phase: typeof ResponsePhase.Type) =>
+        Effect.gen(function* () {
+          if (active.get(userId) !== turn || turn.phase === phase) return
+          turn.phase = phase
+          yield* publish(userId, { _tag: 'ResponsePhase', turnId: submission.requestId, phase })
+        })
       const onText = (part: { id: string; delta: string }) => {
         parts.set(part.id, (parts.get(part.id) ?? '') + part.delta)
-        if (!part.delta.includes('\n')) return Effect.void
+        if (!part.delta.includes('\n')) return setPhase('responding')
         const text = completedMarkdown([...parts.values()].join('\n\n'))
-        if (!text || text === turn.streaming?.text) return Effect.void
+        if (!text || text === turn.streaming?.text) return setPhase('responding')
         return locks.withPermit(userId)(
           Effect.gen(function* () {
             if (active.get(userId) !== turn) return
+            yield* setPhase('responding')
             turn.streaming = {
               id: `${submission.requestId}-${responseCount}`,
               turnId: submission.requestId,
@@ -207,8 +272,20 @@ export const chatLayer = Layer.effect(
           }),
         )
       }
-      const memory = yield* getMemory(userId, saved)
-      const view = yield* memory.settle()
+      turn.preparingMemory = true
+      yield* publishMemoryStatus(userId)
+      const { memory, view } = yield* Effect.gen(function* () {
+        const memory = yield* getMemory(userId, saved)
+        const view = yield* memory.settle()
+        return { memory, view }
+      }).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            turn.preparingMemory = false
+            yield* publishMemoryStatus(userId)
+          }),
+        ),
+      )
       turn.memoryIdle = yield* Deferred.make<void>()
       let initialLogged = false
       const append = (input: LogEntryInput) =>
@@ -228,6 +305,7 @@ export const chatLayer = Layer.effect(
               input,
               consumedRequestId,
               turn.pending.find((item) => item.requestId === consumedRequestId)?.date,
+              turn.pending.find((item) => item.requestId === consumedRequestId),
             )
 
             if (result.messages.length) yield* memory.wake
@@ -261,17 +339,26 @@ export const chatLayer = Layer.effect(
       const session = yield* runtime.open({
         connection: model,
         systemPrompt: turnInstructions,
+        webSearch: yield* firecrawl.tool(userId),
         view,
         memory,
+        bash: makeAttachmentBash(storage.attachments(userId), (file) =>
+          attachments.read(userId, file),
+        ),
         onText,
         append,
-        beforeRequest: locks.withPermit(userId)(flushSteering(turn)),
+        beforeRequest: locks.withPermit(userId)(
+          Effect.gen(function* () {
+            yield* setPhase('thinking')
+            yield* flushSteering(userId, turn)
+          }),
+        ),
       })
       turn.session = session
-      yield* session.send(submission.text)
+      yield* session.send(submissionContext(submission), yield* imagesFor(userId, submission))
     })
 
-    const flushSteering = Effect.fn('Chat.flushSteering')(function* (turn: Turn) {
+    const flushSteering = Effect.fn('Chat.flushSteering')(function* (userId: string, turn: Turn) {
       if (!turn.session || !turn.accepting) return
       for (const item of turn.pending) {
         if (
@@ -279,7 +366,10 @@ export const chatLayer = Layer.effect(
           turn.dispatched.some((sent) => sent.requestId === item.requestId)
         )
           continue
-        const sent = yield* turn.session.steer(item.text)
+        const sent = yield* turn.session.steer(
+          submissionContext(item),
+          yield* imagesFor(userId, item),
+        )
         if (sent) turn.dispatched.push(item)
       }
     })
@@ -293,8 +383,19 @@ export const chatLayer = Layer.effect(
             yield* publish(userId, {
               _tag: 'Discarded',
               requestIds: turn.pending.map((item) => item.requestId),
-              message: 'This response ended before using your message.',
+              message: turn.stopped
+                ? 'Stopped before your message was delivered.'
+                : 'The response ended before your message was delivered.',
+              reason: turn.stopped ? 'stopped' : 'ended',
             })
+          for (const message of yield* storage
+            .settleActivities(userId)
+            .pipe(
+              Effect.catch(() =>
+                Effect.logWarning('Activity status could not be saved.').pipe(Effect.as([])),
+              ),
+            ))
+            yield* publish(userId, { _tag: 'Message', message })
           active.delete(userId)
           if (turn.memoryIdle) yield* Deferred.succeed(turn.memoryIdle, undefined)
           yield* publish(userId, status(userId))
@@ -411,6 +512,8 @@ export const chatLayer = Layer.effect(
       const page = afterId < 0 ? yield* storage.history(userId) : null
       const result = {
         _tag: 'Snapshot' as const,
+        memoryStatus: memoryStatus(userId),
+        responsePhase: turn?.phase ?? 'thinking',
         settings: saved?.settings ?? null,
         hasApiKey: !!saved?.encryptedKey,
         messages: page ? page.messages : yield* storage.messages(userId, afterId),
@@ -421,6 +524,16 @@ export const chatLayer = Layer.effect(
       }
       return page ? { ...result, hasOlder: page.hasOlder } : result
     })
+    const resolveReply = Effect.fn('Chat.resolveReply')(function* (
+      userId: string,
+      id: number | undefined,
+    ): Effect.fn.Return<{ reply?: MessageReply }, WednesdayError> {
+      if (id === undefined) return {}
+      const original = yield* storage.message(userId, id)
+      if (!original || (original.kind !== 'user' && original.kind !== 'talk'))
+        return yield* failure('That message is no longer available to reply to.')
+      return { reply: { id: original.id, kind: original.kind, text: original.text } }
+    })
     const submit = Effect.fn('Chat.submit')(function* (
       userId: string,
       command: Extract<ClientCommand, { _tag: 'Send' | 'Steer' }>,
@@ -429,10 +542,7 @@ export const chatLayer = Layer.effect(
       const cached = yield* Cache.getOption(receipts, receiptKey)
       if (cached._tag === 'Some' && cached.value) {
         const previous = cached.value
-        if (
-          previous.text !== command.text ||
-          (command._tag === 'Steer' && command.turnId !== previous.turnId)
-        )
+        if (!sameSubmission(previous, command))
           return yield* failure('This message ID was already used for another message.')
         return [{ _tag: 'Accepted' as const, requestId: command.requestId, mode: previous.mode }]
       }
@@ -440,10 +550,14 @@ export const chatLayer = Layer.effect(
       if (command._tag === 'Steer' && (!turn || command.turnId !== turn.initial.requestId))
         return yield* failure('That response has ended. Edit your message to send it again.')
       if (turn && !turn.accepting) return yield* failure('This response is stopping.')
+      const files = yield* attachments.resolve(userId, command.attachmentIds ?? [])
+      const reply = yield* resolveReply(userId, command.replyTo)
       const mode = turn ? ('steer' as const) : ('send' as const)
       const item: PendingMessage = {
         requestId: command.requestId,
         text: command.text,
+        ...reply,
+        attachments: files,
         mode,
         status: 'waiting',
         date: new Date().toISOString(),
@@ -452,7 +566,12 @@ export const chatLayer = Layer.effect(
       if (!turn) {
         const saved = yield* storage.settings(userId)
         if (!saved) return yield* failure('Configure your API connection and model first.')
-        turn = { initial: item, pending: [item], dispatched: [], accepting: true }
+        turn = {
+          initial: item,
+          pending: [item],
+          dispatched: [],
+          accepting: true,
+        }
         active.set(userId, turn)
         const current = turn
         current.fiber = yield* run(userId, current).pipe(
@@ -460,12 +579,16 @@ export const chatLayer = Layer.effect(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               if (Cause.hasInterrupts(cause)) return
-              yield* publish(userId, {
-                _tag: 'Error',
-                requestId: item.requestId,
-                message: 'The response failed. Check your provider settings and try again.',
+              const error = Cause.findErrorOption(cause)
+              const message = Option.isSome(error)
+                ? error.value.message
+                : 'The response could not finish. Please try again.'
+              yield* publish(userId, { _tag: 'Error', requestId: item.requestId, message })
+              yield* Effect.logError('Wednesday turn failed', {
+                reason: message,
+                attachments: item.attachments?.length ?? 0,
+                defect: Cause.hasDies(cause),
               })
-              yield* Effect.logError('Wednesday turn failed')
             }),
           ),
           Effect.ensuring(finish(userId, current)),
@@ -473,7 +596,7 @@ export const chatLayer = Layer.effect(
         )
       } else {
         turn.pending.push(item)
-        yield* flushSteering(turn)
+        yield* flushSteering(userId, turn)
       }
       yield* Cache.set(receipts, receiptKey, item)
       yield* publish(userId, status(userId))
@@ -486,6 +609,7 @@ export const chatLayer = Layer.effect(
             const turn = active.get(userId)
             if (!turn || (command.turnId && command.turnId !== turn.initial.requestId)) return
             turn.accepting = false
+            turn.stopped = true
             return turn.fiber
           }),
         )

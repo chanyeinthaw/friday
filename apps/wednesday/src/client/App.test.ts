@@ -1,3 +1,4 @@
+import type { ChatMessage } from '../shared/protocol.ts'
 import { describe, expect } from 'vitest'
 import { it } from '@effect/vitest'
 import { Effect, Stream } from 'effect'
@@ -262,6 +263,11 @@ describe('settings saves', () => {
         state = update(state, Message.ToggledThinkingLevel({ level: 'high', enabled: false })).model
         const commands: ClientCommand[] = []
         const browser = Browser.of({
+          firecrawl: () => Effect.succeed({ connected: false, usage: null }),
+          connectFirecrawl: () => Effect.succeed({ connected: true, usage: null }),
+          disconnectFirecrawl: () => Effect.succeed({ connected: false, usage: null }),
+          upload: () => Effect.fail(new Error('Unavailable')),
+          download: () => Effect.fail(new Error('Unavailable')),
           memory: () => Effect.succeed({ total: 0, start: 0, end: 0, tiles: [] }),
           memoryOriginal: () => Effect.succeed(null),
           sendSignInCode: () => Effect.void,
@@ -538,6 +544,11 @@ describe('API formats', () => {
       const sent: ClientCommand[] = []
       const model = { ...connected, apiFormat: 'responses' as const, settingsDirty: true }
       const browser = Browser.of({
+        firecrawl: () => Effect.succeed({ connected: false, usage: null }),
+        connectFirecrawl: () => Effect.succeed({ connected: true, usage: null }),
+        disconnectFirecrawl: () => Effect.succeed({ connected: false, usage: null }),
+        upload: () => Effect.fail(new Error('Unavailable')),
+        download: () => Effect.fail(new Error('Unavailable')),
         memory: () => Effect.succeed({ total: 0, start: 0, end: 0, tiles: [] }),
         memoryOriginal: () => Effect.succeed(null),
         sendSignInCode: () => Effect.void,
@@ -571,3 +582,234 @@ describe('API formats', () => {
     }),
   )
 })
+
+it.effect('keeps replies through optimistic steering and restores them for editing', () =>
+  Effect.gen(function* () {
+    const reply = { id: 4, kind: 'talk' as const, text: 'The original answer.' }
+    const attachment = { id: 'uploaded', name: 'notes.md', mediaType: 'text/markdown', size: 12 }
+    const selected = update(
+      {
+        ...initialModel,
+        activeSettings: settings,
+        connection: 'ready',
+        turnId: 'turn',
+        draft: 'Explain this',
+        attachments: [attachment],
+      },
+      Message.SelectedReply({ reply }),
+    ).model
+    const submission = update(selected, Message.Send({ steer: true }))
+    const command = submission.commands?.[0]
+    if (!command) throw new Error('Expected submission')
+    const sent: ClientCommand[] = []
+    const browser = Browser.of({
+      firecrawl: () => Effect.succeed({ connected: false, usage: null }),
+      connectFirecrawl: () => Effect.succeed({ connected: true, usage: null }),
+      disconnectFirecrawl: () => Effect.succeed({ connected: false, usage: null }),
+      upload: () => Effect.fail(new Error('Unavailable')),
+      download: () => Effect.fail(new Error('Unavailable')),
+      memory: () => Effect.succeed({ total: 0, start: 0, end: 0, tiles: [] }),
+      memoryOriginal: () => Effect.succeed(null),
+      sendSignInCode: () => Effect.void,
+      verifySignInCode: () => Effect.void,
+      send: (command) =>
+        Effect.sync(() => {
+          sent.push(command)
+        }),
+      connect: () => Stream.empty,
+      sessionChanges: Stream.empty,
+      signOut: Effect.void,
+    })
+    const prepared = yield* command.pipe(Effect.provideService(Browser, browser))
+    expect(prepared._tag).toBe('PreparedSubmission')
+    const submitted = update(submission.model, prepared)
+    for (const effect of submitted.commands ?? [])
+      yield* effect.pipe(Effect.provideService(Browser, browser))
+    expect(sent[0]).toMatchObject({
+      _tag: 'Steer',
+      turnId: 'turn',
+      replyTo: reply.id,
+      attachmentIds: [attachment.id],
+      text: 'Explain this',
+    })
+    const optimistic = submitted.model
+    expect(optimistic.reply).toBeNull()
+    expect(optimistic.attachments).toEqual([])
+    expect(optimistic.draft).toBe('')
+    expect(optimistic.pendingMessages[0]).toMatchObject({
+      reply,
+      attachments: [attachment],
+      text: 'Explain this',
+      mode: 'steer',
+    })
+    const pending = optimistic.pendingMessages[0]
+    if (!pending) throw new Error('Expected pending reply')
+    const edited = update(
+      optimistic,
+      Message.RetriedSubmission({ requestId: pending.requestId }),
+    ).model
+    expect(edited.reply).toEqual(reply)
+    expect(edited.attachments).toEqual([attachment])
+    expect(edited.draft).toBe('Explain this')
+    expect(update(edited, Message.CancelledReply()).model.reply).toBeNull()
+  }),
+)
+
+it.effect(
+  'cancels one upload without accepting its late completion or blocking the remaining file',
+  () =>
+    Effect.sync(() => {
+      const upload = {
+        id: 'first',
+        name: 'photo.png',
+        mediaType: 'image/png',
+        source: 'blob:preview',
+        progress: 0,
+      }
+      let model = update(initialModel, Message.UploadStarted({ upload })).model
+      model = update(model, Message.UploadStarted({ upload: { ...upload, id: 'second' } })).model
+      model = update(model, Message.UploadProgress({ id: 'first', progress: 96 })).model
+      expect(model.uploads[0]?.progress).toBe(96)
+      model = update(model, Message.UploadCancelled({ id: 'first' })).model
+      model = update(
+        model,
+        Message.AttachmentUploaded({
+          id: 'first',
+          attachment: { id: 'cancelled', name: 'photo.png', mediaType: 'image/png', size: 12 },
+        }),
+      ).model
+      expect(model.attachments).toEqual([])
+      expect(model.uploading).toBe(1)
+      model = update(
+        model,
+        Message.AttachmentUploaded({
+          id: 'second',
+          attachment: { id: 'ready', name: 'photo.png', mediaType: 'image/png', size: 12 },
+        }),
+      ).model
+      expect(model.uploading).toBe(0)
+      expect(model.attachments.map((file) => file.id)).toEqual(['ready'])
+    }),
+)
+
+it.effect('restores memory status on reconnect and clears it when processing finishes', () =>
+  Effect.sync(() => {
+    let model = update(
+      initialModel,
+      Message.Received({ event: { _tag: 'MemoryStatus', status: 'updating' } }),
+    ).model
+    expect(model.memoryStatus).toBe('updating')
+    model = update(
+      model,
+      Message.Received({
+        event: {
+          _tag: 'Snapshot',
+          memoryStatus: 'preparing',
+          messages: [],
+          settings: null,
+          hasApiKey: false,
+          busy: true,
+          turnId: 'turn',
+        },
+      }),
+    ).model
+    expect(model.memoryStatus).toBe('preparing')
+    model = update(
+      model,
+      Message.Received({ event: { _tag: 'MemoryStatus', status: 'idle' } }),
+    ).model
+    expect(model.memoryStatus).toBe('idle')
+  }),
+)
+
+it.effect('keeps undelivered steering editable with its files and reply after Stop', () =>
+  Effect.sync(() => {
+    const attachment = { id: 'ready', name: 'notes.md', mediaType: 'text/markdown', size: 12 }
+    const reply = { id: 4, kind: 'talk' as const, text: 'Original reply' }
+    const waiting = {
+      ...initialModel,
+      pendingMessages: [
+        {
+          requestId: 'steer',
+          mode: 'steer' as const,
+          status: 'waiting' as const,
+          text: 'Correction',
+          attachments: [attachment],
+          reply,
+        },
+      ],
+    }
+    const stopped = update(
+      waiting,
+      Message.Received({
+        event: { _tag: 'Discarded', requestIds: ['steer'], message: 'Stopped', reason: 'stopped' },
+      }),
+    ).model
+    expect(stopped.pendingMessages[0]?.status).toBe('cancelled')
+    const restored = update(stopped, Message.RetriedSubmission({ requestId: 'steer' })).model
+    expect(restored.draft).toBe('Correction')
+    expect(restored.attachments).toEqual([attachment])
+    expect(restored.reply).toEqual(reply)
+    expect(restored.pendingMessages).toEqual([])
+    const ended = update(
+      waiting,
+      Message.Received({
+        event: { _tag: 'Discarded', requestIds: ['steer'], message: 'Ended', reason: 'ended' },
+      }),
+    ).model
+    expect(ended.pendingMessages[0]?.status).toBe('discarded')
+  }),
+)
+
+it.effect('updates activity rows in place and restores their completed status on reconnect', () =>
+  Effect.sync(() => {
+    const running: ChatMessage = {
+      id: 3,
+      date: '2026-10-14T00:00:00Z',
+      kind: 'tool',
+      text: '',
+      activity: { id: 'call', name: 'web_search', input: 'Effect', status: 'running' },
+    }
+    let model: typeof initialModel = {
+      ...initialModel,
+      busy: true,
+      turnId: 'current',
+      messages: [running],
+    }
+    const completed: ChatMessage = {
+      id: running.id,
+      date: running.date,
+      kind: running.kind,
+      text: running.text,
+      activity: {
+        id: 'call',
+        name: 'web_search',
+        input: 'Effect',
+        status: 'completed',
+        output: 'Found docs',
+      },
+    }
+    model = receive(model, { _tag: 'Message', message: completed })
+    expect(model.messages).toEqual([completed])
+    model = receive(model, { _tag: 'ResponsePhase', turnId: 'old', phase: 'responding' })
+    expect(model.responsePhase).toBe('thinking')
+    model = receive(model, { _tag: 'ResponsePhase', turnId: 'current', phase: 'responding' })
+    expect(model.responsePhase).toBe('responding')
+    model = receive(model, {
+      _tag: 'Snapshot',
+      messages: [completed],
+      settings: null,
+      hasApiKey: false,
+      busy: true,
+      turnId: 'current',
+      responsePhase: 'thinking',
+    })
+    expect(model.responsePhase).toBe('thinking')
+    expect(model.messages).toEqual([completed])
+    model = receive(
+      { ...model, messages: [running] },
+      { _tag: 'Status', busy: false, turnId: null, pending: [] },
+    )
+    expect(model.messages[0]?.activity?.status).toBe('stopped')
+  }),
+)

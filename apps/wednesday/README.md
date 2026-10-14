@@ -25,9 +25,11 @@ In Provider, choose ChatGPT and select Sign in with ChatGPT. Open the authorizat
 
 Choose chat and memory models with independent thinking effort in Settings. Model pickers open as searchable bottom sheets on mobile. Use the gear on a model entry in either picker to adjust its limits, supported thinking levels, and provider options in a desktop dialog or mobile sheet. Provider display names appear when available; model IDs remain the API identifiers. Expand Provider to update your API address or key. Settings save automatically after you finish editing. A toast confirms each successful update. Changes made during a response save when it finishes.
 
-Choose the chat model and thinking effort on the Provider settings page. The rounded composer starts at two lines and grows to four lines before scrolling. On desktop, press **Enter** to send or Shift + Enter for a new line. On touch devices, Enter inserts a new line; tap the send button to send. While Friday is working, messages steer the active turn at its next model-step boundary. **Stop** interrupts the turn and cancels pending steering. Pending messages appear immediately as user bubbles.
+Choose the chat model and thinking effort on the Provider settings page. The rounded composer starts at one line and grows to four lines before scrolling. On desktop, press **Enter** to send or Shift + Enter for a new line. On touch devices, Enter inserts a new line; tap the send button to send. While Friday is working, messages steer the active turn at its next model-step boundary. **Stop** interrupts the turn and cancels pending steering. Pending messages appear immediately as user bubbles.
 
 Chat initially loads the latest 250 visible messages. Load more at the top fetches earlier messages without moving the current reading position. Responses appear as completed paragraphs and Markdown blocks. The renderer includes syntax highlighting, code wrapping and copying, tables with Markdown and CSV copying, GitHub alerts, footnotes, collapsible details, image previews, and Mermaid diagrams.
+
+Attach images, text, Markdown, or HTML with the paperclip, drag and drop, or paste an image. Each message accepts up to 10 files of 10 MB each. Uploads go directly to private S3-compatible storage through backend-generated signed URLs. Images enter the model's message; the Bash tool reads other files from `/attachments`. Originals are read-only, and `/tmp` lasts for the current turn. Unused uploads expire after 24 hours.
 
 Run the checks from the repository root:
 

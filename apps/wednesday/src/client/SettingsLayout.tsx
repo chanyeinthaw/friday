@@ -1,6 +1,9 @@
 import { getRouteApi, Link } from '@tanstack/react-router'
-import { ArrowLeft, Brain, ChevronRight, Settings } from 'lucide-react'
+import { ArrowLeft, Brain, ChevronRight, Settings, LogOut, Plug } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { dispatch } from './State.ts'
+import { Message } from './Messages.ts'
+import { IntegrationsScreen } from './IntegrationsScreen.tsx'
 import { MemoryScreen } from './MemoryScreen.tsx'
 import { ClerkElement } from './ClerkElement.tsx'
 import fridayLogo from './branding/apple-touch-icon.png'
@@ -24,13 +27,14 @@ const route = getRouteApi('/settings')
 const pages = [
   { view: 'settings', title: 'General', icon: Settings },
   { view: 'memory', title: 'Memory', icon: Brain },
+  { view: 'integrations', title: 'Integrations', icon: Plug },
 ] as const
 
 export function SettingsLayout({ children }: { children: ReactNode }) {
   const { view } = route.useSearch()
   const mobile = useIsMobile()
   const index = view === 'index' || (mobile && !view)
-  const active = view === 'memory' ? 'memory' : 'settings'
+  const active = view === 'memory' || view === 'integrations' ? view : 'settings'
   return (
     <SidebarProvider className="min-h-dvh">
       <Sidebar
@@ -62,18 +66,27 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter className="flex-row items-center justify-between gap-2 px-2 py-3">
-          <Link
-            to="/"
-            className="flex min-h-11 items-center gap-2 px-2 text-sm text-muted-foreground hover:text-foreground">
-            <ArrowLeft className="size-4" />
-            Back
-          </Link>
-          <ClerkElement kind="account" avatarOnly />
+        <SidebarFooter className="gap-2 px-2 py-3">
+          <Button
+            variant="ghost"
+            className="justify-start rounded-lg text-muted-foreground"
+            onClick={() => dispatch(Message.SignOut())}>
+            <LogOut className="size-4" />
+            Sign out
+          </Button>
+          <div className="flex items-center justify-between gap-2">
+            <Link
+              to="/"
+              className="flex min-h-11 items-center gap-2 px-2 text-sm text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="size-4" />
+              Back
+            </Link>
+            <ClerkElement kind="account" avatarOnly />
+          </div>
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="min-w-0">
-        <header className="flex h-16 shrink-0 items-center px-5 sm:px-8 md:hidden">
+        <header className="flex h-16 shrink-0 items-center justify-between px-5 sm:px-8 md:hidden">
           <Button asChild variant="ghost" size="icon-sm" className="md:hidden">
             {mobile && !index ? (
               <Link to="/settings" search={{}} aria-label="Back to settings">
@@ -84,6 +97,14 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
                 <ArrowLeft />
               </Link>
             )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-lg text-muted-foreground"
+            onClick={() => dispatch(Message.SignOut())}>
+            <LogOut className="size-4" />
+            Sign out
           </Button>
         </header>
         <div
@@ -111,6 +132,8 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
                 <ClerkElement kind="account" />
               </div>
             </>
+          ) : active === 'integrations' ? (
+            <IntegrationsScreen />
           ) : active === 'memory' ? (
             <MemoryScreen />
           ) : (

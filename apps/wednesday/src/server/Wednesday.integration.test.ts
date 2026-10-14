@@ -7,11 +7,58 @@ import { join } from 'node:path'
 import { Schema } from 'effect'
 import { Sse } from 'effect/encoding'
 import { Database } from 'bun:sqlite'
+import { Attachment, PreparedUpload, AttachmentDownload } from '../shared/Attachments.ts'
 import { MemorySnapshot, MemoryOriginal } from '../shared/Memory.ts'
 import { turnInstructions, compactionInstructions } from './OptChat.ts'
 import { ServerEvent, type ClientCommand, type Thinking } from '../shared/protocol.ts'
 
+const completionDelta = (tool: boolean, attachmentTool: boolean, content: string) => {
+  return tool
+    ? {
+        tool_calls: [
+          {
+            index: 0,
+            id: attachmentTool ? 'call_attachment_bash' : 'call_date',
+            type: 'function',
+            function: attachmentTool
+              ? {
+                  name: 'bash',
+                  arguments: JSON.stringify({
+                    command: "rg 'private attachment' /attachments",
+                  }),
+                }
+              : { name: 'date', arguments: '{"id":0}' },
+          },
+        ],
+      }
+    : { content }
+}
+
+const parsePreparedUpload = Schema.decodeUnknownSync(Schema.fromJsonString(PreparedUpload))
+const parseAttachment = Schema.decodeUnknownSync(Schema.fromJsonString(Attachment))
+const parseAttachmentDownload = Schema.decodeUnknownSync(Schema.fromJsonString(AttachmentDownload))
 const parseMemoryOriginal = Schema.decodeUnknownSync(Schema.fromJsonString(MemoryOriginal))
+const parseManifest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      short_name: Schema.String,
+      start_url: Schema.String,
+      scope: Schema.String,
+      display: Schema.String,
+      theme_color: Schema.String,
+      icons: Schema.Array(
+        Schema.Struct({
+          src: Schema.String,
+          sizes: Schema.String,
+          type: Schema.String,
+          purpose: Schema.String,
+        }),
+      ),
+    }),
+  ),
+)
 const parseReplies = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(ServerEvent)))
 const parseEvent = Schema.decodeUnknownSync(Schema.fromJsonString(ServerEvent))
 const Request = Schema.Struct({
@@ -123,6 +170,47 @@ const codexRequests: ReturnType<typeof parseJson>[] = []
 const chatGptAccessToken = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-test' } })).toString('base64url')}.signature`
 let requestCount = 0
 const requests: unknown[] = []
+const testObjects = new Map<string, { bytes: Uint8Array; type: string }>()
+const objectRequest = async (request: Request) => {
+  const url = new URL(request.url)
+  if (!url.pathname.startsWith('/friday-test/')) return
+  if (request.method === 'PUT') {
+    testObjects.set(url.pathname, {
+      bytes: new Uint8Array(await request.arrayBuffer()),
+      type: request.headers.get('content-type') ?? 'application/octet-stream',
+    })
+    return new Response(null, { headers: { etag: '"test-etag"' } })
+  }
+  if (request.method === 'DELETE') {
+    testObjects.delete(url.pathname)
+    return new Response(null, { status: 204 })
+  }
+  const object = testObjects.get(url.pathname)
+  if (!object) return new Response('<Error><Code>NoSuchKey</Code></Error>', { status: 404 })
+  const headers = {
+    'content-type': object.type,
+    'content-length': String(object.bytes.length),
+    etag: '"test-etag"',
+    'last-modified': new Date().toUTCString(),
+  }
+  if (request.method === 'HEAD') return new Response(null, { headers })
+  const range = request.headers.get('range')?.match(/bytes=(\d+)-(\d+)/)
+  if (range) {
+    const start = Number(range[1])
+    const end = Math.min(Number(range[2]), object.bytes.length - 1)
+    const bytes = object.bytes.slice(start, end + 1)
+    return new Response(bytes, {
+      status: 206,
+      headers: {
+        ...headers,
+        'content-length': String(bytes.length),
+        'content-range': `bytes ${start}-${end}/${object.bytes.length}`,
+      },
+    })
+  }
+  return new Response(object.bytes, { headers })
+}
+
 let memoryResponse: ((raw: string) => Promise<string> | string) | undefined
 const memoryRequests: string[] = []
 let streamingGate: { resume: Promise<void> } | undefined
@@ -156,6 +244,10 @@ const startApplication = async () => {
       WEDNESDAY_ORIGIN: `http://localhost:${applicationPort}`,
       WEDNESDAY_CHATGPT_ISSUER: `http://127.0.0.1:${provider.port}/auth`,
       WEDNESDAY_CHATGPT_BACKEND: `http://127.0.0.1:${provider.port}/codex`,
+      WEDNESDAY_S3_ENDPOINT: `http://127.0.0.1:${provider.port}`,
+      WEDNESDAY_S3_BUCKET: 'friday-test',
+      WEDNESDAY_S3_ACCESS_KEY_ID: 'test-access-key',
+      WEDNESDAY_S3_SECRET_ACCESS_KEY: 'test-secret-key',
     },
   })
   const reader = application.stdout.getReader()
@@ -599,6 +691,57 @@ data: ${JSON.stringify(event)}
   }
   return undefined
 }
+const completionProvider = async (request: Request) => {
+  const url = new URL(request.url)
+  if (url.pathname === '/v1/models') return Response.json({ data: [{ id: 'test-model' }] })
+  const raw = await request.text()
+  const body = parseRequest(raw)
+  requests.push(parseJson(raw))
+  const currentRequest = ++requestCount
+  if (chatGate && body.model === 'test-model') await chatGate(body)
+  if (streamingGate && body.model === 'test-model') {
+    const gate = streamingGate
+    streamingGate = undefined
+    const encoder = new TextEncoder()
+    const chunk = (content: string, done = false) =>
+      encoder.encode(
+        `data: ${JSON.stringify({ id: 'streamed_reply', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta: { content }, finish_reason: done ? 'stop' : null }] })}\n\n`,
+      )
+    return new Response(
+      new ReadableStream({
+        async start(controller) {
+          controller.enqueue(chunk('First paragraph.\n\nUnfinished'))
+          await gate.resume
+          controller.enqueue(chunk(' paragraph.\n\n```ts\nconst x = 1\n```', true))
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }),
+      { headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  }
+  const content =
+    body.model === 'memory-model' && memoryResponse ? await memoryResponse(raw) : 'A saved reply.'
+  if (body.model === 'memory-model') memoryRequests.push(raw)
+  if (holdFirstResponse && currentRequest === 1) {
+    firstRequestResolve?.()
+    await firstResponse
+  }
+  const attachmentTool =
+    raw.includes('attachment-bash-proof') && !raw.includes('call_attachment_bash')
+  const tool = (holdFirstResponse && currentRequest === 1) || attachmentTool
+  const delta = completionDelta(tool, attachmentTool, content)
+  const chunk = {
+    id: `chat_${requestCount}`,
+    object: 'chat.completion.chunk',
+    created: 1,
+    model: body.model,
+    choices: [{ index: 0, delta, finish_reason: tool ? 'tool_calls' : 'stop' }],
+  }
+  return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+    headers: { 'Content-Type': 'text/event-stream' },
+  })
+}
 beforeAll(async () => {
   temporary = await mkdtemp(join(tmpdir(), 'wednesday-test-'))
   binary = join(temporary, 'wednesday')
@@ -612,6 +755,8 @@ beforeAll(async () => {
   provider = Bun.serve({
     port: 0,
     async fetch(request) {
+      const objectResponse = await objectRequest(request)
+      if (objectResponse) return objectResponse
       if (request.headers.get('content-encoding') === 'zstd') {
         const body = zstdDecompressSync(Buffer.from(await request.arrayBuffer()))
         const headers = new Headers(request.headers)
@@ -624,66 +769,7 @@ beforeAll(async () => {
       if (deviceResponse) return deviceResponse
       const anthropicResponse = await anthropicProvider(request)
       if (anthropicResponse) return anthropicResponse
-      const url = new URL(request.url)
-      if (url.pathname === '/v1/models') return Response.json({ data: [{ id: 'test-model' }] })
-      const raw = await request.text()
-      const body = parseRequest(raw)
-      requests.push(parseJson(raw))
-      const currentRequest = ++requestCount
-      if (chatGate && body.model === 'test-model') await chatGate(body)
-      if (streamingGate && body.model === 'test-model') {
-        const gate = streamingGate
-        streamingGate = undefined
-        const encoder = new TextEncoder()
-        const chunk = (content: string, done = false) =>
-          encoder.encode(
-            `data: ${JSON.stringify({ id: 'streamed_reply', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta: { content }, finish_reason: done ? 'stop' : null }] })}\n\n`,
-          )
-        return new Response(
-          new ReadableStream({
-            async start(controller) {
-              controller.enqueue(chunk('First paragraph.\n\nUnfinished'))
-              await gate.resume
-              controller.enqueue(chunk(' paragraph.\n\n```ts\nconst x = 1\n```', true))
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-              controller.close()
-            },
-          }),
-          { headers: { 'Content-Type': 'text/event-stream' } },
-        )
-      }
-      const content =
-        body.model === 'memory-model' && memoryResponse
-          ? await memoryResponse(raw)
-          : 'A saved reply.'
-      if (body.model === 'memory-model') memoryRequests.push(raw)
-      if (holdFirstResponse && currentRequest === 1) {
-        firstRequestResolve?.()
-        await firstResponse
-      }
-      const tool = holdFirstResponse && currentRequest === 1
-      const delta = tool
-        ? {
-            tool_calls: [
-              {
-                index: 0,
-                id: 'call_date',
-                type: 'function',
-                function: { name: 'date', arguments: '{"id":0}' },
-              },
-            ],
-          }
-        : { content }
-      const chunk = {
-        id: `chat_${requestCount}`,
-        object: 'chat.completion.chunk',
-        created: 1,
-        model: body.model,
-        choices: [{ index: 0, delta, finish_reason: tool ? 'tool_calls' : 'stop' }],
-      }
-      return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
-        headers: { 'Content-Type': 'text/event-stream' },
-      })
+      return completionProvider(request)
     },
   })
   await startApplication()
@@ -693,6 +779,42 @@ afterAll(async () => {
   await application?.exited
   await provider?.stop(true)
   if (temporary) await rm(temporary, { recursive: true, force: true })
+})
+
+test('embeds an installable Friday manifest and correctly sized app icons', async () => {
+  const origin = `http://127.0.0.1:${applicationPort}`
+  const html = await (await fetch(origin + '/settings')).text()
+  const href = html.match(/rel="manifest" href="([^" ]+)"/)?.[1]
+  if (!href) throw new Error('Missing install manifest')
+  expect(html).toContain('name="theme-color" content="#ffffff"')
+  expect(html).toContain('name="apple-mobile-web-app-capable" content="yes"')
+  const response = await fetch(new URL(href, origin))
+  expect(response.status).toBe(200)
+  expect(response.headers.get('content-type')).toContain('application/manifest+json')
+  const manifest = parseManifest(await response.text())
+  expect(manifest).toMatchObject({
+    id: '/',
+    name: 'Friday',
+    short_name: 'Friday',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    theme_color: '#ffffff',
+  })
+  expect(manifest.icons.map((icon) => [icon.sizes, icon.purpose])).toEqual([
+    ['192x192', 'any'],
+    ['512x512', 'any'],
+    ['512x512', 'maskable'],
+  ])
+  for (const icon of manifest.icons) {
+    const resource = await fetch(new URL(icon.src, origin))
+    expect(resource.status).toBe(200)
+    expect(resource.headers.get('content-type')).toContain('image/png')
+    expect(resource.headers.get('cache-control')).toBe('no-cache')
+    const bytes = Buffer.from(await resource.arrayBuffer())
+    expect(bytes.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
+    expect(`${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`).toBe(icon.sizes)
+  }
 })
 
 test('compiled binary embeds frontend and rejects cross-origin HTTP requests', async () => {
@@ -833,7 +955,10 @@ test('synchronizes settings, busy, pending steering, and Stop between tabs', asy
   expect(third.initial?.messages).toEqual([])
   expect(third.initial?.pending?.map((item) => item.requestId)).toContain('tabs-steer')
   second.send({ _tag: 'Stop', turnId: 'tabs-turn' })
-  await first.wait((event) => event._tag === 'Discarded' && event.requestIds.includes('tabs-steer'))
+  const stopped = await first.wait(
+    (event) => event._tag === 'Discarded' && event.requestIds.includes('tabs-steer'),
+  )
+  expect(stopped._tag === 'Discarded' && stopped.reason).toBe('stopped')
   await third.wait((event) => event._tag === 'Status' && !event.busy)
   gate.release()
   expect((await first.snapshot()).pending).toEqual([])
@@ -843,7 +968,7 @@ test('synchronizes settings, busy, pending steering, and Stop between tabs', asy
   third.close()
 }, 10000)
 
-test('discards unused steering and rejects steering for an ended turn', async () => {
+test('native Pi steering continues after a response without tools and rejects steering for an ended turn', async () => {
   const client = await connect('user_discard')
   await save(client)
   const gate = holdChat()
@@ -852,27 +977,33 @@ test('discards unused steering and rejects steering for an ended turn', async ()
   client.send({
     _tag: 'Steer',
     requestId: 'discard-steer',
-    text: 'Unused correction',
+    text: 'A correction without a tool boundary',
     turnId: 'discard-turn',
   })
   await client.wait((event) => event._tag === 'Accepted' && event.requestId === 'discard-steer')
   const count = requestCount
   gate.release()
-  await client.wait(
-    (event) => event._tag === 'Discarded' && event.requestIds.includes('discard-steer'),
-  )
   await client.wait((event) => event._tag === 'Status' && !event.busy)
   const history = await client.snapshot()
   expect(history.messages.filter((item) => item.kind === 'user').map((item) => item.text)).toEqual([
     'One complete response',
+    'A correction without a tool boundary',
   ])
-  expect(requestCount).toBe(count)
+  expect(requestCount).toBe(count + 1)
+  expect(
+    client.observed.some(
+      (event) => event._tag === 'Discarded' && event.requestIds.includes('discard-steer'),
+    ),
+  ).toBe(false)
   expect(client.observed.every((event) => String(event._tag) !== 'Delta')).toBe(true)
   const lastId = history.messages.at(-1)?.id ?? -1
   client.close()
   const reconnect = await connect('user_discard', 0)
-  expect(reconnect.initial?.messages.map((item) => item.id)).toEqual([lastId])
-  expect(reconnect.initial?.messages[0]?.text).toBe('A saved reply.')
+  expect(reconnect.initial?.messages.map((item) => item.id)).toEqual(
+    history.messages.filter((item) => item.id > 0).map((item) => item.id),
+  )
+  expect(reconnect.initial?.messages.at(-1)?.id).toBe(lastId)
+  expect(reconnect.initial?.messages.at(-1)?.text).toBe('A saved reply.')
   reconnect.send({
     _tag: 'Steer',
     requestId: 'stale-steer',
@@ -1013,9 +1144,17 @@ test('compacts in the background with eight calls, bounded source context, and a
   expect(
     memoryRequests.slice(-8).every((raw) => parseRequest(raw).reasoning_effort === 'low'),
   ).toBe(true)
-  releaseResolve?.()
+  const observer = await connect('user_memory')
+  const background = observer.initial
   client.send({ _tag: 'Send', requestId: 'after_compaction', text: 'What did I tell you?' })
+  await observer.wait((event) => event._tag === 'MemoryStatus' && event.status === 'preparing')
+  const preparing = await observer.snapshot()
+  releaseResolve?.()
   await client.wait((event) => event._tag === 'Status' && !event.busy)
+  await observer.wait((event) => event._tag === 'MemoryStatus' && event.status === 'idle')
+  expect(background?.memoryStatus).toBe('updating')
+  expect(preparing.memoryStatus).toBe('preparing')
+  observer.close()
   expect(peak).toBe(8)
   const sent = requests.slice(firstRequest)
   for (const [model, prompt] of [
@@ -1067,8 +1206,12 @@ test('keeps successful summaries and retries failed work on a later message', as
     'SELECT count(*) AS count FROM wednesday_memory_jobs WHERE user_id="user_memory_failure" AND status="failed"',
   )
   const deadline = Date.now() + 5000
-  while ((failed.get()?.count ?? 0) === 0 && Date.now() < deadline) await Bun.sleep(10)
-  expect(failed.get()?.count).toBeGreaterThan(0)
+  let failedCount = failed.get()?.count ?? 0
+  while (failedCount === 0 && Date.now() < deadline) {
+    await Bun.sleep(10)
+    failedCount = failed.get()?.count ?? 0
+  }
+  expect(failedCount).toBeGreaterThan(0)
   const ready = database
     .query<{ text: string }, []>(
       'SELECT text FROM wednesday_memory_nodes WHERE user_id="user_memory_failure" AND id=1 AND count=1',
@@ -1121,8 +1264,12 @@ test('starts chat from ready leaves when an unused ancestor fails compaction', a
     'SELECT count(*) AS count FROM wednesday_memory_jobs WHERE user_id="user_unused_ancestor" AND count>1 AND status="failed"',
   )
   const deadline = Date.now() + 3000
-  while ((failed.get()?.count ?? 0) === 0 && Date.now() < deadline) await Bun.sleep(10)
-  expect(failed.get()?.count).toBeGreaterThan(0)
+  let failedCount = failed.get()?.count ?? 0
+  while (failedCount === 0 && Date.now() < deadline) {
+    await Bun.sleep(10)
+    failedCount = failed.get()?.count ?? 0
+  }
+  expect(failedCount).toBeGreaterThan(0)
   database.close()
   memoryResponse = undefined
   client.close()
@@ -1409,7 +1556,9 @@ for (const format of ['responses', 'anthropic'] as const) {
     for (const request of sent) {
       const identity = isCompactionRequest(request.body) ? `${client.userId}:memory` : client.userId
       expect(request.sessionId).toBe(identity)
-      expect(request.body.tools).toEqual(sent[0]?.body.tools)
+      if (!isCompactionRequest(request.body))
+        expect(request.body.tools).toEqual(sent[0]?.body.tools)
+      else expect(JSON.stringify(request.body.tools)).not.toContain('private virtual filesystem')
       if (format === 'responses') expect(request.body.prompt_cache_key).toBe(identity)
     }
     expect(sent.some((request) => JSON.stringify(request.body).includes('Compaction:'))).toBe(true)
@@ -1421,6 +1570,8 @@ for (const format of ['responses', 'anthropic'] as const) {
 test('memory browsing reads stored summaries and originals with isolated, bounded ranges', async () => {
   const userId = 'user_memory_atlas_reader'
   const database = new Database(join(temporary, 'test.sqlite'))
+  // The server may still be writing background summaries while this fixture is seeded.
+  database.exec('PRAGMA busy_timeout = 5000')
   database
     .query('INSERT INTO wednesday_messages (user_id,id,kind,text,date) VALUES (?,?,?,?,?)')
     .run(userId, 0, 'user', 'Original wording', '2026-10-14T00:00:00.000Z')
@@ -1467,3 +1618,138 @@ test('memory browsing reads stored summaries and originals with isolated, bounde
     expect((await read(`/api/memory?${query}`)).status).toBe(400)
   expect((await fetch(`http://127.0.0.1:${applicationPort}/api/memory?detail=0`)).status).toBe(401)
 })
+
+test('replies carry canonical private context and survive history reloads', async () => {
+  const client = await connect('user_replies')
+  await save(client)
+  client.send({ _tag: 'Send', requestId: 'reply-first', text: 'An original message to reply to.' })
+  await client.wait((event) => event._tag === 'Status' && !event.busy)
+  const first = await client.snapshot()
+  const original = first.messages.find((message) => message.kind === 'talk')
+  if (!original || original.kind !== 'talk') throw new Error('Missing response')
+  const reply = { id: original.id, kind: original.kind, text: original.text }
+  client.send({
+    _tag: 'Send',
+    requestId: 'reply-second',
+    text: 'Explain that answer.',
+    replyTo: original.id,
+  })
+  await client.wait((event) => event._tag === 'Status' && !event.busy)
+  const history = await client.snapshot()
+  expect(history.messages.find((message) => message.requestId === 'reply-second')).toMatchObject({
+    text: 'Explain that answer.',
+    reply,
+  })
+  expect(JSON.stringify(requests)).toContain(`> ${original.text}`)
+  client.send({ _tag: 'LoadOlder', beforeId: Number.MAX_SAFE_INTEGER })
+  const older = await client.wait((event) => event._tag === 'History')
+  expect(
+    older._tag === 'History' &&
+      older.messages.find((message) => message.requestId === 'reply-second')?.reply,
+  ).toEqual(reply)
+  const other = await connect('user_reply_other')
+  await save(other)
+  other.send({
+    _tag: 'Send',
+    requestId: 'reply-private',
+    text: 'Read their message',
+    replyTo: original.id,
+  })
+  const rejected = await other.wait((event) => event._tag === 'Error')
+  expect(rejected._tag).toBe('Error')
+  expect((await other.snapshot()).messages).toEqual([])
+  client.close()
+  other.close()
+}, 15000)
+
+test('private attachments survive reload, images reach the model, and the compiled Bash tool reads files', async () => {
+  const client = await connect('user_attachments')
+  await save(client)
+  const headers = {
+    Authorization: `Bearer ${token(client.userId, `http://localhost:${applicationPort}`)}`,
+    'Content-Type': 'application/json',
+  }
+  const url = `http://127.0.0.1:${applicationPort}/api/attachments`
+  const upload = async (name: string, mediaType: string, data: string) => {
+    const bytes = Buffer.from(data, 'base64')
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name, mediaType, size: bytes.length }),
+    })
+    expect(response.status).toBe(200)
+    const prepared = parsePreparedUpload(await response.text())
+    expect(
+      (
+        await fetch(prepared.url, {
+          method: 'PUT',
+          headers: { 'Content-Type': prepared.attachment.mediaType },
+          body: bytes,
+        })
+      ).ok,
+    ).toBe(true)
+    const complete = await fetch(`${url}/${prepared.attachment.id}/complete`, {
+      method: 'POST',
+      headers,
+    })
+    expect(complete.status).toBe(200)
+    return parseAttachment(await complete.text())
+  }
+  const note = await upload(
+    'note.md',
+    'text/markdown',
+    Buffer.from('# private attachment proof').toString('base64'),
+  )
+  const png =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aKxkAAAAASUVORK5CYII='
+  const image = await upload('image.png', 'image/png', png)
+  const first = requests.length
+  client.send({
+    _tag: 'Send',
+    requestId: 'attachments-first',
+    text: 'attachment-bash-proof: inspect these files',
+    attachmentIds: [note.id, image.id],
+  })
+  await client.wait((event) => event._tag === 'Status' && !event.busy)
+  const history = await client.snapshot()
+  expect(
+    history.messages.find((message) => message.requestId === 'attachments-first'),
+  ).toMatchObject({
+    text: 'attachment-bash-proof: inspect these files',
+    attachments: [note, image],
+  })
+  expect(JSON.stringify(requests.slice(first))).toContain('image_url')
+  expect(JSON.stringify(requests.slice(first))).toContain('data:image/')
+  expect(JSON.stringify(requests.slice(first))).toContain('private attachment proof')
+  expect(JSON.stringify(history)).not.toContain(png)
+  const file = await fetch(`${url}/${note.id}`, { headers })
+  const restored = parseAttachmentDownload(await file.text())
+  expect(await (await fetch(restored.url)).text()).toBe('# private attachment proof')
+  const other = await connect('user_attachments_other')
+  await save(other)
+  expect(
+    (
+      await fetch(`${url}/${note.id}`, {
+        headers: {
+          Authorization: `Bearer ${token(other.userId, `http://localhost:${applicationPort}`)}`,
+        },
+      })
+    ).status,
+  ).toBe(400)
+  other.send({
+    _tag: 'Send',
+    requestId: 'stolen-attachment',
+    text: 'Read it',
+    attachmentIds: [note.id],
+  })
+  expect((await other.wait((event) => event._tag === 'Error'))._tag).toBe('Error')
+  expect((await other.snapshot()).messages).toEqual([])
+  client.send({ _tag: 'LoadOlder', beforeId: Number.MAX_SAFE_INTEGER })
+  const older = await client.wait((event) => event._tag === 'History')
+  expect(
+    older._tag === 'History' &&
+      older.messages.find((message) => message.requestId === 'attachments-first')?.attachments,
+  ).toEqual([note, image])
+  client.close()
+  other.close()
+}, 15000)

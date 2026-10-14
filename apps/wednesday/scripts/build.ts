@@ -14,17 +14,38 @@ const frontend = await Bun.build({
   entrypoints: [join(app, 'src/client/index.html')],
   outdir: output,
   target: 'browser',
+  loader: { '.webmanifest': 'file' },
   splitting: true,
   minify: true,
   define: { 'process.env.NODE_ENV': '"production"' },
 })
 if (!frontend.success) throw new Error(frontend.logs.map(String).join('\n'))
-const imports = frontend.outputs.map(
+// Stable install URLs must also be embedded in the single executable.
+const installAssets = [
+  { name: 'pwa/icon-192.png', mime: 'image/png' },
+  { name: 'pwa/icon-512.png', mime: 'image/png' },
+  { name: 'pwa/icon-maskable-512.png', mime: 'image/png' },
+].map(({ name, mime }) => ({
+  path: join(app, 'src/client/public', name),
+  url: `/${name}`,
+  mime,
+  html: false,
+}))
+const assets = [
+  ...frontend.outputs.map((file) => ({
+    path: file.path,
+    url: `/${relative(output, file.path)}`,
+    mime: file.path.endsWith('.webmanifest') ? 'application/manifest+json' : file.type,
+    html: file.path.endsWith('.html'),
+  })),
+  ...installAssets,
+]
+const imports = assets.map(
   (file, index) => `import asset${index} from ${JSON.stringify(file.path)} with { type: 'file' }`,
 )
-const files = frontend.outputs.map(
+const files = assets.map(
   (file, index) =>
-    `{ path: asset${index}, url: ${JSON.stringify(`/${relative(output, file.path)}`)}, mime: ${JSON.stringify(file.type)}, html: ${file.path.endsWith('.html')} }`,
+    `{ path: asset${index}, url: ${JSON.stringify(file.url)}, mime: ${JSON.stringify(file.mime)}, html: ${file.html} }`,
 )
 const compiled = await Bun.build({
   entrypoints: [join(app, 'src/main.ts')],
@@ -49,4 +70,4 @@ const compiled = await Bun.build({
   ],
 })
 if (!compiled.success) throw new Error(compiled.logs.map(String).join('\n'))
-console.log(`Built Friday with ${frontend.outputs.length} embedded frontend assets`)
+console.log(`Built Friday with ${assets.length} embedded frontend assets`)
