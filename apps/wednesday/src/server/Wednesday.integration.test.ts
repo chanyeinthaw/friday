@@ -7,9 +7,11 @@ import { join } from 'node:path'
 import { Schema } from 'effect'
 import { Sse } from 'effect/encoding'
 import { Database } from 'bun:sqlite'
+import { MemorySnapshot, MemoryOriginal } from '../shared/Memory.ts'
 import { turnInstructions, compactionInstructions } from './OptChat.ts'
 import { ServerEvent, type ClientCommand, type Thinking } from '../shared/protocol.ts'
 
+const parseMemoryOriginal = Schema.decodeUnknownSync(Schema.fromJsonString(MemoryOriginal))
 const parseReplies = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(ServerEvent)))
 const parseEvent = Schema.decodeUnknownSync(Schema.fromJsonString(ServerEvent))
 const Request = Schema.Struct({
@@ -1415,3 +1417,53 @@ for (const format of ['responses', 'anthropic'] as const) {
     client.close()
   }, 15000)
 }
+
+test('memory browsing reads stored summaries and originals with isolated, bounded ranges', async () => {
+  const userId = 'user_memory_atlas_reader'
+  const database = new Database(join(temporary, 'test.sqlite'))
+  database
+    .query('INSERT INTO wednesday_messages (user_id,id,kind,text,date) VALUES (?,?,?,?,?)')
+    .run(userId, 0, 'user', 'Original wording', '2026-10-14T00:00:00.000Z')
+  database
+    .query('INSERT INTO wednesday_messages (user_id,id,kind,text,date) VALUES (?,?,?,?,?)')
+    .run(userId, 1, 'talk', 'Friday response', '2026-10-14T00:01:00.000Z')
+  database
+    .query('INSERT INTO wednesday_memory_nodes (user_id,id,count,text) VALUES (?,?,?,?)')
+    .run(userId, 0, 1, 'Saved summary')
+  database.close()
+  const read = (path: string, account = userId) =>
+    fetch(`http://127.0.0.1:${applicationPort}${path}`, {
+      headers: {
+        Authorization: `Bearer ${token(account, `http://localhost:${applicationPort}`)}`,
+        Origin: `http://localhost:${applicationPort}`,
+      },
+    })
+  const decode = Schema.decodeUnknownSync(Schema.fromJsonString(MemorySnapshot))
+  const response = await read('/api/memory?detail=0')
+  expect(response.status).toBe(200)
+  expect(decode(await response.text())).toEqual({
+    total: 2,
+    start: 0,
+    end: 2,
+    tiles: [
+      { id: 0, count: 1, text: 'Saved summary' },
+      { id: 1, count: 1, text: null },
+    ],
+  })
+  const original = await read('/api/memory/original?id=0')
+  expect(parseMemoryOriginal(await original.text())?.text).toBe('Original wording')
+  const other = await read('/api/memory?detail=0', 'user_memory_atlas_other')
+  expect(decode(await other.text())).toEqual({ total: 0, start: 0, end: 0, tiles: [] })
+  expect(await (await read('/api/memory/original?id=0', 'user_memory_atlas_other')).text()).toBe(
+    'null',
+  )
+  for (const query of [
+    'detail=4',
+    'detail=-1',
+    'detail=0&start=2&end=1',
+    'detail=0&end=999',
+    'detail=0&start=-1',
+  ])
+    expect((await read(`/api/memory?${query}`)).status).toBe(400)
+  expect((await fetch(`http://127.0.0.1:${applicationPort}/api/memory?detail=0`)).status).toBe(401)
+})

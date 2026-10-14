@@ -1,6 +1,7 @@
 import { getRouteApi, Link } from '@tanstack/react-router'
 import { ArrowLeft, Brain, ChevronRight, Settings } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { MemoryScreen } from './MemoryScreen.tsx'
 import { ClerkElement } from './ClerkElement.tsx'
 import fridayLogo from './branding/apple-touch-icon.png'
 import { Button } from './components/ui/button.tsx'
@@ -30,7 +31,6 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
   const mobile = useIsMobile()
   const index = view === 'index' || (mobile && !view)
   const active = view === 'memory' ? 'memory' : 'settings'
-  const title = active === 'memory' ? 'Memory' : 'General'
   return (
     <SidebarProvider className="min-h-dvh">
       <Sidebar
@@ -73,7 +73,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="min-w-0">
-        <header className="flex h-20 shrink-0 items-center gap-3 px-5 sm:px-8">
+        <header className="flex h-16 shrink-0 items-center px-5 sm:px-8 md:hidden">
           <Button asChild variant="ghost" size="icon-sm" className="md:hidden">
             {mobile && !index ? (
               <Link to="/settings" search={{}} aria-label="Back to settings">
@@ -85,19 +85,13 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
               </Link>
             )}
           </Button>
-          <div className="flex items-center gap-3 text-sm">
-            <span className={index ? 'font-medium' : 'text-muted-foreground'}>Settings</span>
-            {!index && (
-              <>
-                <span aria-hidden="true" className="text-muted-foreground/60">
-                  /
-                </span>
-                <h1 className="font-medium">{title}</h1>
-              </>
-            )}
-          </div>
         </header>
-        <div className="mx-auto w-full max-w-[54rem] px-5 pt-4 pb-16 sm:px-8 md:pt-8 lg:pt-12">
+        <div
+          className={
+            active === 'memory'
+              ? 'mx-auto w-full max-w-[50rem] px-5 pt-4 pb-12 sm:px-8 md:pt-8'
+              : 'mx-auto w-full max-w-[54rem] px-5 pt-4 pb-16 sm:px-8 md:pt-8 lg:pt-12'
+          }>
           {index ? (
             <>
               <nav className="overflow-hidden rounded-2xl border" aria-label="Settings pages">
@@ -118,7 +112,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
               </div>
             </>
           ) : active === 'memory' ? (
-            <p className="text-sm text-muted-foreground">Coming soon</p>
+            <MemoryScreen />
           ) : (
             children
           )}

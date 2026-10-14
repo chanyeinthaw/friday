@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import './scroll-fade.css';
+@import './memory.css';
 @source './';
 @import './markdown/styles.css';
 @theme inline {

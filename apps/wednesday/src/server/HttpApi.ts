@@ -4,6 +4,8 @@ import { HttpServerRequest } from 'effect/http'
 import { Api, Authentication, CurrentUser, Unauthorized } from '../shared/Api.ts'
 import { Auth } from './Auth.ts'
 import { Chat } from './Chat.ts'
+import { Storage } from './Storage.ts'
+import { browseMemory, readMemoryOriginal } from './Memory.ts'
 import { failure } from './errors.ts'
 
 export const authenticationLayer = Layer.effect(
@@ -96,8 +98,33 @@ export const publicApiLayer = HttpApiBuilder.group(
     return handlers.handle('config', () => Effect.succeed({ publishableKey: auth.publishableKey }))
   }),
 )
+export const memoryApiLayer = HttpApiBuilder.group(
+  Api,
+  'memory',
+  Effect.fn('HttpApi.memory')(function* (handlers) {
+    const storage = yield* Storage
+    return handlers
+      .handle('browse', ({ query }) =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser
+          return yield* browseMemory(user.userId, query).pipe(
+            Effect.provideService(Storage, storage),
+          )
+        }),
+      )
+      .handle('original', ({ query }) =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser
+          return yield* readMemoryOriginal(user.userId, query.id).pipe(
+            Effect.provideService(Storage, storage),
+          )
+        }),
+      )
+  }),
+)
 export const apiLayer = HttpApiBuilder.layer(Api).pipe(
   Layer.provide(chatApiLayer),
+  Layer.provide(memoryApiLayer),
   Layer.provide(publicApiLayer),
   Layer.provide(authenticationLayer),
 )

@@ -6,7 +6,9 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/http'
 import { HttpApiClient } from 'effect/http-api'
 import { Api, Unauthorized } from '../shared/Api.ts'
 import { WednesdayError } from '../server/errors.ts'
-import { ClientCommand, type ServerEvent } from '../shared/protocol.ts'
+import { ClientCommand, type ServerEvent, type ChatMessage } from '../shared/protocol.ts'
+
+import type { MemoryQuery, MemorySnapshot } from '../shared/Memory.ts'
 
 export interface SessionChange {
   readonly userId: string
@@ -14,6 +16,8 @@ export interface SessionChange {
 export class Browser extends Context.Service<
   Browser,
   {
+    readonly memory: (query: MemoryQuery) => Effect.Effect<MemorySnapshot, Error>
+    readonly memoryOriginal: (id: number) => Effect.Effect<ChatMessage | null, Error>
     readonly sendSignInCode: (email: string) => Effect.Effect<void, Error>
     readonly verifySignInCode: (code: string) => Effect.Effect<void, Error>
     readonly sessionChanges: Stream.Stream<SessionChange>
@@ -247,6 +251,26 @@ export const browserLayer = Layer.effect(
       activate: (session) =>
         Effect.tryPromise({ try: () => clerk.setActive({ session }), catch: signInError }),
     })
-    return Browser.of({ send, connect, sessionChanges, signOut, sendSignInCode, verifySignInCode })
+    const read = <A, E>(request: Effect.Effect<A, E>) =>
+      Effect.gen(function* () {
+        const userId = clerk.user?.id
+        if (!userId) return yield* Effect.fail(new Error('Sign in again to continue.'))
+        const result = yield* request.pipe(
+          Effect.mapError(() => new Error('Memories could not load. Please try again.')),
+        )
+        if (clerk.user?.id !== userId)
+          return yield* Effect.fail(new Error('Your account has changed.'))
+        return result
+      })
+    return Browser.of({
+      memory: (query) => read(api.memory.browse({ query })),
+      memoryOriginal: (id) => read(api.memory.original({ query: { id } })),
+      send,
+      connect,
+      sessionChanges,
+      signOut,
+      sendSignInCode,
+      verifySignInCode,
+    })
   }),
 ).pipe(Layer.provide(FetchHttpClient.layer))
