@@ -1,6 +1,7 @@
 import { $ } from 'bun'
 import { join, relative } from 'node:path'
 
+const buildId = crypto.randomUUID()
 const app = join(import.meta.dir, '..')
 const output = join(app, 'dist/frontend')
 const outfileIndex = process.argv.indexOf('--outfile')
@@ -17,7 +18,7 @@ const frontend = await Bun.build({
   loader: { '.webmanifest': 'file' },
   splitting: true,
   minify: true,
-  define: { 'process.env.NODE_ENV': '"production"' },
+  define: { 'process.env.NODE_ENV': '"production"', FRIDAY_BUILD_ID: JSON.stringify(buildId) },
 })
 if (!frontend.success) throw new Error(frontend.logs.map(String).join('\n'))
 // Stable install URLs must also be embedded in the single executable.
@@ -52,7 +53,7 @@ const compiled = await Bun.build({
   target: 'bun',
   compile: { outfile },
   minify: true,
-  define: { 'process.env.NODE_ENV': '"production"' },
+  define: { 'process.env.NODE_ENV': '"production"', FRIDAY_BUILD_ID: JSON.stringify(buildId) },
   plugins: [
     {
       name: 'embedded-frontend',

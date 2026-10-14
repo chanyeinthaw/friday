@@ -1,3 +1,4 @@
+import { canRestoreDraft } from './ReloadDraft.ts'
 import { ResponsePhase } from '../shared/Activity.ts'
 import { Attachment } from '../shared/Attachments.ts'
 import { Effect, Schema } from 'effect'
@@ -768,6 +769,14 @@ const reduce = (model: Model, message: Message): UpdateResult =>
     }),
     RemovedAttachment: (message) => ({
       model: { ...model, attachments: model.attachments.filter((file) => file.id !== message.id) },
+    }),
+    RestoredDraft: ({ draft }) => ({
+      model:
+        canRestoreDraft(draft, model.userId, model.conversationRevision, Date.now()) &&
+        !model.draft &&
+        !model.attachments.length
+          ? { ...model, draft: draft.draft, attachments: draft.attachments, reply: draft.reply }
+          : model,
     }),
     ChangedDraft: (message) => ({ model: { ...model, draft: message.value } }),
     ChangedUrl: (message) => ({ model: { ...model, baseUrl: message.value } }),

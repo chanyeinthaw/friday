@@ -1,3 +1,4 @@
+import { UpdateNotice } from './UpdateNotice.tsx'
 import { ClearConversation } from './ClearConversation.tsx'
 import { ChatActivity, ResponseActivity } from './ChatActivity.tsx'
 import { Schema } from 'effect'
@@ -565,6 +566,7 @@ function Composer({ model }: { model: Model }) {
       <div className="pointer-events-auto empty:hidden">
         <Feedback model={model} />
       </div>
+      <UpdateNotice model={model} />
       {(model.connection !== 'ready' || model.memoryStatus !== 'idle' || scrollable.end) && (
         <div className="flex items-center justify-center gap-2">
           {model.connection !== 'ready' && (

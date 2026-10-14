@@ -1,10 +1,18 @@
 import { Effect, Layer } from 'effect'
 import { HttpMiddleware, HttpPlatform, HttpRouter, HttpServerResponse } from 'effect/http'
 import frontend from 'wednesday:frontend'
+import { buildId } from '../shared/Build.ts'
 
 // Bun embeds these files in the executable; routing them through Effect enables compression.
 export const frontendLayer = HttpRouter.use((router) =>
   Effect.gen(function* () {
+    yield* router.add(
+      'GET',
+      '/version',
+      HttpServerResponse.text(JSON.stringify({ id: buildId }), {
+        headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+      }),
+    )
     for (const file of frontend) {
       const html = file.html
       const revalidate = html || file.url.startsWith('/pwa/')

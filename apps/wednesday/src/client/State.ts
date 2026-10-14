@@ -1,3 +1,4 @@
+import { takeReloadDraft } from './ReloadDraft.ts'
 import { Effect, ManagedRuntime, Stream } from 'effect'
 import { Atom, AtomRegistry } from 'effect/reactivity'
 import { Browser, browserLayer } from './Browser.ts'
@@ -37,7 +38,15 @@ export const start = () =>
           }),
         ),
         Stream.switchMap((session) => (session.userId ? browser.connect() : Stream.empty)),
-        Stream.runForEach((event) => Effect.sync(() => dispatch(Message.Received({ event })))),
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            dispatch(Message.Received({ event }))
+            if (event._tag === 'Snapshot') {
+              const draft = yield* takeReloadDraft(registry.get(stateAtom).userId)
+              if (draft) dispatch(Message.RestoredDraft({ draft }))
+            }
+          }),
+        ),
       )
     }),
   )
