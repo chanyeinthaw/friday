@@ -90,7 +90,7 @@ export const makeSlackThreadBootstrap = Effect.fn('makeSlackThreadBootstrap')(fu
     // model from one snapshot with a thinking level from another.
     const model = options.model?.()
     return decodeChannelThread({
-      id: decodeThreadId(yield* crypto.randomUUIDv4),
+      id: decodeThreadId(yield* crypto.randomUUIDv4()),
       audience: 'user',
       parent: null,
       harness: 'pi-durable',

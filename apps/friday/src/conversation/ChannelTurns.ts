@@ -79,7 +79,7 @@ export const ChannelTurnsLive = Layer.effect(
               0,
             )
             const steering: SteeringActivityType = decodeSteeringActivity({
-              id: decodeActivityId(yield* crypto.randomUUIDv4),
+              id: decodeActivityId(yield* crypto.randomUUIDv4()),
               sequence,
               status: 'completed',
               type: 'steering',
@@ -119,7 +119,7 @@ export const ChannelTurnsLive = Layer.effect(
           }
 
           const turn: TurnType = decodeTurn({
-            id: decodeTurnId(yield* crypto.randomUUIDv4),
+            id: decodeTurnId(yield* crypto.randomUUIDv4()),
             threadId: request.thread.id,
             sequence: Option.match(latestTurn, {
               onNone: () => 1,

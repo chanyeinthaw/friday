@@ -44,7 +44,7 @@ const discordStub = {
 const liveLayers = Layer.mergeAll(
   // SAFETY: the bootstrap only needs randomUUIDv4 from Crypto; the stub's
   // missing members are never read.
-  Layer.succeed(Crypto.Crypto, { randomUUIDv4: Effect.succeed('thread-id') } as never),
+  Layer.succeed(Crypto.Crypto, { randomUUIDv4: () => Effect.succeed('thread-id') } as never),
   // SAFETY: the bootstrap only needs makeDirectory; the stub's missing members
   // are never read.
   Layer.succeed(FileSystem.FileSystem, { makeDirectory: () => Effect.void } as never),

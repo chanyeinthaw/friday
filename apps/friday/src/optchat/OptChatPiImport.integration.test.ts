@@ -3,7 +3,7 @@
 import { test, expect } from 'bun:test'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
 import * as Effect from 'effect/Effect'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 import { makeOptChatMemory } from './OptChatMemory.ts'
 import { runStructuralMigrations } from '../persistence/Migrations.ts'
 import { OptChatConfiguration, OptChatConfigurationLive } from '../config/OptChatConfiguration.ts'

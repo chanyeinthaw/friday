@@ -5,7 +5,7 @@ import * as Clock from 'effect/Clock'
 import * as Crypto from 'effect/Crypto'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 
 const JsonString = Schema.fromJsonString(Schema.Json)
 const isSerializedMessage = (value: unknown): value is SerializedMessage => {
@@ -267,7 +267,7 @@ export const makeSqliteChatStateAdapter = Effect.fn('makeSqliteChatStateAdapter'
           Effect.gen(function* () {
             yield* ensureConnected
             const now = yield* Clock.currentTimeMillis
-            const token = yield* crypto.randomUUIDv4
+            const token = yield* crypto.randomUUIDv4()
             const expiresAt = now + ttlMs
             yield* sql`
                 DELETE FROM chat_sdk_locks

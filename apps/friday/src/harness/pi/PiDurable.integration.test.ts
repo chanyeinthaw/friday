@@ -23,7 +23,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Schedule from 'effect/Schedule'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -94,7 +94,7 @@ const turnFor = (thread: ChannelThread, id = 'durable-turn', sequence = 1) =>
 const withDatabase = <A, E>(
   use: (
     directory: string,
-  ) => Effect.Effect<A, E, import('effect/unstable/sql/SqlClient').SqlClient | Scope.Scope>,
+  ) => Effect.Effect<A, E, import('effect/sql/SqlClient').SqlClient | Scope.Scope>,
 ) =>
   Effect.runPromise(
     Effect.scoped(

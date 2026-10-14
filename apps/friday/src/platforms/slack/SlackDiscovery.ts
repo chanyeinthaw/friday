@@ -3,7 +3,7 @@
 import type { SlackAdapter } from '@chat-adapter/slack'
 import type { ListThreadsOptions } from 'chat'
 import * as Effect from 'effect/Effect'
-import * as Encoding from 'effect/Encoding'
+import { Base64Url } from 'effect/encoding'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
@@ -410,7 +410,7 @@ const decodeSlackChannelsPosition = (
   if (cursor === undefined || cursor.trim() === '') {
     return Option.some({ api: undefined, skip: 0 })
   }
-  const jsonResult = Encoding.decodeBase64UrlString(cursor.trim())
+  const jsonResult = Base64Url.decodeString(cursor.trim())
   if (!Result.isSuccess(jsonResult)) return Option.none()
   const payload = Option.getOrUndefined(
     decodeSlackChannelsCursorJsonOption(Result.getOrThrow(jsonResult)),
@@ -427,7 +427,7 @@ const encodeSlackChannelsPosition = (position: SlackChannelsPosition): string =>
   }
   if (position.api !== undefined) payload.api = position.api
   if (position.skip > 0) payload.skip = position.skip
-  return Encoding.encodeBase64Url(encodeSlackChannelsCursorJsonSync(payload))
+  return Base64Url.encode(encodeSlackChannelsCursorJsonSync(payload))
 }
 
 const fetchOneSlackChannelPage = Effect.fn('SlackDiscovery.channelPage')(function* (

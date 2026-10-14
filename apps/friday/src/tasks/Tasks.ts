@@ -87,11 +87,13 @@ export const TasksLive = Layer.effect(
       friday,
       models,
       fileSystem,
-      randomUUID: crypto.randomUUIDv4.pipe(
-        Effect.mapError((cause) =>
-          taskError('start-failed', `Failed to generate an identifier: ${String(cause)}`),
+      randomUUID: crypto
+        .randomUUIDv4()
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError('start-failed', `Failed to generate an identifier: ${String(cause)}`),
+          ),
         ),
-      ),
       now: DateTime.now.pipe(Effect.map(DateTime.formatIso)),
     })
   }),

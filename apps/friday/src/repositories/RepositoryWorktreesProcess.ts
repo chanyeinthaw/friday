@@ -8,8 +8,8 @@ import * as String from 'effect/String'
 import * as BunChildProcessSpawner from '@effect/platform-bun/BunChildProcessSpawner'
 import * as BunFileSystem from '@effect/platform-bun/BunFileSystem'
 import * as BunPath from '@effect/platform-bun/BunPath'
-import * as ChildProcess from 'effect/unstable/process/ChildProcess'
-import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner'
+import { ChildProcess } from 'effect/process'
+import { ChildProcessSpawner } from 'effect/process'
 
 interface CommandResult {
   readonly stdout: string

@@ -6,7 +6,7 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 
 import { AppConfigError, loadAppConfig } from './AppConfig.ts'
 import { AppConfig, makeAppConfigLive } from './AppConfigLive.ts'

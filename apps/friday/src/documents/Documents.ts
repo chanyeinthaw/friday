@@ -4,12 +4,12 @@ import * as Context from 'effect/Context'
 import * as Crypto from 'effect/Crypto'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
-import * as Encoding from 'effect/Encoding'
+import { Base64Url } from 'effect/encoding'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 import { timingSafeEqual } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 
@@ -296,7 +296,7 @@ export const makeDocumentsLive = (options?: DocumentsLiveOptions) =>
           .makeDirectory(directory, { recursive: true })
           .pipe(Effect.mapError(failure('save')))
         const target = contentPath(directory, key)
-        const suffix = yield* crypto.randomUUIDv4.pipe(Effect.mapError(failure('save')))
+        const suffix = yield* crypto.randomUUIDv4().pipe(Effect.mapError(failure('save')))
         const temp = join(directory, `.${key}.${suffix}.tmp`)
         yield* fileSystem.writeFileString(temp, content).pipe(
           Effect.mapError(failure('save')),
@@ -314,7 +314,7 @@ export const makeDocumentsLive = (options?: DocumentsLiveOptions) =>
       const newAccessKey = (operation: DocumentError['operation']) =>
         crypto
           .randomBytes(32)
-          .pipe(Effect.map(Encoding.encodeBase64Url), Effect.mapError(failure(operation)))
+          .pipe(Effect.map(Base64Url.encode), Effect.mapError(failure(operation)))
 
       const save = Effect.fn('Documents.save')(function* (
         key: DocumentKey,

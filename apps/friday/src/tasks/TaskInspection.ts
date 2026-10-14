@@ -10,7 +10,7 @@ import {
   type TaskOutline,
   type Turn,
 } from '@friday/contracts/conversation'
-import * as Encoding from 'effect/Encoding'
+import { Base64Url } from 'effect/encoding'
 import * as Option from 'effect/Option'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
@@ -324,14 +324,14 @@ export const encodeInspectCursor = (
   after: TaskInspectCursorPosition,
 ): TaskInspectCursor => {
   const json = encodeCursorPayloadSync({ taskId, boundary, after })
-  return decodeCursorSync(Encoding.encodeBase64Url(json))
+  return decodeCursorSync(Base64Url.encode(json))
 }
 
 export const decodeInspectCursor = (
   cursor: TaskInspectCursor,
   taskId: TaskId,
 ): Option.Option<DecodedInspectCursor> => {
-  const jsonResult = Encoding.decodeBase64UrlString(cursor)
+  const jsonResult = Base64Url.decodeString(cursor)
   if (!Result.isSuccess(jsonResult)) return Option.none()
   const payload = Option.getOrUndefined(decodeCursorPayloadOption(Result.getOrThrow(jsonResult)))
   if (payload === undefined || payload.taskId !== taskId || payload.boundary.length === 0) {

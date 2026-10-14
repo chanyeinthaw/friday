@@ -9,8 +9,8 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import { SqlClient } from 'effect/sql'
+import type { SqlError } from 'effect/sql/SqlError'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
 import { ThreadPersistence } from '../conversation/ThreadPersistence.ts'
@@ -228,7 +228,7 @@ export const WorkspaceCleanupLive = Layer.effect(
       )
       if (resources.length === 0) return null
 
-      const proposalId = yield* decodeProposalId(`cleanup-${yield* crypto.randomUUIDv4}`)
+      const proposalId = yield* decodeProposalId(`cleanup-${yield* crypto.randomUUIDv4()}`)
       const createdAt = DateTime.formatIso(yield* DateTime.now)
       const estimatedBytes = resources.reduce((total, resource) => total + resource.sizeBytes, 0)
       const summary = summarize(resources)

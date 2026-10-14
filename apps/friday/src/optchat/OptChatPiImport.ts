@@ -3,7 +3,7 @@ import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { SqlClient } from 'effect/sql'
 import { PromptMessageEnvelopeJson } from '../harness/pi/PromptMessage.ts'
 import type { MemoryInput, OptChatMemory } from './OptChatMemory.ts'
 
