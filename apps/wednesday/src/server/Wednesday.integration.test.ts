@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { Schema } from 'effect'
 import { Sse } from 'effect/encoding'
 import { Database } from 'bun:sqlite'
+import { turnInstructions, compactionInstructions } from './OptChat.ts'
 import { ServerEvent, type ClientCommand, type Thinking } from '../shared/protocol.ts'
 
 const parseReplies = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(ServerEvent)))
@@ -978,6 +979,7 @@ test('defers new compactions during a chat turn and resumes them after Stop', as
 }, 10000)
 
 test('compacts in the background with eight calls, bounded source context, and a separate model', async () => {
+  const firstRequest = requests.length
   const client = await connect('user_memory')
   await save(client, 'memory-model', 'low')
   let inflight = 0
@@ -1013,6 +1015,18 @@ test('compacts in the background with eight calls, bounded source context, and a
   client.send({ _tag: 'Send', requestId: 'after_compaction', text: 'What did I tell you?' })
   await client.wait((event) => event._tag === 'Status' && !event.busy)
   expect(peak).toBe(8)
+  const sent = requests.slice(firstRequest)
+  for (const [model, prompt] of [
+    ['test-model', turnInstructions],
+    ['memory-model', compactionInstructions],
+  ]) {
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        model,
+        messages: expect.arrayContaining([expect.objectContaining({ content: prompt })]),
+      }),
+    )
+  }
   const history = await client.snapshot()
   const pages = history.messages.filter(
     (message) => message.kind === 'user' && message.text !== 'What did I tell you?',
