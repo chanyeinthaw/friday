@@ -27,7 +27,7 @@ import { Storage, type StoredSettings } from './Storage.ts'
 import { Credentials, discoverModels, normalizeBaseUrl, validateMapping } from './Providers.ts'
 import { ChatGpt } from './ChatGpt.ts'
 import { defaultMemoryModelId } from '../shared/modelDefaults.ts'
-import { makeMemory, instructions } from './OptChat.ts'
+import { makeMemory, turnInstructions, compactionInstructions } from './OptChat.ts'
 import { completedMarkdown } from './Paragraphs.ts'
 import { WednesdayError, failure } from './errors.ts'
 
@@ -143,7 +143,7 @@ export const chatLayer = Layer.effect(
           const memory = yield* makeMemory(storage, userId, (view) =>
             runtime.open({
               connection: model,
-              systemPrompt: instructions,
+              systemPrompt: compactionInstructions,
               view,
               beforeRequest,
               memory: {
@@ -260,7 +260,7 @@ export const chatLayer = Layer.effect(
         )
       const session = yield* runtime.open({
         connection: model,
-        systemPrompt: instructions,
+        systemPrompt: turnInstructions,
         view,
         memory,
         onText,
