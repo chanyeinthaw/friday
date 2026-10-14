@@ -136,7 +136,7 @@ export function LoginScreen() {
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <div ref={composer} className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-            <div className="mx-auto w-full max-w-3xl space-y-3 px-4 pb-[calc(2rem+env(safe-area-inset-bottom,0px))] sm:px-8">
+            <div className="mx-auto w-full max-w-3xl composer-spacing space-y-3 px-4 sm:px-8">
               <div className="flex items-center justify-center gap-2">
                 {busy && (
                   <span
