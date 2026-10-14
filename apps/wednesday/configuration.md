@@ -60,6 +60,10 @@ Initial snapshots contain at most 250 visible user and assistant messages. The a
 
 A turn continues when a browser disconnects. On reconnect, the browser sends the largest saved message ID it has received. The snapshot includes only later messages, plus current settings and runtime state. The browser merges those messages into its existing timeline and reconciles pending bubbles by request ID. It follows new messages only when the reader is already at the bottom.
 
+## Clearing chat and memory
+
+General settings includes a confirmed **Clear chat and memory** action. Stop the current response first. Clearing stops background memory work and deletes only the signed-in user's messages, agent logs, memory views, summaries, and jobs in one transaction. Provider connections, integration keys, and preferences remain. Attachments become inaccessible immediately and enter the normal cleanup job after existing signed upload URLs expire. A persisted conversation revision resets every open tab and forces a fresh snapshot when an older tab reconnects.
+
 ## Attachments
 
 The object adapter uses Bun's native S3 client. These environment variables configure R2 or another S3-compatible service:

@@ -35,6 +35,8 @@ export interface ExpiredAttachment {
 export class Storage extends Context.Service<
   Storage,
   {
+    readonly clearConversation: (userId: string) => Effect.Effect<void, WednesdayError>
+    readonly conversationRevision: (userId: string) => Effect.Effect<number, WednesdayError>
     readonly saveAttachment: (
       userId: string,
       file: Attachment,

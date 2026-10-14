@@ -301,6 +301,7 @@ class Client {
       Send: '/api/chat/messages',
       Steer: '/api/chat/steering',
       Stop: '/api/chat/stop',
+      ClearConversation: '/api/chat/clear',
       SaveSettings: '/api/settings',
       DiscoverModels: '/api/models',
       StartChatGpt: '/api/chatgpt/start',
@@ -1753,3 +1754,72 @@ test('private attachments survive reload, images reach the model, and the compil
   client.close()
   other.close()
 }, 15000)
+
+test('clears private chat and memory across tabs and reconnects while preserving settings', async () => {
+  const userId = 'user_clear_conversation'
+  const first = await connect(userId)
+  await save(first)
+  first.send({ _tag: 'Send', requestId: 'before-clear', text: 'Remember this before clearing.' })
+  await first.wait((event) => event._tag === 'Status' && !event.busy)
+  const before = await first.snapshot()
+  expect(before.messages.length).toBeGreaterThan(0)
+  const second = await connect(userId)
+  const other = await connect('user_clear_other')
+  await save(other)
+  other.send({ _tag: 'Send', requestId: 'other-retained', text: 'Keep my conversation.' })
+  await other.wait((event) => event._tag === 'Status' && !event.busy)
+  const gate = holdChat()
+  first.send({ _tag: 'Send', requestId: 'clear-busy', text: 'Wait while I respond.' })
+  await gate.started
+  first.send({ _tag: 'ClearConversation' })
+  const rejected = await first.wait((event) => event._tag === 'Error')
+  expect(rejected._tag === 'Error' && rejected.message).toContain('Stop the response')
+  first.send({ _tag: 'Stop', turnId: 'clear-busy' })
+  await first.wait((event) => event._tag === 'Status' && !event.busy)
+  gate.release()
+  first.send({ _tag: 'ClearConversation' })
+  const cleared = await first.wait((event) => event._tag === 'Snapshot' && event.revision === 1)
+  const mirrored = await second.wait((event) => event._tag === 'Snapshot' && event.revision === 1)
+  for (const event of [cleared, mirrored]) {
+    if (event._tag !== 'Snapshot') throw new Error('Expected cleared snapshot')
+    expect(event.messages).toEqual([])
+    expect(event.settings).toEqual(before.settings)
+    expect(event.hasApiKey).toBe(true)
+    expect(event.memoryStatus).toBe('idle')
+  }
+  const db = new Database(join(temporary, 'test.sqlite'), { readonly: true })
+  for (const table of [
+    'wednesday_messages',
+    'wednesday_logs',
+    'wednesday_memory_views',
+    'wednesday_memory_nodes',
+    'wednesday_memory_jobs',
+  ]) {
+    expect(
+      db
+        .query<{ count: number }, [string]>(
+          `SELECT count(*) AS count FROM ${table} WHERE user_id=?`,
+        )
+        .get(userId)?.count,
+    ).toBe(0)
+  }
+  db.close()
+  expect((await other.snapshot()).messages.length).toBeGreaterThan(0)
+  // Old cursors must receive the new conversation even after missing the reset event.
+  first.send({ _tag: 'Send', requestId: 'before-clear', text: 'Start a fresh conversation.' })
+  await first.wait((event) => event._tag === 'Status' && !event.busy)
+  const reconnected = await connect(userId, 999)
+  expect(reconnected.initial?.revision).toBe(1)
+  expect(
+    reconnected.initial?.messages.some((message) => message.text === 'Start a fresh conversation.'),
+  ).toBe(true)
+  expect(
+    reconnected.initial?.messages.some(
+      (message) => message.text === 'Remember this before clearing.',
+    ),
+  ).toBe(false)
+  first.close()
+  second.close()
+  other.close()
+  reconnected.close()
+})

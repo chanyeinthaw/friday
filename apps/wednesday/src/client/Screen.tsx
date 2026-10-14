@@ -1,3 +1,4 @@
+import { ClearConversation } from './ClearConversation.tsx'
 import { ChatActivity, ResponseActivity } from './ChatActivity.tsx'
 import { Schema } from 'effect'
 import { flushSync } from 'react-dom'
@@ -1392,6 +1393,7 @@ export function SettingsScreen() {
       <div className="space-y-9">
         <ChatPreferences model={model} />
         <ProviderSettings model={model} />
+        <ClearConversation busy={model.busy} />
       </div>
       <div className="mt-5">
         <Feedback model={model} />

@@ -50,6 +50,7 @@ export const chatApiLayer = HttpApiBuilder.group(
       .handle('cancelChatGpt', ({ payload }) => handle({ _tag: 'CancelChatGpt', ...payload }))
       .handle('disconnectChatGpt', () => handle({ _tag: 'DisconnectChatGpt' }))
       .handle('history', ({ query }) => handle({ _tag: 'LoadOlder', beforeId: query.beforeId }))
+      .handle('clearConversation', () => handle({ _tag: 'ClearConversation' }))
       .handle('conversation', () => handle({ _tag: 'Load' }))
       .handle('send', ({ payload }) => handle({ _tag: 'Send', ...payload }))
       .handle('steer', ({ payload }) => handle({ _tag: 'Steer', ...payload }))
@@ -75,7 +76,7 @@ export const chatApiLayer = HttpApiBuilder.group(
               const lease = { userId: user.userId, expiresAt: user.expiresAt + 15_000 }
               leases.set(streamId, lease)
               yield* Effect.addFinalizer(() => Effect.sync(() => leases.delete(streamId)))
-              const updates = yield* chat.subscribe(user.userId, query.afterId)
+              const updates = yield* chat.subscribe(user.userId, query.afterId, query.revision)
               const expiry = Effect.suspend(() =>
                 Effect.sleep(Math.max(0, lease.expiresAt - Date.now())),
               ).pipe(Effect.repeat({ until: () => Effect.succeed(Date.now() >= lease.expiresAt) }))

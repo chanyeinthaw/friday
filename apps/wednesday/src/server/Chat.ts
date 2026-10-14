@@ -61,6 +61,7 @@ export class Chat extends Context.Service<
     readonly subscribe: (
       userId: string,
       afterId?: number,
+      revision?: number,
     ) => Effect.Effect<Stream.Stream<ServerEvent>, WednesdayError, Scope.Scope>
   }
 >()('@wednesday/Chat') {}
@@ -506,12 +507,19 @@ export const chatLayer = Layer.effect(
       return [{ _tag: 'Models' as const, models }]
     })
 
-    const snapshot = Effect.fn('Chat.snapshot')(function* (userId: string, afterId = -1) {
+    const snapshot = Effect.fn('Chat.snapshot')(function* (
+      userId: string,
+      afterId = -1,
+      clientRevision = 0,
+    ) {
+      const revision = yield* storage.conversationRevision(userId)
       const saved = yield* storage.settings(userId)
       const turn = active.get(userId)
-      const page = afterId < 0 ? yield* storage.history(userId) : null
+      const page =
+        afterId < 0 || clientRevision !== revision ? yield* storage.history(userId) : null
       const result = {
         _tag: 'Snapshot' as const,
+        revision,
         memoryStatus: memoryStatus(userId),
         responsePhase: turn?.phase ?? 'thinking',
         settings: saved?.settings ?? null,
@@ -689,12 +697,35 @@ export const chatLayer = Layer.effect(
               yield* publish(userId, next)
               return [next]
             }
+            case 'ClearConversation':
+              return yield* Effect.gen(function* () {
+                if (active.has(userId))
+                  return yield* failure('Stop the response before clearing your chat.')
+                yield* memoryOwners.withPermit(userId)(
+                  Effect.gen(function* () {
+                    yield* memories.get(userId)?.stop ?? Effect.void
+                    memories.delete(userId)
+                    memoryProcessing.delete(userId)
+                    yield* storage.clearConversation(userId)
+                  }),
+                )
+                for (const key of yield* Cache.keys(receipts)) {
+                  if (key.startsWith(`${userId}:`)) yield* Cache.invalidate(receipts, key)
+                }
+                const next = yield* snapshot(userId)
+                yield* publish(userId, next)
+                return [next]
+              }).pipe(Effect.uninterruptible)
             case 'LoadOlder':
               return [
-                { _tag: 'History' as const, ...(yield* storage.history(userId, command.beforeId)) },
+                {
+                  _tag: 'History' as const,
+                  revision: yield* storage.conversationRevision(userId),
+                  ...(yield* storage.history(userId, command.beforeId)),
+                },
               ]
             case 'Load':
-              return [yield* snapshot(userId, command.afterId)]
+              return [yield* snapshot(userId, command.afterId, command.revision)]
             case 'SaveSettings':
               return yield* saveSettings(userId, command)
             case 'Send':
@@ -704,11 +735,11 @@ export const chatLayer = Layer.effect(
         }),
       )
     })
-    const subscribe = Effect.fn('Chat.subscribe')((userId: string, afterId = -1) =>
+    const subscribe = Effect.fn('Chat.subscribe')((userId: string, afterId = -1, revision = 0) =>
       locks.withPermit(userId)(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(notifications)
-          const initial = yield* snapshot(userId, afterId)
+          const initial = yield* snapshot(userId, afterId, revision)
           return Stream.make(initial).pipe(
             Stream.concat(
               Stream.fromSubscription(subscription).pipe(

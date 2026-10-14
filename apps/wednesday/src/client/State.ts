@@ -126,3 +126,8 @@ export const disconnectFirecrawl = (signal: AbortSignal) =>
     Effect.flatMap(Browser, (browser) => browser.disconnectFirecrawl()),
     { signal },
   )
+
+export const clearConversation = () =>
+  runtime.runPromise(
+    Effect.flatMap(Browser, (browser) => browser.send({ _tag: 'ClearConversation' })),
+  )
