@@ -1823,3 +1823,15 @@ test('clears private chat and memory across tabs and reconnects while preserving
   other.close()
   reconnected.close()
 })
+
+test('public build version is stable and never cached', async () => {
+  const response = await fetch(`http://localhost:${applicationPort}/version`)
+  expect(response.status).toBe(200)
+  expect(response.headers.get('cache-control')).toBe('no-store')
+  const decode = Schema.decodeUnknownSync(
+    Schema.fromJsonString(Schema.Struct({ id: Schema.NonEmptyString })),
+  )
+  const first = decode(await response.text())
+  const second = decode(await (await fetch(`http://localhost:${applicationPort}/version`)).text())
+  expect(first.id).toBe(second.id)
+})

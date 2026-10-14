@@ -1,3 +1,4 @@
+import { ReloadDraft } from './ReloadDraft.ts'
 import { Attachment } from '../shared/Attachments.ts'
 import { Data, Schema } from 'effect'
 import { ServerEvent, ModelMapping, Thinking, ApiFormat, MessageReply } from '../shared/protocol.ts'
@@ -30,6 +31,7 @@ const MessageSchema = Schema.TaggedUnion({
   AttachmentUploaded: { id: Schema.String, attachment: Attachment },
   UploadFailed: { id: Schema.String, message: Schema.String },
   RemovedAttachment: { id: Schema.String },
+  RestoredDraft: { draft: ReloadDraft },
   ChangedDraft: { value: Schema.String },
   ChangedUrl: { value: Schema.String },
   ChangedKey: { value: Schema.String },

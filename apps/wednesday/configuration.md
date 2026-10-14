@@ -128,3 +128,19 @@ https://friday.si14.space. Fleet's `scripts/services/optmem` deploys the release
 and its user timer checks for newer Optmem releases every five minutes.
 Production uses a fresh SQLite volume, production Clerk keys, a separate encryption
 key, and the private `friday-optmem-production-attachments` R2 bucket.
+
+## PWA updates
+
+Each compiled executable embeds a unique build ID in its server and browser bundle.
+The public `/version` endpoint returns that ID with `Cache-Control: no-store`.
+The chat checks at startup, every minute while visible, and on focus or return to the
+foreground. A different ID shows an Update available pill above the composer.
+Reload stays disabled during synchronization, active responses, uploads, settings
+saves, and pending submissions. Updates never reload the app automatically.
+
+Before a requested reload, the tab saves its draft text, completed attachment references,
+and reply in session storage. After the first synchronized snapshot it restores them
+only for the same user and conversation revision, without replacing new typing.
+Drafts expire after 24 hours and disappear from session storage after reading.
+A storage failure prevents reload. Installs running a version before this feature
+need one manual reload to receive the update detector.
