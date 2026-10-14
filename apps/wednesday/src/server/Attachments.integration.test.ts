@@ -94,6 +94,16 @@ test('upload lifecycle retains used objects, cleans abandoned files, and retries
       expect(blobs.has(objectKey('user', abandoned.id))).toBe(false)
       expect(yield* stored.attachments('user')).toEqual([used])
       expect(yield* stored.attachment('user', abandoned.id)).toBeNull()
+      yield* stored.clearConversation('user')
+      expect(yield* stored.attachment('user', used.id)).toBeNull()
+      expect(yield* stored.attachments('user')).toEqual([])
+      // Wait for signed upload URLs to expire before removing the cleanup record.
+      yield* files.cleanup
+      expect(blobs.has(objectKey('user', used.id))).toBe(true)
+      yield* sql`UPDATE wednesday_attachments SET expires_at=unixepoch()-1 WHERE user_id='user'`
+      yield* files.cleanup
+      expect(blobs.has(objectKey('user', used.id))).toBe(false)
+      expect(yield* stored.conversationRevision('user')).toBe(1)
     }).pipe(Effect.provide(services), Effect.scoped),
   )
 })

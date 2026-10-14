@@ -813,3 +813,45 @@ it.effect('updates activity rows in place and restores their completed status on
     expect(model.messages[0]?.activity?.status).toBe('stopped')
   }),
 )
+
+it('replaces cleared conversations and ignores stale history and snapshots', () => {
+  const old: ChatMessage = { id: 12, kind: 'user', text: 'Old message', date: '2026-10-14' }
+  const fresh: ChatMessage = { id: 0, kind: 'talk', text: 'Fresh response', date: '2026-10-14' }
+  const reset = receive(
+    {
+      ...initialModel,
+      messages: [old],
+      draft: 'Old draft',
+      reply: { id: old.id, kind: 'user', text: old.text },
+      loadingHistory: true,
+    },
+    {
+      _tag: 'Snapshot',
+      revision: 1,
+      settings,
+      hasApiKey: true,
+      busy: false,
+      turnId: null,
+      messages: [fresh],
+      hasOlder: false,
+    },
+  )
+  expect(reset.messages).toEqual([fresh])
+  expect(reset.draft).toBe('')
+  expect(reset.reply).toBeNull()
+  expect(reset.loadingHistory).toBe(false)
+  expect(
+    receive(reset, { _tag: 'History', revision: 0, messages: [old], hasOlder: false }).messages,
+  ).toEqual([fresh])
+  expect(
+    receive(reset, {
+      _tag: 'Snapshot',
+      revision: 0,
+      messages: [old],
+      settings,
+      hasApiKey: true,
+      busy: false,
+      turnId: null,
+    }).messages,
+  ).toEqual([fresh])
+})

@@ -61,6 +61,7 @@ const ChatApi = HttpApiGroup.make('chat')
       success: Replies,
       error,
     }),
+    HttpApiEndpoint.post('clearConversation', '/api/chat/clear', { success: Replies, error }),
     HttpApiEndpoint.get('conversation', '/api/chat', { success: Replies, error }),
     HttpApiEndpoint.get('history', '/api/chat/history', {
       query: Schema.Struct({
@@ -71,6 +72,9 @@ const ChatApi = HttpApiGroup.make('chat')
     }),
     HttpApiEndpoint.get('events', '/api/chat/events', {
       query: Schema.Struct({
+        revision: Schema.optionalKey(
+          Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+        ),
         afterId: Schema.optionalKey(
           Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(-1)),
         ),

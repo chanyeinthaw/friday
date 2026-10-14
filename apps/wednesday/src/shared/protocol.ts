@@ -90,7 +90,8 @@ export const ClientCommand = Schema.TaggedUnion({
   PollChatGpt: { attemptId: Schema.String },
   CancelChatGpt: { attemptId: Schema.String },
   DisconnectChatGpt: {},
-  Load: { afterId: Schema.optionalKey(Schema.Int) },
+  ClearConversation: {},
+  Load: { afterId: Schema.optionalKey(Schema.Int), revision: Schema.optionalKey(Schema.Int) },
   LoadOlder: { beforeId: Schema.Int },
   SaveSettings: { settings: Settings, apiKey: Schema.String },
   DiscoverModels: {
@@ -130,6 +131,7 @@ export const ServerEvent = Schema.TaggedUnion({
   MemoryStatus: { status: MemoryStatus },
   ResponsePhase: { turnId: Schema.String, phase: ResponsePhase },
   Snapshot: {
+    revision: Schema.optionalKey(Schema.Int),
     memoryStatus: Schema.optionalKey(MemoryStatus),
     responsePhase: Schema.optionalKey(ResponsePhase),
     settings: Schema.NullOr(Settings),
@@ -141,7 +143,11 @@ export const ServerEvent = Schema.TaggedUnion({
     turnId: Schema.NullOr(Schema.String),
     pending: Schema.optionalKey(Schema.Array(PendingMessage)),
   },
-  History: { messages: Schema.Array(ChatMessage), hasOlder: Schema.Boolean },
+  History: {
+    revision: Schema.optionalKey(Schema.Int),
+    messages: Schema.Array(ChatMessage),
+    hasOlder: Schema.Boolean,
+  },
   Models: { models: Schema.Array(ModelMapping) },
   Saved: {},
   Accepted: { requestId: Schema.String, mode: Schema.Literals(['send', 'steer']) },

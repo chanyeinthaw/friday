@@ -52,6 +52,7 @@ export const Model = Schema.Struct({
   savingRevision: Schema.Int,
   settingsSaved: Schema.Int,
   turnId: Schema.NullOr(Schema.String),
+  conversationRevision: Schema.Int,
   connection: Schema.Literals(['connecting', 'syncing', 'ready']),
   generation: Schema.Int,
   busy: Schema.Boolean,
@@ -109,6 +110,7 @@ export const initialModel: Model = {
   savingRevision: 0,
   settingsSaved: 0,
   turnId: null,
+  conversationRevision: 0,
   connection: 'connecting',
   generation: 0,
   busy: false,
@@ -416,16 +418,36 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
     Ready: () => ({ model: { ...model, connection: 'syncing' } }),
     Heartbeat: () => ({ model }),
     Snapshot: (event) => {
-      const messages = mergeMessages(model.messages, event.messages)
+      const revision = event.revision ?? 0
+      if (revision < model.conversationRevision) return { model }
+      const base: Model =
+        revision !== model.conversationRevision
+          ? {
+              ...model,
+              conversationRevision: revision,
+              messages: [],
+              pendingMessages: [],
+              draft: '',
+              reply: null,
+              attachments: [],
+              uploads: [],
+              uploading: 0,
+              hasOlder: false,
+              loadingHistory: false,
+              error: '',
+              notice: '',
+            }
+          : model
+      const messages = mergeMessages(base.messages, event.messages)
       const next: Model = {
-        ...model,
+        ...base,
         connection: 'ready',
         memoryStatus: event.memoryStatus ?? 'idle',
         responsePhase: event.responsePhase ?? 'thinking',
-        hasOlder: event.hasOlder ?? model.hasOlder,
+        hasOlder: event.hasOlder ?? base.hasOlder,
         messages,
         streaming: event.streaming ?? null,
-        pendingMessages: reconcilePending(model, event.pending ?? [], messages),
+        pendingMessages: reconcilePending(base, event.pending ?? [], messages),
         activeSettings: event.settings,
         busy: event.busy,
         turnId: event.turnId,
@@ -456,12 +478,15 @@ const received = (model: Model, event: ServerEvent): UpdateResult =>
       },
     }),
     History: (event) => ({
-      model: {
-        ...model,
-        messages: mergeMessages(model.messages, event.messages),
-        hasOlder: event.hasOlder,
-        loadingHistory: false,
-      },
+      model:
+        (event.revision ?? 0) !== model.conversationRevision
+          ? model
+          : {
+              ...model,
+              messages: mergeMessages(model.messages, event.messages),
+              hasOlder: event.hasOlder,
+              loadingHistory: false,
+            },
     }),
     Models: (event) => {
       const sameProvider =

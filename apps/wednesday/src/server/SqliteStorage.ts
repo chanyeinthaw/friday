@@ -206,6 +206,16 @@ export const sqliteMigrations = Layer.effect(
             yield* sql`INSERT INTO wednesday_migrations (version) VALUES (7)`
           }),
         )
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* sql<{
+              version: number
+            }>`SELECT version FROM wednesday_migrations WHERE version=8`
+            if (existing.length) return
+            yield* sql`CREATE TABLE wednesday_conversations (user_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)`
+            yield* sql`INSERT INTO wednesday_migrations (version) VALUES (8)`
+          }),
+        )
       },
       (effect) => effect.pipe(Effect.mapError(() => failure('Database migration failed.'))),
     )
@@ -506,11 +516,41 @@ export const sqliteStorage = Layer.effect(
         }),
       )
     }, database)
+    const conversationRevision = Effect.fn('Storage.conversationRevision')(function* (
+      userId: string,
+    ) {
+      const rows = yield* sql<{
+        revision: number
+      }>`SELECT revision FROM wednesday_conversations WHERE user_id=${userId}`
+      return rows[0]?.revision ?? 0
+    }, database)
+    const clearConversation = Effect.fn('Storage.clearConversation')(
+      (userId: string) =>
+        memoryStorage.withMemory(
+          userId,
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`DELETE FROM wednesday_messages WHERE user_id=${userId}`
+              yield* sql`DELETE FROM wednesday_logs WHERE user_id=${userId}`
+              yield* sql`DELETE FROM wednesday_memory WHERE user_id=${userId}`
+              yield* sql`DELETE FROM wednesday_memory_views WHERE user_id=${userId}`
+              yield* sql`DELETE FROM wednesday_memory_nodes WHERE user_id=${userId}`
+              yield* sql`DELETE FROM wednesday_memory_jobs WHERE user_id=${userId}`
+              // Keep cleanup records until existing upload URLs expire, then remove both objects.
+              yield* sql`UPDATE wednesday_attachments SET state='deleting', expires_at=MAX(expires_at,unixepoch()+600), staging_cleaned=0 WHERE user_id=${userId}`
+              yield* sql`INSERT INTO wednesday_conversations (user_id,revision) VALUES (${userId},1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1`
+            }),
+          ),
+        ),
+      database,
+    )
     const recover = Effect.fn('Storage.recover')(function* () {
       yield* sql`UPDATE wednesday_memory_jobs SET status='queued' WHERE status='running'`
       yield* sql`UPDATE wednesday_messages SET activity=json_set(activity,'$.status','stopped') WHERE json_extract(activity,'$.status')='running'`
     }, database)
     return Storage.of({
+      conversationRevision,
+      clearConversation,
       settleActivities,
       integrationKey,
       saveIntegrationKey,

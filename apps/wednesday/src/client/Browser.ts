@@ -175,6 +175,8 @@ export const browserLayer = Layer.effect(
             return yield* api.chat.steer({
               payload: command,
             })
+          case 'ClearConversation':
+            return yield* api.chat.clearConversation()
           case 'Stop':
             return yield* api.chat.stop({ payload: command })
           case 'SaveSettings':
@@ -213,6 +215,7 @@ export const browserLayer = Layer.effect(
     )
     const connect = () => {
       let afterId = -1
+      let revision = 0
       const events = Stream.suspend(() => {
         let streamId: string | undefined
         const renew = Effect.suspend(() =>
@@ -221,14 +224,11 @@ export const browserLayer = Layer.effect(
             : Effect.void,
         ).pipe(Effect.repeat(Schedule.spaced('20 seconds')))
         return Stream.make({ _tag: 'Connecting' } satisfies ServerEvent).pipe(
-          Stream.concat(Stream.unwrap(api.chat.events({ query: { afterId } }))),
+          Stream.concat(Stream.unwrap(api.chat.events({ query: { afterId, revision } }))),
           Stream.interruptWhen(renew),
           Stream.tap((event) =>
             Effect.sync(() => {
               if (event._tag === 'Ready') streamId = event.streamId
-              if (event._tag === 'Message') afterId = Math.max(afterId, event.message.id)
-              if (event._tag === 'Snapshot')
-                for (const message of event.messages) afterId = Math.max(afterId, message.id)
             }),
           ),
         )
@@ -246,6 +246,17 @@ export const browserLayer = Layer.effect(
           Stream.map((reply) => reply.event),
         ),
         events,
+      ).pipe(
+        Stream.tap((event) =>
+          Effect.sync(() => {
+            if (event._tag === 'Message') afterId = Math.max(afterId, event.message.id)
+            if (event._tag === 'Snapshot' && (event.revision ?? 0) >= revision) {
+              if ((event.revision ?? 0) !== revision) afterId = -1
+              revision = event.revision ?? 0
+              for (const message of event.messages) afterId = Math.max(afterId, message.id)
+            }
+          }),
+        ),
       )
     }
     const signOut = Effect.tryPromise({
