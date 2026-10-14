@@ -2,6 +2,7 @@ import { getRouteApi, Link } from '@tanstack/react-router'
 import { ArrowLeft, Brain, ChevronRight, Settings } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { ClerkElement } from './ClerkElement.tsx'
+import fridayLogo from './branding/apple-touch-icon.png'
 import { Button } from './components/ui/button.tsx'
 import {
   Sidebar,
@@ -9,6 +10,7 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
+  SidebarHeader,
   SidebarInset,
   SidebarMenu,
   SidebarMenuButton,
@@ -19,7 +21,7 @@ import { useIsMobile } from './hooks/use-mobile.ts'
 
 const route = getRouteApi('/settings')
 const pages = [
-  { view: 'settings', title: 'Settings', icon: Settings },
+  { view: 'settings', title: 'General', icon: Settings },
   { view: 'memory', title: 'Memory', icon: Brain },
 ] as const
 
@@ -28,19 +30,27 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
   const mobile = useIsMobile()
   const index = view === 'index' || (mobile && !view)
   const active = view === 'memory' ? 'memory' : 'settings'
-  const title = active === 'memory' && !index ? 'Memory' : 'Settings'
+  const title = active === 'memory' ? 'Memory' : 'General'
   return (
     <SidebarProvider className="min-h-dvh">
       <Sidebar
         collapsible="none"
-        className="sticky top-0 hidden h-dvh shrink-0 border-r bg-background px-3 pt-10 md:flex">
+        className="sticky top-0 hidden h-dvh w-56 shrink-0 border-r border-border/70 bg-muted/40 px-2 pt-3 md:flex">
+        <SidebarHeader className="px-3 pb-5">
+          <Link
+            to="/"
+            className="flex min-h-11 items-center gap-2.5 rounded-md text-sm font-semibold tracking-tight">
+            <img src={fridayLogo} alt="" className="size-6 rounded-md" />
+            Friday
+          </Link>
+        </SidebarHeader>
         <SidebarContent>
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu aria-label="Settings pages">
                 {pages.map((page) => (
                   <SidebarMenuItem key={page.view}>
-                    <SidebarMenuButton asChild isActive={active === page.view} size="lg">
+                    <SidebarMenuButton asChild isActive={active === page.view}>
                       <Link to="/settings" search={{ view: page.view }}>
                         <page.icon />
                         <span>{page.title}</span>
@@ -52,26 +62,42 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter className="border-t py-5">
-          <ClerkElement kind="account" />
+        <SidebarFooter className="flex-row items-center justify-between gap-2 px-2 py-3">
+          <Link
+            to="/"
+            className="flex min-h-11 items-center gap-2 px-2 text-sm text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="size-4" />
+            Back
+          </Link>
+          <ClerkElement kind="account" avatarOnly />
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="min-w-0">
-        <div className="mx-auto w-full max-w-6xl px-5 pt-8 pb-12 sm:px-8 md:px-10 md:pt-12 lg:px-12">
-          <header className="mb-8 flex items-center gap-3">
-            <Button asChild variant="ghost" size="icon" className="border">
-              {mobile && !index ? (
-                <Link to="/settings" search={{}} aria-label="Back to settings">
-                  <ArrowLeft />
-                </Link>
-              ) : (
-                <Link to="/" aria-label="Back to chat">
-                  <ArrowLeft />
-                </Link>
-              )}
-            </Button>
-            <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-          </header>
+        <header className="flex h-20 shrink-0 items-center gap-3 px-5 sm:px-8">
+          <Button asChild variant="ghost" size="icon-sm" className="md:hidden">
+            {mobile && !index ? (
+              <Link to="/settings" search={{}} aria-label="Back to settings">
+                <ArrowLeft />
+              </Link>
+            ) : (
+              <Link to="/" aria-label="Back to chat">
+                <ArrowLeft />
+              </Link>
+            )}
+          </Button>
+          <div className="flex items-center gap-3 text-sm">
+            <span className={index ? 'font-medium' : 'text-muted-foreground'}>Settings</span>
+            {!index && (
+              <>
+                <span aria-hidden="true" className="text-muted-foreground/60">
+                  /
+                </span>
+                <h1 className="font-medium">{title}</h1>
+              </>
+            )}
+          </div>
+        </header>
+        <div className="mx-auto w-full max-w-[54rem] px-5 pt-4 pb-16 sm:px-8 md:pt-8 lg:pt-12">
           {index ? (
             <>
               <nav className="overflow-hidden rounded-2xl border" aria-label="Settings pages">
