@@ -128,6 +128,12 @@ importers:
 
   apps/wednesday:
     dependencies:
+      '@earendil-works/pi-ai':
+        specifier: 1.0.2
+        version: 1.0.2(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(undici@8.11.2)(ws@8.22.0)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent':
+        specifier: 1.0.2
+        version: 1.0.2(patch_hash=22e225c1b062cdc703b0d4d9c40d351364fd36fb9871463123e09373e5e52b39)(@aws-sdk/credential-provider-node@3.972.83)(@smithy/signature-v4@5.7.0)(ws@8.22.0)(zod@4.4.3)
       '@clerk/backend':
         specifier: 3.23.2
         version: 3.23.2(react-dom@19.3.0(react@19.3.0))(react@19.3.0)

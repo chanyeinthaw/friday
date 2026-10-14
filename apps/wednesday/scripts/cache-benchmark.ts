@@ -1,5 +1,6 @@
 // Run with a credential on stdin; all chat and memory state lives in a disposable database.
 import { createHash, randomBytes } from 'node:crypto'
+import { zstdDecompressSync } from 'node:zlib'
 import { Prompt } from 'effect/ai'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -18,6 +19,7 @@ import {
 } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 import { SqlClient } from 'effect/sql'
+import { agentRuntimeLayer } from '../src/server/AgentRuntimeLive.ts'
 import { Chat, chatLayer } from '../src/server/Chat.ts'
 import { ChatGpt, chatGptLayer } from '../src/server/ChatGpt.ts'
 import { Credentials, credentialsLayer, defaultMapping } from '../src/server/Providers.ts'
@@ -305,7 +307,11 @@ const requestBody = (init?: Parameters<typeof fetch>[1]) =>
   isString(init?.body)
     ? init.body
     : init?.body instanceof Uint8Array
-      ? new TextDecoder().decode(init.body)
+      ? new TextDecoder().decode(
+          new Headers(init.headers).get('content-encoding') === 'zstd'
+            ? zstdDecompressSync(init.body)
+            : init.body,
+        )
       : undefined
 const assertIdentity = (
   request: typeof Request.Type,
@@ -530,12 +536,21 @@ const program = Effect.acquireUseRelease(
       const credentials = credentialsLayer
       const chatGpt = chatGptLayer.pipe(Layer.provide(storage), Layer.provide(credentials))
       const services = Layer.merge(
-        chatLayer.pipe(Layer.provide(chatGpt), Layer.provide(storage), Layer.provide(credentials)),
+        chatLayer.pipe(
+          Layer.provide(agentRuntimeLayer),
+          Layer.provide(chatGpt),
+          Layer.provide(storage),
+          Layer.provide(credentials),
+        ),
         Layer.merge(chatGpt, Layer.merge(database, Layer.merge(storage, credentials))),
       ).pipe(
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
+              WEDNESDAY_PI_CHATGPT_TRANSPORT: Bun.env.WEDNESDAY_PI_CHATGPT_TRANSPORT ?? 'sse',
+              WEDNESDAY_AGENT_ENGINE: Bun.env.WEDNESDAY_AGENT_ENGINE ?? 'pi',
+              WEDNESDAY_CHATGPT_BACKEND:
+                Bun.env.WEDNESDAY_CHATGPT_BACKEND ?? 'https://chatgpt.com/backend-api/codex',
               WEDNESDAY_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
             }),
           ),
@@ -715,6 +730,7 @@ const program = Effect.acquireUseRelease(
             event: 'summary',
             group,
             format,
+            engine: Bun.env.WEDNESDAY_AGENT_ENGINE ?? 'pi',
             provider: chatGptSource ? 'chatgpt' : 'cpa',
             modelId,
             thinking,

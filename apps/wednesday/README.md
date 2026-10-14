@@ -6,6 +6,8 @@ Build the executable from the repository root:
 pnpm --filter @friday/wednesday build
 ```
 
+Pi coding-agent SDK runs chat and memory behind the `AgentRuntime` Effect service. Set `WEDNESDAY_AGENT_ENGINE=fold` to use the retained Fold adapter.
+
 The build writes `apps/wednesday/dist/wednesday`. The executable embeds the React frontend with TanStack Router, shadcn chat components, and Effect Atom, and serves the frontend and Effect HttpApi backend from one port. Browser assets are built with code splitting before embedding, so syntax highlighting and diagrams load on demand.
 
 Load the development configuration and start the executable:
@@ -38,7 +40,7 @@ pnpm exec oxlint apps/wednesday --quiet
 
 The integration tests compile and run an isolated executable with a temporary SQLite database, locally signed test sessions, and a mock model provider. They verify tenant isolation, steering, encrypted credentials, restart persistence, submission deduplication, concurrent background compaction, failed-summary recovery, and legacy-memory migration.
 
-See [configuration and storage](configuration.md) for runtime settings and implementation limits, and [Responses request construction and caching](cache-behavior.md) for the decision to use Fold without custom HTTP output replay.
+See [configuration and storage](configuration.md) for runtime settings and implementation limits, and [Responses request construction and caching](cache-behavior.md) for Pi and Fold request construction without custom HTTP output replay.
 
 ## Docker Compose on Tailscale
 

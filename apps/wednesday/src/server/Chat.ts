@@ -10,40 +10,25 @@ import {
   PubSub,
   Queue,
   Scope,
-  Semaphore,
   Stream,
+  Redacted,
 } from 'effect'
-import { Prompt } from 'effect/ai'
-import {
-  defineAgent,
-  eventLogSource,
-  startSession,
-  EventLogUnavailableError,
-  type FoldSession,
-  type LogEntry,
-  type LogEntryInput,
-} from '@humanlayer/fold-core'
+import type { LogEntryInput } from '@humanlayer/fold-core'
+import { AgentRuntime, type AgentSession, type AgentConnection } from './AgentRuntime.ts'
 import {
   ServerEvent,
   type ClientCommand,
   type PendingMessage,
   type Settings,
+  type ModelMapping,
+  type Thinking,
 } from '../shared/protocol.ts'
 import { Storage, type StoredSettings } from './Storage.ts'
-import {
-  Credentials,
-  configuredModel,
-  discoverModels,
-  normalizeBaseUrl,
-  validateMapping,
-} from './Providers.ts'
+import { Credentials, discoverModels, normalizeBaseUrl, validateMapping } from './Providers.ts'
 import { ChatGpt } from './ChatGpt.ts'
 import { defaultMemoryModelId } from '../shared/modelDefaults.ts'
 import { makeMemory, instructions } from './OptChat.ts'
 import { completedMarkdown } from './Paragraphs.ts'
-import { cachePrompt } from './CachePrompt.ts'
-import { optChatTools } from './OptChatTools.ts'
-import { observeText } from './StreamingModel.ts'
 import { WednesdayError, failure } from './errors.ts'
 
 export interface OwnedEvent {
@@ -71,13 +56,14 @@ export const chatLayer = Layer.effect(
     const storage = yield* Storage
     const credentials = yield* Credentials
     const chatGpt = yield* ChatGpt
+    const runtime = yield* AgentRuntime
     const notifications = yield* PubSub.unbounded<OwnedEvent>()
     const locks = yield* PartitionedSemaphore.make<string>({ permits: 1 })
     type Turn = {
       readonly initial: PendingMessage
       readonly pending: PendingMessage[]
       readonly dispatched: PendingMessage[]
-      session?: FoldSession
+      session?: AgentSession
       fiber?: Fiber.Fiber<void, never>
       streaming?: { id: string; turnId: string; text: string; date: string }
       memoryIdle?: Deferred.Deferred<void>
@@ -98,6 +84,33 @@ export const chatLayer = Layer.effect(
         pending: turn?.pending.slice() ?? [],
       }
     }
+    const connection = Effect.fn('Chat.connection')(function* (
+      userId: string,
+      saved: StoredSettings,
+      mapping: ModelMapping,
+      thinking: Thinking,
+      cacheKey = userId,
+      purpose: 'chat' | 'memory' = 'chat',
+    ) {
+      const key = yield* credentials.decrypt(saved.encryptedKey)
+      return {
+        userId,
+        purpose,
+        settings: saved.settings,
+        mapping,
+        thinking,
+        cacheKey,
+        credential:
+          saved.settings.provider === 'chatgpt'
+            ? chatGpt.access(userId).pipe(
+                Effect.map((tokens) => ({
+                  apiKey: Redacted.make(tokens.accessToken),
+                  accountId: tokens.accountId,
+                })),
+              )
+            : Effect.succeed({ apiKey: key }),
+      } satisfies AgentConnection
+    })
     const memoryOwners = yield* PartitionedSemaphore.make<string>({ permits: 1 })
     type MemoryWorker = Effect.Success<ReturnType<typeof makeMemory>> & {
       wake: Effect.Effect<void>
@@ -114,35 +127,30 @@ export const chatLayer = Layer.effect(
             saved.settings.modelId
           const mapping = saved.settings.models.find((model) => model.id === id)
           if (!mapping) return yield* failure('Choose a memory model in settings.')
-          const key = yield* credentials.decrypt(saved.encryptedKey)
-          const model =
-            saved.settings.provider === 'chatgpt'
-              ? chatGpt.model(
-                  userId,
-                  mapping,
-                  saved.settings.memoryThinking ?? 'off',
-                  false,
-                  `${userId}:memory`,
-                )
-              : configuredModel(
-                  saved.settings,
-                  key,
-                  mapping,
-                  saved.settings.memoryThinking ?? 'off',
-                  `${userId}:memory`,
-                )
+          const model = yield* connection(
+            userId,
+            saved,
+            mapping,
+            saved.settings.memoryThinking ?? 'off',
+            `${userId}:memory`,
+            'memory',
+          )
           // Compaction requests wait while the frozen chat turn owns provider capacity.
           const beforeRequest = Effect.suspend(() => {
             const idle = active.get(userId)?.memoryIdle
             return idle ? Deferred.await(idle) : Effect.void
           })
-          const memory = yield* makeMemory(
-            storage,
-            userId,
-            model,
-            undefined,
-            undefined,
-            beforeRequest,
+          const memory = yield* makeMemory(storage, userId, (view) =>
+            runtime.open({
+              connection: model,
+              systemPrompt: instructions,
+              view,
+              beforeRequest,
+              memory: {
+                zoom: () => failure('Compactions cannot call tools.'),
+                date: () => failure('Compactions cannot call tools.'),
+              },
+            }),
           )
           const wakeups = yield* Queue.sliding<void>(1)
           const worker = yield* Effect.forever(
@@ -178,171 +186,89 @@ export const chatLayer = Layer.effect(
       const mapping = saved.settings.models.find((model) => model.id === saved.settings.modelId)
       if (!mapping || !mapping.thinking[saved.settings.thinking])
         return yield* failure('Select a model and a supported thinking level in settings.')
-      const key = yield* credentials.decrypt(saved.encryptedKey)
-      const model =
-        saved.settings.provider === 'chatgpt'
-          ? chatGpt.model(userId, mapping, saved.settings.thinking)
-          : configuredModel(saved.settings, key, mapping, saved.settings.thinking, userId)
+      const model = yield* connection(userId, saved, mapping, saved.settings.thinking)
       const parts = new Map<string, string>()
       let responseCount = 0
-      const streamedModel = {
-        ...model,
-        make: model.make.pipe(
-          Effect.map((implementation) =>
-            observeText(implementation, (part) => {
-              parts.set(part.id, (parts.get(part.id) ?? '') + part.delta)
-              if (!part.delta.includes('\n')) return Effect.void
-              const text = completedMarkdown([...parts.values()].join('\n\n'))
-              if (!text || text === turn.streaming?.text) return Effect.void
-              return locks.withPermit(userId)(
-                Effect.gen(function* () {
-                  if (active.get(userId) !== turn) return
-                  turn.streaming = {
-                    id: `${submission.requestId}-${responseCount}`,
-                    turnId: submission.requestId,
-                    text,
-                    date: turn.streaming?.date ?? new Date().toISOString(),
-                  }
-                  yield* publish(userId, { _tag: 'Streaming', message: turn.streaming })
-                }),
-              )
-            }),
-          ),
-        ),
-      } satisfies typeof model
+      const onText = (part: { id: string; delta: string }) => {
+        parts.set(part.id, (parts.get(part.id) ?? '') + part.delta)
+        if (!part.delta.includes('\n')) return Effect.void
+        const text = completedMarkdown([...parts.values()].join('\n\n'))
+        if (!text || text === turn.streaming?.text) return Effect.void
+        return locks.withPermit(userId)(
+          Effect.gen(function* () {
+            if (active.get(userId) !== turn) return
+            turn.streaming = {
+              id: `${submission.requestId}-${responseCount}`,
+              turnId: submission.requestId,
+              text,
+              date: turn.streaming?.date ?? new Date().toISOString(),
+            }
+            yield* publish(userId, { _tag: 'Streaming', message: turn.streaming })
+          }),
+        )
+      }
       const memory = yield* getMemory(userId, saved)
       const view = yield* memory.settle()
       turn.memoryIdle = yield* Deferred.make<void>()
-      const firstSeq = yield* storage.logSequence(userId)
-      const logEvents = yield* PubSub.unbounded<LogEntry>()
-      const logGate = yield* Semaphore.make(1)
-      let requestStart: number | undefined
       let initialLogged = false
-      const logError = () =>
-        new EventLogUnavailableError({
-          operation: 'append',
-          message: 'Could not persist conversation.',
-          retryable: false,
-        })
       const append = (input: LogEntryInput) =>
-        logGate.withPermit(
-          locks.withPermit(userId)(
-            Effect.gen(function* () {
-              let consumedRequestId: string | null = null
-              if (input._tag === 'user-message') {
-                if (!initialLogged) {
-                  consumedRequestId = submission.requestId
-                  initialLogged = true
-                } else {
-                  consumedRequestId = turn.dispatched.shift()?.requestId ?? null
-                }
+        locks.withPermit(userId)(
+          Effect.gen(function* () {
+            let consumedRequestId: string | null = null
+            if (input._tag === 'user-message') {
+              if (!initialLogged) {
+                consumedRequestId = submission.requestId
+                initialLogged = true
+              } else {
+                consumedRequestId = turn.dispatched.shift()?.requestId ?? null
               }
-              const result = yield* storage
-                .appendLog(
-                  userId,
-                  input,
-                  consumedRequestId,
-                  turn.pending.find((item) => item.requestId === consumedRequestId)?.date,
-                )
-                .pipe(Effect.mapError(logError))
-              if (result.messages.length) yield* memory.wake
-              if (consumedRequestId) {
-                const index = turn.pending.findIndex((item) => item.requestId === consumedRequestId)
-                if (index >= 0) turn.pending.splice(index, 1)
-              }
-              const streamId = turn.streaming?.id
-              const firstTalk = result.messages.findIndex((message) => message.kind === 'talk')
-              if (input._tag === 'assistant-message') {
-                responseCount++
-                parts.clear()
-                delete turn.streaming
-              }
-              for (const [index, message] of result.messages.entries())
-                yield* publish(userId, {
-                  _tag: 'Message',
-                  message:
-                    streamId && index === firstTalk
-                      ? Object.assign({}, message, { streamId })
-                      : message,
-                  completesStreaming:
-                    input._tag === 'assistant-message' &&
-                    index === (firstTalk >= 0 ? firstTalk : 0),
-                })
-              if (input._tag === 'assistant-message' && !result.messages.length)
-                yield* publish(userId, { _tag: 'Streaming', message: null })
-              yield* publish(userId, status(userId))
-              yield* PubSub.publish(logEvents, result.entry)
-              return result.entry
-            }),
-          ),
+            }
+            const result = yield* storage.appendLog(
+              userId,
+              input,
+              consumedRequestId,
+              turn.pending.find((item) => item.requestId === consumedRequestId)?.date,
+            )
+
+            if (result.messages.length) yield* memory.wake
+            if (consumedRequestId) {
+              const index = turn.pending.findIndex((item) => item.requestId === consumedRequestId)
+              if (index >= 0) turn.pending.splice(index, 1)
+            }
+            const streamId = turn.streaming?.id
+            const firstTalk = result.messages.findIndex((message) => message.kind === 'talk')
+            if (input._tag === 'assistant-message') {
+              responseCount++
+              parts.clear()
+              delete turn.streaming
+            }
+            for (const [index, message] of result.messages.entries())
+              yield* publish(userId, {
+                _tag: 'Message',
+                message:
+                  streamId && index === firstTalk
+                    ? Object.assign({}, message, { streamId })
+                    : message,
+                completesStreaming:
+                  input._tag === 'assistant-message' && index === (firstTalk >= 0 ? firstTalk : 0),
+              })
+            if (input._tag === 'assistant-message' && !result.messages.length)
+              yield* publish(userId, { _tag: 'Streaming', message: null })
+            yield* publish(userId, status(userId))
+            return result.entry
+          }),
         )
-      const entries = (fromSeq = 0) =>
-        Stream.fromIterableEffect(
-          storage.logs(userId, Math.max(firstSeq, fromSeq)).pipe(
-            Effect.map((rows) => rows.filter((row) => row.seq >= fromSeq)),
-            Effect.mapError(logError),
-          ),
-        )
-      const subscribe = (fromSeq = 0) =>
-        Stream.unwrap(
-          logGate.withPermit(
-            Effect.gen(function* () {
-              const subscription = yield* PubSub.subscribe(logEvents)
-              const snapshot = yield* storage
-                .logs(userId, Math.max(firstSeq, fromSeq))
-                .pipe(Effect.mapError(logError))
-              return Stream.fromIterable(snapshot.filter((row) => row.seq >= fromSeq)).pipe(
-                Stream.concat(
-                  Stream.fromSubscription(subscription).pipe(
-                    Stream.filter((row) => row.seq >= fromSeq),
-                  ),
-                ),
-              )
-            }),
-          ),
-        )
-      const agent = defineAgent({
-        name: 'Friday',
-        model: streamedModel,
+      const session = yield* runtime.open({
+        connection: model,
         systemPrompt: instructions,
-        autoCompact: { enabled: false },
-        tools: optChatTools(memory),
-        hooks: {
-          preRequest: [
-            {
-              name: 'OptChat.frozenView',
-              handler: (input) =>
-                Effect.gen(function* () {
-                  yield* locks.withPermit(userId)(flushSteering(turn))
-                  if (requestStart === undefined) {
-                    requestStart = input.prompt.content.findLastIndex(
-                      (message) =>
-                        message.role === 'user' &&
-                        message.content.some(
-                          (part) => part.type === 'text' && part.text === submission.text,
-                        ),
-                    )
-                  }
-                  if (requestStart < 0)
-                    throw new Error('Current input is missing from the Fold request')
-                  return {
-                    _tag: 'changed' as const,
-                    prompt: Prompt.make([
-                      { role: 'system', content: instructions },
-                      ...cachePrompt(view, input.prompt.content.slice(requestStart)).content,
-                    ]),
-                  }
-                }),
-            },
-          ],
-        },
+        view,
+        memory,
+        onText,
+        append,
+        beforeRequest: locks.withPermit(userId)(flushSteering(turn)),
       })
-      const log = eventLogSource(Effect.succeed({ append, entries, subscribe }))
-      const session = yield* startSession({ agent, log, steering: 'one-at-a-time' })
       turn.session = session
-      const result = yield* session.send(submission.text)
-      if (result.outcome === 'error')
-        return yield* failure('The provider could not complete the response.')
+      yield* session.send(submission.text)
     })
 
     const flushSteering = Effect.fn('Chat.flushSteering')(function* (turn: Turn) {
@@ -353,10 +279,7 @@ export const chatLayer = Layer.effect(
           turn.dispatched.some((sent) => sent.requestId === item.requestId)
         )
           continue
-        const sent = yield* turn.session.steer(item.text).pipe(
-          Effect.as(true),
-          Effect.catchTag('AgentNotRunningError', () => Effect.succeed(false)),
-        )
+        const sent = yield* turn.session.steer(item.text)
         if (sent) turn.dispatched.push(item)
       }
     })

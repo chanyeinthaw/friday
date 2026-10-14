@@ -2,15 +2,17 @@
 
 ## Runtime variables
 
-| Variable                   | Value                                                                                                          |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `CLERK_PUBLISHABLE_KEY`    | Clerk development publishable key, beginning with `pk_test_`                                                   |
-| `CLERK_JWT_KEY`            | The development instance's PEM public key for session verification                                             |
-| `WEDNESDAY_ENCRYPTION_KEY` | A base64-encoded 32-byte key for encrypting provider API keys                                                  |
-| `WEDNESDAY_ORIGIN`         | Browser origin accepted by Clerk verification and authenticated HTTP requests. Default `http://localhost:3002` |
-| `WEDNESDAY_PORT`           | Listening port. Default `3002`                                                                                 |
-| `WEDNESDAY_HOST`           | Listening address. Default `127.0.0.1`                                                                         |
-| `WEDNESDAY_DATABASE`       | SQLite path. Default `wednesday.sqlite` in the working directory                                               |
+| Variable                         | Value                                                                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLERK_PUBLISHABLE_KEY`          | Clerk development publishable key, beginning with `pk_test_`                                                                                 |
+| `CLERK_JWT_KEY`                  | The development instance's PEM public key for session verification                                                                           |
+| `WEDNESDAY_ENCRYPTION_KEY`       | A base64-encoded 32-byte key for encrypting provider API keys                                                                                |
+| `WEDNESDAY_ORIGIN`               | Browser origin accepted by Clerk verification and authenticated HTTP requests. Default `http://localhost:3002`                               |
+| `WEDNESDAY_PORT`                 | Listening port. Default `3002`                                                                                                               |
+| `WEDNESDAY_HOST`                 | Listening address. Default `127.0.0.1`                                                                                                       |
+| `WEDNESDAY_PI_CHATGPT_TRANSPORT` | Pi ChatGPT chat transport: `websocket` by default, or `sse`. Memory compactions use HTTP/SSE. Browser connections use SSE with either value. |
+| `WEDNESDAY_AGENT_ENGINE`         | Agent engine: `pi` by default, or `fold`. Both chat turns and memory compactions use the selected engine.                                    |
+| `WEDNESDAY_DATABASE`             | SQLite path. Default `wednesday.sqlite` in the working directory                                                                             |
 
 The local development configuration is `~/.config/wednesday/development.env`, with permissions `0600`. Docker Compose stores its database at `/data/wednesday.sqlite` in the `wednesday-development_data` volume.
 
@@ -34,7 +36,7 @@ Each model has extra request fields and a request-field object for every support
 
 One Clerk user ID owns one permanent conversation. Every storage query includes the owner ID. Different users can run concurrently, while one user's turns run sequentially. Each accepted request has a client request ID. Receipts remain in a bounded in-memory cache for up to 24 hours. Reusing an ID with identical content adds no second submission while its receipt remains available; reusing it with different content fails. Receipts are lost on restart.
 
-Fold events and their message projections are written in one transaction. Consumed user messages retain their request IDs for reconciliation across tabs and reconnects. Original chat messages and the binary summary tree persist independently of browser connections. OptChat freezes earlier memory for each run and retains the current run's messages and tools in the model's request tail. The agent exposes only `zoom` and `date`, and Fold's ordinary auto-compaction is disabled.
+Fold events and their message projections are written in one transaction. Consumed user messages retain their request IDs for reconciliation across tabs and reconnects. Original chat messages and the binary summary tree persist independently of browser connections. OptChat freezes earlier memory for each run and retains the current run's messages and tools in the model's request tail. The agent exposes only `zoom` and `date`, and the selected engine's ordinary auto-compaction is disabled.
 
 Memory jobs are queued atomically with each appended message and processed in the background, with at most eight compactions per user. New compaction requests wait while the user's chat turn is active. Successful nodes are immutable; completing two siblings queues their parent. Failed jobs retry on a later message, and unfinished jobs recover after restart. The next turn waits for earlier memory to settle.
 
@@ -42,11 +44,11 @@ The main view grows to 128,000 UTF-8 bytes, then batches toward 64,000. A separa
 
 The Provider settings include a separate Memory model. When older settings have no memory-model choice, Friday prefers a recognizable lightweight variant from the saved model list; an explicit empty choice uses the chat model. Compactions use the memory model's selected thinking mapping, a 512-byte ruler, measured byte feedback, and up to five attempts. The shortest nonempty response is retained.
 
-Each turn starts a fresh Fold session. Only the frozen view and current turn enter its model requests. Text longer than 30,000 Unicode characters is preserved as adjacent message pages; tool echoes retain their first and last 15,000 characters. The chat model adapter observes text deltas and broadcasts completed Markdown prefixes over SSE. Unfinished paragraphs, tables, lists, and code fences remain hidden until their block ends. The active prefix lives in memory and appears in reconnect snapshots. A completed Fold message replaces its streamed bubble. Reasoning is not sent to the browser or added to the durable log or memory. SQLite commits use synchronous FULL.
+Each turn starts a fresh in-memory agent session. Pi coding-agent SDK is the default; Fold remains available through the same Effect service. Pi sessions load no filesystem tools, context files, skills, or prompt templates, and write no Pi session or credential files. Only the frozen view and current turn enter its model requests. Text longer than 30,000 Unicode characters is preserved as adjacent message pages; tool echoes retain their first and last 15,000 characters. The chat model adapter observes text deltas and broadcasts completed Markdown prefixes over SSE. Unfinished paragraphs, tables, lists, and code fences remain hidden until their block ends. The active prefix lives in memory and appears in reconnect snapshots. A completed agent message replaces its streamed bubble. Reasoning is not sent to the browser or added to the durable log or memory. SQLite commits use synchronous FULL.
 
 Active turns, pending steering, busy state, Stop state, and request receipts live in memory. Restarting the server loses them. Saved messages, settings, and OptChat memory remain available. Migration 3 removes the old submission table and adds request IDs to saved messages.
 
-Steering targets the current turn ID and is consumed one message at a time at Fold's next model step after a tool call. Unconsumed steering is discarded when the turn finishes or stops. Friday never starts another turn from unused steering. The browser marks those bubbles as "Not used"; Edit restores their text to the composer for an explicit new send.
+Steering targets the current turn ID and is consumed one message at a time at the next tool boundary. Unconsumed steering is discarded when the turn finishes or stops. Friday never starts another turn from unused steering. The browser marks those bubbles as "Not used"; Edit restores their text to the composer for an explicit new send.
 
 Commands use authenticated Effect HttpApi endpoints. Each tab opens its own SSE connection. Status events include the current turn ID and pending messages, and saved settings are broadcast to every connected tab. Unsaved settings edits remain local.
 
