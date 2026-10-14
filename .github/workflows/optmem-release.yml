@@ -41,6 +41,7 @@ jobs:
       - name: Check Friday Optmem
         run: |
           pnpm --filter @friday/wednesday check
+          pnpm exec effect-tsgo patch --no-typescript --oxlint
           pnpm exec oxlint apps/wednesday --quiet
           pnpm --filter @friday/wednesday test
       - name: Build the standalone executable

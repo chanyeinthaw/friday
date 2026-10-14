@@ -61,6 +61,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @friday/wednesday check
+      - run: pnpm exec effect-tsgo patch --no-typescript --oxlint
       - run: pnpm exec oxlint apps/wednesday --quiet
       - run: pnpm --filter @friday/wednesday test
       - run: pnpm --filter @friday/wednesday build
