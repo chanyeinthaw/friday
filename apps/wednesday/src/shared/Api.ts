@@ -7,6 +7,7 @@ import {
   HttpApiSchema,
   HttpApiSecurity,
 } from 'effect/http-api'
+import { MemorySnapshot, MemoryOriginal, MemoryQuery } from './Memory.ts'
 import { Settings, ServerEvent, ApiFormat } from './protocol.ts'
 import { WednesdayError } from '../server/errors.ts'
 
@@ -100,6 +101,24 @@ const ChatApi = HttpApiGroup.make('chat')
   .middleware(Authentication)
 export const Api = HttpApi.make('Wednesday')
   .add(ChatApi)
+  .add(
+    HttpApiGroup.make('memory')
+      .add(
+        HttpApiEndpoint.get('browse', '/api/memory', {
+          query: MemoryQuery,
+          success: MemorySnapshot,
+          error,
+        }),
+        HttpApiEndpoint.get('original', '/api/memory/original', {
+          query: Schema.Struct({
+            id: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+          }),
+          success: MemoryOriginal,
+          error,
+        }),
+      )
+      .middleware(Authentication),
+  )
   .add(
     HttpApiGroup.make('public').add(
       HttpApiEndpoint.get('config', '/config', {

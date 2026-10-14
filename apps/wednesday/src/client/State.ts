@@ -2,6 +2,7 @@ import { Effect, ManagedRuntime, Stream } from 'effect'
 import { Atom, AtomRegistry } from 'effect/reactivity'
 import { Browser, browserLayer } from './Browser.ts'
 import { initialModel, update } from './App.ts'
+import type { MemoryQuery } from '../shared/Memory.ts'
 import { Message } from './Messages.ts'
 
 // The registry owns shared chat state; HTTP replies and SSE use the same reducer.
@@ -46,3 +47,14 @@ export const sendSignInCode = (email: string) =>
   runtime.runPromise(Effect.flatMap(Browser, (browser) => browser.sendSignInCode(email)))
 export const verifySignInCode = (code: string) =>
   runtime.runPromise(Effect.flatMap(Browser, (browser) => browser.verifySignInCode(code)))
+
+export const browseMemory = (query: MemoryQuery, signal: AbortSignal) =>
+  runtime.runPromise(
+    Effect.flatMap(Browser, (browser) => browser.memory(query)),
+    { signal },
+  )
+export const readMemoryOriginal = (id: number, signal: AbortSignal) =>
+  runtime.runPromise(
+    Effect.flatMap(Browser, (browser) => browser.memoryOriginal(id)),
+    { signal },
+  )

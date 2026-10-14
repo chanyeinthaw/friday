@@ -25,7 +25,7 @@ const chat = chatLayer.pipe(
   Layer.provide(persistence),
   Layer.provide(credentialsLayer),
 )
-const services = Layer.mergeAll(chat, authLayer)
+const services = Layer.mergeAll(chat, authLayer, persistence)
 const app = Layer.merge(apiLayer.pipe(Layer.provide(services)), frontendLayer).pipe(
   Layer.provide(BunHttpServer.layerHttpServices),
 )
